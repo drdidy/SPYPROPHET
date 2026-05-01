@@ -1149,6 +1149,9 @@ def inject_global_css() -> None:
     [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
     [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
     [data-testid="stSidebar"] button{border-radius:8px}
+    div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button{border-radius:8px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);box-shadow:none}
+    div[data-testid="stButton"] button:hover, div[data-testid="stDownloadButton"] button:hover{border-color:var(--blue);color:var(--text)}
+    textarea, input{font-family:var(--ui-font)}
     div[data-baseweb="tab-list"]{gap:10px;border-bottom:1px solid var(--border);padding-bottom:0}
     button[role="tab"]{padding:10px 0;border-bottom:2px solid transparent;color:var(--muted)}
     button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
@@ -1243,7 +1246,7 @@ def inject_global_css() -> None:
     .outcome-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
     .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
     .status-strip b{color:var(--text);font-weight:600}
-    .prophet-header{padding:16px;margin-bottom:12px}.prophet-header h3{margin:0;font-size:1.5rem}
+    .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
     .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
@@ -2162,29 +2165,29 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
 
     return f"""
     <style>
-      .svg-map-shell{{background:linear-gradient(180deg,#101927 0%,#0b111d 100%);border:1px solid #274060;border-radius:18px;padding:18px 18px 14px;box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:Inter,Segoe UI,system-ui,sans-serif;color:#e7eefb}}
+      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Inter,Segoe UI,system-ui,sans-serif;color:#f4f7fb}}
       .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
-      .svg-map-title h3{{margin:0;font-size:22px;letter-spacing:0;font-weight:850;color:#f8fbff}}
-      .svg-map-title p{{margin:4px 0 0;color:#9cc7f5;font-size:13px}}
-      .svg-map-badge{{border:1px solid #2c79bd;border-radius:999px;padding:7px 11px;color:#9dd7ff;background:#0c2238;font-size:12px;font-weight:750;white-space:nowrap}}
-      .grid-line{{stroke:#263b56;stroke-width:1;opacity:.72}}
-      .axis-label{{fill:#7f9ab7;font-size:12px;font-weight:650}}
-      .zone-upper{{fill:#1c78b8;opacity:.14}}
-      .zone-lower{{fill:#e85b7b;opacity:.10}}
-      .rail{{fill:none;stroke-width:3;stroke-linecap:round;stroke-dasharray:10 10;animation:railFlow 9s linear infinite}}
-      .rail-hot{{stroke-width:5;filter:url(#softGlow)}}
-      .target-rail{{fill:none;stroke:#8fa4bd;stroke-width:1.5;stroke-dasharray:3 7;opacity:.55}}
-      .spy-path{{fill:none;stroke:url(#spyGradient);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:url(#softGlow);stroke-dasharray:1400;stroke-dashoffset:1400;animation:drawPath 2.4s ease-out forwards}}
-      .spy-shadow{{fill:none;stroke:#1c6eb8;stroke-width:16;stroke-linecap:round;stroke-linejoin:round;opacity:.18;filter:blur(5px)}}
+      .svg-map-title h3{{margin:0;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
+      .svg-map-title p{{margin:4px 0 0;color:#9aa7b5;font-size:13px}}
+      .svg-map-badge{{border:1px solid #314357;border-radius:999px;padding:7px 11px;color:#b9dcfb;background:#151f2b;font-size:12px;font-weight:750;white-space:nowrap}}
+      .grid-line{{stroke:#243244;stroke-width:1;opacity:.72}}
+      .axis-label{{fill:#9aa7b5;font-size:12px;font-weight:650}}
+      .zone-upper{{fill:#4ea8de;opacity:.10}}
+      .zone-lower{{fill:#f45d75;opacity:.08}}
+      .rail{{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-dasharray:8 10;animation:railFlow 9s linear infinite}}
+      .rail-hot{{stroke-width:4}}
+      .target-rail{{fill:none;stroke:#9aa7b5;stroke-width:1.25;stroke-dasharray:3 7;opacity:.42}}
+      .spy-path{{fill:none;stroke:url(#spyGradient);stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1400;stroke-dashoffset:1400;animation:drawPath 2.4s ease-out forwards}}
+      .spy-shadow{{fill:none;stroke:#4ea8de;stroke-width:10;stroke-linecap:round;stroke-linejoin:round;opacity:.10}}
       .price-line{{stroke:#f8fbff;stroke-width:1.5;stroke-dasharray:7 9;opacity:.85}}
-      .price-dot{{fill:#f8fbff;stroke:#50b7ff;stroke-width:5;filter:url(#softGlow)}}
+      .price-dot{{fill:#f8fbff;stroke:#4ea8de;stroke-width:4}}
       .rail-label,.marker-label{{font-size:12px;font-weight:850;letter-spacing:0}}
       .map-label{{fill:#d9ecff;font-size:13px;font-weight:800}}
       .map-muted{{fill:#8ba9c8;font-size:12px;font-weight:650}}
       .signal-pulse circle:first-child{{animation:pulse 2.2s ease-in-out infinite;transform-origin:center}}
       .svg-map-cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px;align-items:stretch}}
-      .svg-map-card{{border:1px solid #263e5b;background:#0d1726;border-radius:8px;padding:11px 12px;min-height:82px;overflow:hidden}}
-      .svg-card-label{{font-size:11px;color:#7db9ef;text-transform:uppercase;letter-spacing:.08em}}
+      .svg-map-card{{border:1px solid #243244;background:#151f2b;border-radius:8px;padding:11px 12px;min-height:82px;overflow:hidden}}
+      .svg-card-label{{font-size:11px;color:#9aa7b5;text-transform:uppercase;letter-spacing:.08em}}
       .svg-card-value{{font-size:18px;line-height:1.22;margin-top:5px;font-weight:850;color:#fbfdff;white-space:normal;overflow-wrap:anywhere}}
       .svg-card-copy{{font-size:12px;color:#95acc6;margin-top:6px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}}
       @keyframes drawPath{{to{{stroke-dashoffset:0}}}}
@@ -2199,8 +2202,8 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
           <linearGradient id='spyGradient' x1='0' x2='1'><stop offset='0%' stop-color='#9bdcff'/><stop offset='48%' stop-color='#ffffff'/><stop offset='100%' stop-color='#f4c76b'/></linearGradient>
           <filter id='softGlow'><feGaussianBlur stdDeviation='4' result='blur'/><feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge></filter>
         </defs>
-        <rect x='0' y='0' width='{width}' height='{height - 96}' rx='18' fill='#0a1321'/>
-        <rect x='{x0}' y='{y0}' width='{x1 - x0}' height='{y1 - y0}' rx='14' fill='#0d1828' stroke='#203a58'/>
+        <rect x='0' y='0' width='{width}' height='{height - 96}' rx='8' fill='#0d131d'/>
+        <rect x='{x0}' y='{y0}' width='{x1 - x0}' height='{y1 - y0}' rx='8' fill='#111821' stroke='#243244'/>
         {''.join(grid)}
         {"<polygon points='" + upper_poly + "' class='zone-upper'/>" if upper_poly else ""}
         {"<polygon points='" + lower_poly + "' class='zone-lower'/>" if lower_poly else ""}
@@ -2221,7 +2224,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
     """
 
 
-def render_structure_map_svg(*args, height: int = 900, **kwargs) -> None:
+def render_structure_map_svg(*args, height: int = 760, **kwargs) -> None:
     components.html(build_structure_map_svg(*args, **kwargs), height=height, scrolling=False)
 
 
@@ -2778,7 +2781,7 @@ def main() -> None:
                 ])
 
     with tabs["Prophet Chart"]:
-        render_section_title("Prophet Chart", "Animated decision map")
+        render_section_title("Prophet Chart", "Decision map and technical candle views")
         chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
         cc1,cc2=st.columns([1.1,1])
@@ -2800,11 +2803,10 @@ def main() -> None:
             render_warning_panel(f"Chart build failed: {e}")
 
     with tabs["Replay Lab"]:
-        st.caption("Historical replay as a decision story.")
         render_section_title("Replay Lab", "Replay a session against prior-day structure")
         dates = get_available_replay_dates(df)
         if not dates:
-            st.info("No replay dates available.")
+            render_data_notice("No replay dates available.")
         else:
             rca,rcb,rcc=st.columns([1,1,1])
             rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
@@ -2824,9 +2826,9 @@ def main() -> None:
             replay_price = float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan')
             replay_decision = build_decision_state(replay_active, rs.primary_lines+rs.secondary_lines, replay_price, replay_dt, replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals)
             if include_out:
-                st.info("Outcome review is visible for this replay.")
+                render_data_notice("Outcome review is visible for this replay.")
             else:
-                st.info("Future outcomes are hidden for this replay point.")
+                render_data_notice("Future outcomes are hidden for this replay point.")
             if replay_view == "Decision Map":
                 render_structure_map_svg(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.signals, replay_decision, replay_price, replay_dt, title=f"Replay Map: {rdate}", subtitle=f"Structure from {rs.prior_trading_day}; mode {_humanize(mode)}")
             else:
@@ -2842,8 +2844,7 @@ def main() -> None:
                 st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
 
     with tabs["Options"]:
-        st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")
-        render_section_title("Options Cockpit", "Quote and projection console")
+        render_section_title("Options Cockpit", "0DTE quote and projection console")
         if strikes:
             state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
@@ -2886,7 +2887,6 @@ def main() -> None:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
 
     with tabs["Journal"]:
-        st.caption("Signal memory, outcomes, and expectancy analytics.")
         render_section_title("Journal Analytics", "Self-learning signal memory")
         journal_path='data/signal_journal.json'
         entries = load_signal_journal(journal_path)
@@ -2901,16 +2901,16 @@ def main() -> None:
         ])
         notes = st.text_area("Notes for latest live signal", "")
         tags_text = st.text_input("Tags (comma-separated)", "")
-        cja,cjb,cjc,cjd=st.columns(4)
-        if cja.button("Save latest live signal to journal") and active_signal:
+        cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
+        if cja.button("Save live signal") and active_signal:
             e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=[t.strip() for t in tags_text.split(',') if t.strip()])
             entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
-        if cjb.button("Save replay signals to journal") and 'rs' in locals():
+        if cjb.button("Save replay signals") and 'rs' in locals():
             for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
             save_signal_journal(entries,journal_path)
         if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
         cjd.download_button("Export journal JSON", data=json.dumps([journal_entry_to_dict(x) for x in entries], indent=2), file_name="signal_journal.json")
-        st.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
+        cje.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
         a=compute_journal_analytics(entries)
         render_status_strip([
             ("Entries", a.total_entries),
@@ -2927,10 +2927,14 @@ def main() -> None:
             if "target_line_name" in journal_view.columns:
                 journal_view["target"] = journal_view["target_line_name"].map(display_line_name)
                 journal_view = journal_view.drop(columns=["target_line_name"])
-        st.dataframe(journal_view, use_container_width=True)
+        if journal_view.empty:
+            render_data_notice("No journal history yet.")
+        else:
+            st.dataframe(journal_view, use_container_width=True)
         if show_debug:
             st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
-        for ins in generate_journal_insights(a): st.info(ins)
+        if a.total_entries > 0:
+            for ins in generate_journal_insights(a): render_data_notice(ins)
 
     if show_debug:
         with tabs["Structure Details"]:
