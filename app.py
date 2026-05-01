@@ -5,7 +5,7 @@ import json
 import os
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time
 from email.utils import parsedate_to_datetime
 from html import escape, unescape
@@ -1096,6 +1096,48 @@ def extract_openai_citations(payload: dict) -> list[dict]:
     return citations
 
 
+def extract_json_payload_from_text(text: str) -> dict | None:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return None
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.IGNORECASE | re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    if not cleaned.startswith("{"):
+        start = cleaned.find("{")
+        if start >= 0:
+            cleaned = cleaned[start:]
+    depth = 0
+    in_string = False
+    escape_next = False
+    for idx, char in enumerate(cleaned):
+        if in_string:
+            if escape_next:
+                escape_next = False
+            elif char == "\\":
+                escape_next = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    payload = json.loads(cleaned[: idx + 1])
+                except Exception:
+                    return None
+                return payload if isinstance(payload, dict) else None
+    try:
+        payload = json.loads(cleaned)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def openai_web_search_enabled() -> bool:
     return get_secret_or_env("OPENAI_ENABLE_WEB_SEARCH", OPENAI_WEB_SEARCH_DEFAULT).lower() in {"1", "true", "yes", "on"}
 
@@ -1110,6 +1152,125 @@ def build_openai_request_payload(prompt: str, model: str, enable_web_search: boo
         payload["tool_choice"] = "auto"
         payload["include"] = ["web_search_call.action.sources"]
     return payload
+
+
+def build_openai_calendar_prompt(now_ct, days: int = 0) -> str:
+    start = pd.Timestamp(now_ct).date()
+    end = (pd.Timestamp(start) + pd.Timedelta(days=days)).date()
+    date_label = str(start) if start == end else f"{start} through {end}"
+    return (
+        "You are the SPY Prophet economic-calendar scout for a 0DTE SPY options trader.\n"
+        f"Find verified United States economic calendar events scheduled for {date_label}. "
+        "Use current public web sources only, such as Investing.com Economic Calendar, ForexFactory Calendar, "
+        "MarketWatch Economic Calendar, Nasdaq Economic Calendar, Trading Economics public calendar, Federal Reserve, "
+        "BLS, BEA, Census, Treasury, or other official agency release calendars.\n\n"
+        "Rules:\n"
+        "- Return ONLY a JSON object. No prose, no Markdown.\n"
+        "- Include only events with an exact event_date, time_label, event name, impact, and source.\n"
+        "- Convert times to both ET and CT in time_label, for example '8:30 AM ET / 7:30 AM CT'.\n"
+        "- Mark CPI, PCE, NFP, FOMC, Fed Chair/scheduled Fed decision, GDP, retail sales, jobless claims, "
+        "ISM/PMI, treasury auctions, and major Treasury/Fed releases as High when appropriate.\n"
+        "- Put forecast, previous, actual, or source evidence in notes when available.\n"
+        "- Do not include generic reminders, stale events, or events from another date.\n"
+        "- If no verified rows are found, return {\"events\":[]}.\n\n"
+        "JSON schema:\n"
+        "{\n"
+        "  \"events\": [\n"
+        "    {\n"
+        "      \"event_date\": \"YYYY-MM-DD\",\n"
+        "      \"time_label\": \"8:30 AM ET / 7:30 AM CT\",\n"
+        "      \"event\": \"Event name\",\n"
+        "      \"impact\": \"High\",\n"
+        "      \"source\": \"Source name\",\n"
+        "      \"notes\": \"forecast/previous/actual or why this matters\"\n"
+        "    }\n"
+        "  ]\n"
+        "}"
+    )
+
+
+def economic_event_from_ai_calendar_dict(raw: dict) -> EconomicEvent | None:
+    event_name = raw.get("event") or raw.get("name") or raw.get("title")
+    if not event_name:
+        return None
+    try:
+        event_date = pd.Timestamp(raw.get("event_date") or raw.get("date") or raw.get("release_date")).date()
+    except Exception:
+        return None
+    time_label = str(raw.get("time_label") or raw.get("time") or raw.get("release_time") or "").strip()
+    source = str(raw.get("source") or raw.get("provider") or "OpenAI calendar scout").strip()
+    if not time_label or not source:
+        return None
+    impact_raw = str(raw.get("impact") or "Medium").strip().lower()
+    impact = "High" if impact_raw in {"high", "3"} else "Medium" if impact_raw in {"medium", "med", "2"} else "Low" if impact_raw in {"low", "1"} else str(raw.get("impact")).title()
+    notes = str(raw.get("notes") or raw.get("evidence") or "").strip() or None
+    return EconomicEvent(event_date, time_label, str(event_name), impact, source, notes)
+
+
+def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEvent], list[dict], str | None]:
+    api_key = get_secret_or_env("OPENAI_API_KEY")
+    if not api_key:
+        return [], [], "OPENAI_API_KEY is not configured."
+    if not openai_web_search_enabled():
+        return [], [], "OPENAI_ENABLE_WEB_SEARCH is not enabled."
+    model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
+    try:
+        response = requests.post(
+            OPENAI_RESPONSES_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=build_openai_request_payload(build_openai_calendar_prompt(now_ct, days), model, True),
+            timeout=45,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = extract_openai_text(payload)
+        citations = extract_openai_citations(payload)
+        data = extract_json_payload_from_text(text)
+    except Exception as e:
+        return [], [], f"OpenAI calendar scout failed: {type(e).__name__}"
+    if not isinstance(data, dict):
+        return [], citations, "OpenAI calendar scout did not return parseable JSON."
+    start = pd.Timestamp(now_ct).date()
+    end = (pd.Timestamp(start) + pd.Timedelta(days=days)).date()
+    rows = data.get("events") if isinstance(data.get("events"), list) else []
+    events = [
+        event for event in (economic_event_from_ai_calendar_dict(row) for row in rows if isinstance(row, dict))
+        if event is not None and start <= event.event_date <= end
+    ]
+    events = sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label, e.event))
+    return events, citations, None
+
+
+def bundle_with_economic_events(bundle: MorningBriefingBundle, events: list[EconomicEvent], scout_warning: str | None = None) -> MorningBriefingBundle:
+    statuses = [status for status in bundle.source_statuses if status.name not in {"Economic calendar", "OpenAI calendar scout"}]
+    calendar_detail = (
+        f"{len(events)} verified calendar rows found by OpenAI web search for today's 0DTE session."
+        if events
+        else scout_warning or "OpenAI web search found no verified economic calendar rows for today's 0DTE session."
+    )
+    statuses.append(source_status("Economic calendar", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
+    statuses.append(source_status("OpenAI calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
+    return replace(bundle, economic_events=events, source_statuses=statuses)
+
+
+def merge_citations(primary: list[dict] | None, extra: list[dict] | None) -> list[dict]:
+    merged = []
+    seen = set()
+    for citation in list(primary or []) + list(extra or []):
+        if not isinstance(citation, dict):
+            continue
+        url = citation.get("url")
+        key = url or citation.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(citation)
+    return merged
+
+
+def result_with_extra_citations(result: MorningBriefingResult, extra: list[dict]) -> MorningBriefingResult:
+    merged = merge_citations(result.citations, extra)
+    return replace(result, citations=merged)
 
 
 def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
@@ -3473,7 +3634,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
     else:
         rows.append(_source_row_html("OpenAI web citations", "unavailable", "No web citations were returned for this briefing run. The briefing is using the verified app data bundle only.", result.generated_at))
     upgrades = [
-        ("Economic calendar", "Use data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, or ECONOMIC_CALENDAR_API_URL for real CPI/FOMC/NFP times."),
+        ("Economic calendar", "Use data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, ECONOMIC_CALENDAR_API_URL, or the OpenAI calendar scout for cited CPI/FOMC/NFP times."),
         ("Verified social/flow feed", "Add SOCIAL_SENTIMENT_API_URL only if you have a reliable endpoint; otherwise the app will not invent social sentiment."),
         ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current public pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
     ]
@@ -3533,6 +3694,9 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_section_title("Morning Briefing", "External context for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
+    active_bundle = st.session_state.get("morning_briefing_bundle")
+    if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
+        active_bundle = bundle
     if not ai_ready:
         render_data_notice("AI web briefing is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
         with st.expander("How to connect the ChatGPT/OpenAI API"):
@@ -3557,19 +3721,31 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     with control_cols[1]:
         use_ai = st.toggle("Use OpenAI synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
         if st.button("Generate AI web briefing" if ai_ready else "Generate morning briefing", type="primary", key="generate_morning_briefing", use_container_width=True):
-            result = generate_morning_briefing(bundle, use_ai=use_ai)
+            working_bundle = bundle
+            calendar_citations = []
+            if use_ai and not working_bundle.economic_events:
+                with st.spinner("Checking current economic calendar sources with OpenAI web search..."):
+                    ai_events, calendar_citations, calendar_warning = call_openai_calendar_scout(working_bundle.generated_at, days=0)
+                working_bundle = bundle_with_economic_events(working_bundle, ai_events, calendar_warning)
+            result = generate_morning_briefing(working_bundle, use_ai=use_ai)
+            if calendar_citations:
+                result = result_with_extra_citations(result, calendar_citations)
             save_morning_briefing(result)
             st.session_state["morning_briefing_result"] = result
+            st.session_state["morning_briefing_bundle"] = working_bundle
+            active_bundle = working_bundle
     result = st.session_state.get("morning_briefing_result")
+    if not isinstance(result, MorningBriefingResult) or pd.Timestamp(result.generated_at).date() != pd.Timestamp(active_bundle.generated_at).date():
+        result = None
     if result is None:
-        result = generate_morning_briefing(bundle, use_ai=False)
-    render_morning_briefing_hero(bundle, result, ai_ready)
+        result = generate_morning_briefing(active_bundle, use_ai=False)
+    render_morning_briefing_hero(active_bundle, result, ai_ready)
     render_ai_verification_panel(result, ai_ready, use_ai)
-    render_morning_lines_deck(bundle)
-    render_morning_action_panel(bundle, result)
-    render_morning_context_deck(bundle)
-    render_briefing_evidence_trail(bundle, result)
-    render_actual_source_ledger(bundle, result)
+    render_morning_lines_deck(active_bundle)
+    render_morning_action_panel(active_bundle, result)
+    render_morning_context_deck(active_bundle)
+    render_briefing_evidence_trail(active_bundle, result)
+    render_actual_source_ledger(active_bundle, result)
     render_briefing_citations(result.citations)
     return
     st.markdown(

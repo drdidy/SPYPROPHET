@@ -12,8 +12,11 @@ from app import (
     SourceStatus,
     StructureLearningProfile,
     TechnicalContext,
+    build_openai_calendar_prompt,
     build_openai_request_payload,
     build_morning_briefing_prompt,
+    economic_event_from_ai_calendar_dict,
+    extract_json_payload_from_text,
     calculate_max_pain,
     filter_near_spy_strikes,
     rule_based_morning_briefing,
@@ -113,3 +116,40 @@ def test_openai_request_payload_enables_web_search() -> None:
     assert payload["tools"][0]["type"] == "web_search"
     assert payload["tools"][0]["user_location"]["timezone"] == "America/Chicago"
     assert payload["include"] == ["web_search_call.action.sources"]
+
+
+def test_calendar_prompt_requires_verified_json_rows() -> None:
+    prompt = build_openai_calendar_prompt(pd.Timestamp("2026-05-01 06:30", tz="America/Chicago"))
+
+    assert "Return ONLY a JSON object" in prompt
+    assert "Investing.com Economic Calendar" in prompt
+    assert "ForexFactory Calendar" in prompt
+    assert "2026-05-01" in prompt
+    assert '"events"' in prompt
+
+
+def test_extract_json_payload_from_text_handles_markdown_fences() -> None:
+    text = '```json\n{"events":[{"event":"NFP","impact":"High"}]}\n```'
+
+    assert extract_json_payload_from_text(text) == {"events": [{"event": "NFP", "impact": "High"}]}
+
+
+def test_ai_calendar_event_requires_exact_date_time_and_source() -> None:
+    event = economic_event_from_ai_calendar_dict(
+        {
+            "event_date": "2026-05-01",
+            "time_label": "8:30 AM ET / 7:30 AM CT",
+            "event": "ISM Manufacturing PMI",
+            "impact": "High",
+            "source": "Investing.com",
+            "notes": "Forecast 49.0; previous 49.0",
+        }
+    )
+
+    assert event is not None
+    assert event.event_date == pd.Timestamp("2026-05-01").date()
+    assert event.time_label == "8:30 AM ET / 7:30 AM CT"
+    assert event.source == "Investing.com"
+    assert event.impact == "High"
+
+    assert economic_event_from_ai_calendar_dict({"event": "CPI", "event_date": "2026-05-01"}) is None
