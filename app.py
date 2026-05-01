@@ -155,7 +155,6 @@ class OptionsIntelligence:
     put_wall: float
     high_open_interest: list[dict]
     selected_quotes: list[dict] | None = None
-    provider_payload: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -695,7 +694,7 @@ def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None) 
 def option_chain_for_expiration(expiration_date) -> tuple[pd.DataFrame, pd.DataFrame, SourceStatus]:
     try:
         chain = yf.Ticker(SYMBOL).option_chain(str(expiration_date))
-        return chain.calls, chain.puts, source_status("Yahoo Finance option chain", True, "Delayed option chain. Flow, sweeps, and dealer gamma require a premium provider.")
+        return chain.calls, chain.puts, source_status("Yahoo Finance option chain", True, "Option chain loaded for near-SPY open interest, volume, max-pain, and magnet levels.")
     except Exception as e:
         return pd.DataFrame(), pd.DataFrame(), source_status("Yahoo Finance option chain", False, f"Option chain unavailable: {type(e).__name__}")
 
@@ -794,23 +793,20 @@ def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_
 
 
 def build_options_intelligence(expiration_date, underlying_price: float | None = None, option_state: OptionsCockpitState | None = None) -> OptionsIntelligence:
-    provider_payload, provider_status = fetch_external_json_payload("OPTIONS_FLOW_API_URL", "OPTIONS_FLOW_API_KEY")
     selected_quotes = selected_option_quote_summaries(option_state)
     calls, puts, chain_status = option_chain_for_expiration(expiration_date)
     calls, puts = filter_near_spy_strikes(calls, puts, underlying_price)
     if calls.empty or puts.empty:
-        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], selected_quotes, provider_payload)
+        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], selected_quotes)
     call_oi = float(calls.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     put_oi = float(puts.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     call_vol = float(calls.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
     put_vol = float(puts.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
     call_wall = float(calls.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if call_oi > 0 else float("nan")
     put_wall = float(puts.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if put_oi > 0 else float("nan")
-    detail = "Delayed yfinance OI/volume proxy using strikes near SPY. Unusual sweeps and block trades require OPTIONS_FLOW_API_URL."
-    if provider_payload:
-        detail = "Provider payload connected; yfinance OI ratios are shown beside the premium flow feed."
+    detail = "Available option-chain context using near-SPY open interest, volume, and selected contract quotes."
     return OptionsIntelligence(
-        source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz()), provider_status.url),
+        source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz())),
         put_oi / call_oi if call_oi else float("nan"),
         put_vol / call_vol if call_vol else float("nan"),
         calculate_max_pain(calls, puts),
@@ -818,7 +814,6 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
         put_wall,
         top_open_interest_rows(calls, puts),
         selected_quotes,
-        provider_payload,
     )
 
 
@@ -2933,7 +2928,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         ("AI", "Connected" if ai_ready else "Needs OPENAI_API_KEY"),
         ("Generated", fmt_time(bundle.generated_at)),
         ("Sources", f"{len([s for s in bundle.source_statuses if s.status == 'connected'])}/{len(bundle.source_statuses)} connected"),
-        ("Premium flow", "Connected" if bundle.options_intelligence.provider_payload else "Not connected"),
+        ("Options", "Tastytrade/yfinance"),
     ])
     render_briefing_snapshot(bundle)
     with st.expander("External scout list the AI will try to search"):
