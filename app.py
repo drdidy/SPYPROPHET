@@ -296,6 +296,14 @@ def filter_extended_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame
     return df[df.index.date == trading_day].between_time(time(3, 0), time(19, 0), inclusive="both")
 
 
+def get_structure_projection_time(current_dt: datetime | pd.Timestamp, hour: int = 9, minute: int = 0) -> pd.Timestamp:
+    dt = pd.Timestamp(current_dt)
+    ct = get_central_tz()
+    dt = dt.tz_localize(ct) if dt.tzinfo is None else dt.tz_convert(ct)
+    decision_time = pd.Timestamp(dt.date(), tz=ct) + pd.Timedelta(hours=hour, minutes=minute)
+    return decision_time if dt < decision_time else dt
+
+
 def candle_color(row: pd.Series) -> str:
     open_key = next((k for k in row.index if str(k).lower() == "open"), None)
     close_key = next((k for k in row.index if str(k).lower() == "close"), None)
@@ -1090,6 +1098,13 @@ def fmt_time(value):
     return ts.strftime("%Y-%m-%d %H:%M %Z")
 
 
+def fmt_clock_time(value):
+    if value is None: return "-"
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize(get_central_tz()) if ts.tzinfo is None else ts.tz_convert(get_central_tz())
+    return ts.strftime("%I:%M %p %Z").lstrip("0")
+
+
 def rth_session_window_label() -> str:
     def compact_session_time(value: time) -> str:
         template = "%I:00" if value.minute == 0 else "%I:%M"
@@ -1177,6 +1192,7 @@ def inject_global_css() -> None:
     .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px}
     .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:8px}
     .structure-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
+    .structure-note{display:inline-flex;align-items:center;gap:8px;margin-top:14px;border:1px solid rgba(103,183,255,.3);border-radius:8px;background:rgba(103,183,255,.08);padding:7px 10px;color:var(--blue);font-size:.82rem;font-weight:650}
     .structure-tile{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(22,34,53,.8),rgba(13,19,29,.95));padding:12px;min-height:122px}
     .structure-tile.closest{border-color:var(--blue);box-shadow:0 0 0 1px rgba(103,183,255,.3)}
     .tile-name{font-size:1.1rem;font-weight:800;color:var(--text)}
@@ -1457,9 +1473,11 @@ def render_terminal_hero(
     prior_day,
     market_context: MarketContext | None = None,
     primary_lines: list[DynamicLine] | None = None,
+    structure_projection_time=None,
 ) -> None:
     latest_candle = fmt_time(df.index[-1]) if df is not None and not df.empty else "-"
     clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
+    projection_time = structure_projection_time or now_ct
     decision = _humanize(decision_state.final_decision if decision_state else "WAIT")
     if decision_state and decision_state.signal_quality:
         q = decision_state.signal_quality
@@ -1469,7 +1487,7 @@ def render_terminal_hero(
     grade = decision_state.signal_quality.grade if decision_state and decision_state.signal_quality else "-"
     action = _humanize(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
     signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
-    closest_value = closest_line.tradable_value_at(now_ct) if closest_line else None
+    closest_value = closest_line.tradable_value_at(projection_time) if closest_line else None
     closest_text = f"<span class='quote-level'>{display_line_name(closest_line.name)}</span>{fmt_price(closest_value)}" if closest_line else "-"
     contract_text = format_watch_contract_short(selected_strikes, latest_signal, bias_state)
     if market_context is None:
@@ -1540,7 +1558,7 @@ def render_terminal_hero(
                   {ui_icon('target', 'amber', 'sm')}
                 </div>
                 <div class='quote-value'>{closest_text}</div>
-                <div class='hero-sub'>Primary structure</div>
+                <div class='hero-sub'>Projected for {fmt_clock_time(projection_time)}</div>
               </div>
               <div class='quote-mini'>
                 <div class='quote-head'>
@@ -1645,14 +1663,14 @@ def render_live_command_center(
     )
 
 
-def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, structure_day=None) -> None:
+def render_structure_tiles(primary_lines, latest_price, projection_time, closest_line, structure_day=None) -> None:
     tiles = []
     for name in ["UA", "UD", "LA", "LD"]:
         line = get_line_by_name(primary_lines, name)
         if not line:
             continue
-        value = line.tradable_value_at(now_ct)
-        distance = line.distance_from_price(latest_price, now_ct) if latest_price is not None else float("nan")
+        value = line.tradable_value_at(projection_time)
+        distance = line.distance_from_price(latest_price, projection_time) if latest_price is not None else float("nan")
         kind = "tile-call" if line.zone_type == "CALL_ZONE" else "tile-put" if line.zone_type == "PUT_ZONE" else ""
         icon_name = "call" if line.zone_type == "CALL_ZONE" else "put" if line.zone_type == "PUT_ZONE" else "target"
         icon_tone = "green" if line.zone_type == "CALL_ZONE" else "red" if line.zone_type == "PUT_ZONE" else "blue"
@@ -1671,7 +1689,7 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, st
             "</div>"
         )
     if tiles:
-        st.markdown(f"<div class='structure-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='structure-note'>Trigger values projected for {fmt_clock_time(projection_time)}</div><div class='structure-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
 
 
 
@@ -2350,6 +2368,7 @@ def main() -> None:
     st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
     inject_global_css()
     now_ct = datetime.now(tz=get_central_tz())
+    structure_projection_time = get_structure_projection_time(now_ct)
 
     st.sidebar.header("SPY Prophet Controls")
     st.sidebar.button("Refresh data")
@@ -2361,6 +2380,7 @@ def main() -> None:
     provider = "TASTYTRADE"
     st.sidebar.caption("Provider: TASTYTRADE")
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
+    st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
 
     df = fetch_spy_hourly(period="10d")
     latest_price = None
@@ -2386,16 +2406,16 @@ def main() -> None:
                 secondary_pivots = find_secondary_pivots(rth_df)
                 primary_lines = build_primary_lines(pivots["high"], pivots["low"], slope)
                 secondary_lines = build_secondary_lines(secondary_pivots, slope)
-                proj_df = project_lines(primary_lines + secondary_lines, now_ct, latest_price)
+                proj_df = project_lines(primary_lines + secondary_lines, structure_projection_time, latest_price)
                 bias = determine_preopen_bias(primary_lines, latest_price if latest_price is not None else float("nan"), now_ct)
                 signals = detect_rejection_signals(signal_rth_df, primary_lines, secondary_lines)
                 active_signal = get_latest_active_signal(signals, signal_rth_df)
                 strikes = select_watch_contracts(latest_price if latest_price is not None else float("nan"), now_ct, active_signal, primary_lines+secondary_lines)
-                closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
+                closest = get_closest_primary_line(primary_lines, structure_projection_time, latest_price) if latest_price is not None else None
                 latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
                 decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
                 option_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-                market_context = build_market_context(df, latest_price, closest, now_ct)
+                market_context = build_market_context(df, latest_price, closest, structure_projection_time)
 
     render_terminal_hero(
         latest_price,
@@ -2410,6 +2430,7 @@ def main() -> None:
         prior_day,
         market_context,
         primary_lines,
+        structure_projection_time,
     )
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
@@ -2431,7 +2452,7 @@ def main() -> None:
             option_state,
             latest_price,
         )
-        render_structure_tiles(primary_lines, latest_price, now_ct, closest, prior_day)
+        render_structure_tiles(primary_lines, latest_price, structure_projection_time, closest, prior_day)
         if option_state:
             if option_state.entry_target_projection:
                 render_status_strip([

@@ -12,6 +12,7 @@ from app import (
     get_latest_available_trading_day,
     get_live_signal_day,
     get_prior_trading_day,
+    get_structure_projection_time,
     rth_session_window_label,
 )
 
@@ -57,6 +58,14 @@ def test_rth_filter_boundaries() -> None:
 
 def test_rth_session_window_label_matches_strategy_window() -> None:
     assert rth_session_window_label() == "8:30-3:00 CT"
+
+
+def test_structure_projection_time_uses_9am_before_market() -> None:
+    early = datetime(2026, 5, 1, 3, 15, tzinfo=get_central_tz())
+    regular = datetime(2026, 5, 1, 9, 30, tzinfo=get_central_tz())
+
+    assert get_structure_projection_time(early) == datetime(2026, 5, 1, 9, 0, tzinfo=get_central_tz())
+    assert get_structure_projection_time(regular) == pd.Timestamp(regular)
 
 
 def test_rth_filter_excludes_after_close_hourly_bar() -> None:
