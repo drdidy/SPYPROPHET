@@ -3,13 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
-from html import escape
+from email.utils import parsedate_to_datetime
+from html import escape, unescape
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
@@ -28,6 +32,13 @@ EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 RTH_SESSION_START = time(8, 30)
 RTH_SESSION_END = time(15, 0)
+NEWS_RSS_URLS = (
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US",
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EVIX&region=US&lang=en-US",
+)
+ECONOMIC_CALENDAR_PATH = "data/economic_calendar.json"
+REPLAY_LEARNING_DAYS = 45
+TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,26 @@ class MarketContext:
     trigger_gap: float
     trigger_gap_label: str
     trigger_gap_tone: str
+
+
+@dataclass(frozen=True)
+class NewsItem:
+    title: str
+    link: str | None
+    published: pd.Timestamp | None
+    source: str
+    summary: str | None
+    relevance: str
+
+
+@dataclass(frozen=True)
+class EconomicEvent:
+    event_date: object
+    time_label: str
+    event: str
+    impact: str
+    source: str
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -233,6 +264,215 @@ def build_market_context(df: pd.DataFrame, latest_price: float | None, closest_l
     else:
         gap_label, gap_tone = "Room to wait", "amber"
     return MarketContext(vix, vix_label, vix_tone, vix_copy, pressure, pressure_tone, pressure_value, trigger_gap, gap_label, gap_tone)
+
+
+def strip_markup(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescape(str(value)))).strip()
+
+
+def classify_news_relevance(title: str, summary: str | None = None) -> str:
+    text = f"{title or ''} {summary or ''}".lower()
+    high_impact = ["fed", "fomc", "powell", "cpi", "pce", "payroll", "jobs report", "unemployment", "inflation", "rate cut", "rate hike"]
+    volatility = ["vix", "volatility", "treasury", "yield", "auction", "dollar", "oil", "geopolitical"]
+    spy_market = ["spy", "s&p", "s&p 500", "nasdaq", "stocks", "equities", "earnings"]
+    if any(word in text for word in high_impact):
+        return "Macro catalyst"
+    if any(word in text for word in volatility):
+        return "Volatility watch"
+    if any(word in text for word in spy_market):
+        return "SPY context"
+    return "General market"
+
+
+def is_market_news_relevant(title: str, summary: str | None = None) -> bool:
+    title_text = (title or "").lower()
+    text = f"{title or ''} {summary or ''}".lower()
+    strong_terms = [
+        "spy", "s&p", "s&p 500", "spdr", "vix", "volatility", "equity futures", "stock futures",
+        "fed", "fomc", "powell", "cpi", "pce", "payroll", "jobs report", "inflation",
+        "treasury", "yield", "rate cut", "rate hike", "nasdaq", "dow", "russell",
+    ]
+    weak_terms = ["stocks", "equities", "earnings", "oil", "dollar", "risk-on", "risk off"]
+    personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance"]
+    title_market_terms = ["spy", "s&p", "spdr", "vix", "stock", "equity", "futures", "fed", "cpi", "pce", "yield", "rate"]
+    if any(term in title_text for term in personal_finance_terms) and not any(term in title_text for term in title_market_terms):
+        return False
+    strong_score = sum(1 for term in strong_terms if term in text)
+    weak_score = sum(1 for term in weak_terms if term in text)
+    if any(term in text for term in personal_finance_terms) and strong_score == 0:
+        return False
+    return strong_score > 0 or weak_score >= 2
+
+
+def parse_rss_items(xml_text: str, source: str = "Yahoo Finance", limit: int = 8) -> list[NewsItem]:
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    items = []
+    for item in root.findall(".//item"):
+        title = strip_markup(item.findtext("title"))
+        if not title:
+            continue
+        summary = strip_markup(item.findtext("description")) or None
+        link = strip_markup(item.findtext("link")) or None
+        published = None
+        pub_text = item.findtext("pubDate") or item.findtext("published")
+        if pub_text:
+            try:
+                published = pd.Timestamp(parsedate_to_datetime(pub_text))
+            except Exception:
+                published = None
+        items.append(NewsItem(title, link, published, source, summary, classify_news_relevance(title, summary)))
+        if len(items) >= limit:
+            break
+    return items
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_market_news(limit: int = 8) -> list[NewsItem]:
+    results: list[NewsItem] = []
+    seen: set[str] = set()
+    for url in NEWS_RSS_URLS:
+        try:
+            response = requests.get(url, timeout=6, headers={"User-Agent": "SPYProphet/1.0"})
+            response.raise_for_status()
+        except Exception:
+            continue
+        for item in parse_rss_items(response.text, "Yahoo Finance", limit=max(limit * 3, limit + 5)):
+            if not is_market_news_relevant(item.title, item.summary):
+                continue
+            key = item.link or item.title
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
+            if len(results) >= limit:
+                return results
+    return results
+
+
+def economic_event_from_dict(raw: dict) -> EconomicEvent | None:
+    event_date = raw.get("date") or raw.get("event_date")
+    event_name = raw.get("event") or raw.get("name") or raw.get("title")
+    if not event_date or not event_name:
+        return None
+    try:
+        parsed_date = pd.Timestamp(event_date).date()
+    except Exception:
+        return None
+    return EconomicEvent(
+        parsed_date,
+        str(raw.get("time") or raw.get("time_label") or "Time varies"),
+        str(event_name),
+        str(raw.get("impact") or "Medium"),
+        str(raw.get("source") or "Local calendar"),
+        raw.get("notes"),
+    )
+
+
+def load_economic_calendar(path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicEvent]:
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        payload = json.loads(p.read_text())
+    except Exception:
+        return []
+    rows = payload.get("events", payload) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    events = [event for event in (economic_event_from_dict(row) for row in rows if isinstance(row, dict)) if event is not None]
+    return sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label))
+
+
+def get_trading_economics_credential() -> str:
+    try:
+        secret_value = str(st.secrets.get("TRADING_ECONOMICS_CREDENTIAL", "")).strip()
+        if secret_value:
+            return secret_value
+    except Exception:
+        pass
+    return os.getenv("TRADING_ECONOMICS_CREDENTIAL", "").strip()
+
+
+def format_calendar_time_from_utc(value: str | None) -> tuple[object | None, str]:
+    if not value:
+        return None, "Time varies"
+    try:
+        ts = pd.Timestamp(value)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+        eastern = ts.tz_convert(ZoneInfo("America/New_York"))
+        central = ts.tz_convert(get_central_tz())
+        return central.date(), f"{eastern.strftime('%I:%M %p').lstrip('0')} ET / {central.strftime('%I:%M %p').lstrip('0')} CT"
+    except Exception:
+        return None, "Time varies"
+
+
+def economic_event_from_trading_economics(raw: dict) -> EconomicEvent | None:
+    event_name = raw.get("Event") or raw.get("Category")
+    if not event_name:
+        return None
+    event_date, time_label = format_calendar_time_from_utc(raw.get("Date"))
+    if event_date is None:
+        return None
+    importance = raw.get("Importance")
+    try:
+        importance_value = int(importance)
+    except Exception:
+        importance_value = 2
+    impact = "High" if importance_value >= 3 else "Medium" if importance_value == 2 else "Low"
+    values = []
+    for label, key in [("Forecast", "Forecast"), ("Previous", "Previous"), ("Actual", "Actual")]:
+        value = raw.get(key)
+        if value not in [None, ""]:
+            values.append(f"{label} {value}")
+    reference = raw.get("Reference")
+    if reference:
+        values.append(f"Ref {reference}")
+    return EconomicEvent(event_date, time_label, str(event_name), impact, str(raw.get("Source") or "Trading Economics"), "; ".join(values) or None)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_trading_economics_calendar(start_iso: str, end_iso: str, credential: str = "") -> list[EconomicEvent]:
+    if not credential:
+        return []
+    url = TRADING_ECONOMICS_CALENDAR_URL.format(start=start_iso, end=end_iso)
+    try:
+        response = requests.get(url, params={"c": credential, "importance": "2", "f": "json"}, timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    events = [event for event in (economic_event_from_trading_economics(row) for row in payload if isinstance(row, dict)) if event is not None]
+    return sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label))
+
+
+def default_macro_watchlist(now_ct) -> list[EconomicEvent]:
+    today = pd.Timestamp(now_ct).date()
+    return [
+        EconomicEvent(today, "8:30 AM ET", "Check scheduled CPI, PCE, jobs, claims, GDP, retail sales releases", "High", "Macro watchlist", "These releases often change SPY option premium and first-hour direction."),
+        EconomicEvent(today, "10:00 AM ET", "Check scheduled ISM, confidence, JOLTS, housing, or inventory releases", "Medium", "Macro watchlist", "Use this as a catalyst reminder when no dated calendar file is loaded."),
+        EconomicEvent(today, "2:00 PM ET", "Check scheduled Fed, FOMC, minutes, or Treasury headlines", "High", "Macro watchlist", "Structure can fail faster around Fed-related headlines."),
+    ]
+
+
+def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicEvent]:
+    today = pd.Timestamp(now_ct).date()
+    end = (pd.Timestamp(today) + pd.Timedelta(days=days)).date()
+    local_events = [event for event in load_economic_calendar(path) if today <= event.event_date <= end]
+    if local_events:
+        return local_events
+    live_events = fetch_trading_economics_calendar(str(today), str(end), get_trading_economics_credential())
+    if live_events:
+        return [event for event in live_events if today <= event.event_date <= end]
+    return default_macro_watchlist(now_ct)
 
 
 def get_primary_anchor_summary(primary_lines: list[DynamicLine] | None) -> dict:
@@ -1246,12 +1486,30 @@ def inject_global_css() -> None:
     .outcome-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
     .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
     .status-strip b{color:var(--text);font-weight:600}
+    .context-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;margin-top:12px}
+    .context-stack{display:grid;gap:14px}
+    .learning-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(17,26,38,.96),rgba(10,17,25,.96));padding:16px}
+    .learning-head,.feed-head,.calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .learning-title{font-size:1.18rem;font-weight:850;color:var(--text);line-height:1.15}
+    .learning-copy{font-size:.9rem;color:var(--muted);line-height:1.45;margin-top:8px}
+    .probability-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+    .prob-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
+    .prob-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .prob-value{font-family:var(--mono-font);font-size:1.35rem;font-weight:850;margin-top:4px;color:var(--text)}
+    .prob-card.green .prob-value{color:var(--green)} .prob-card.red .prob-value{color:var(--red)} .prob-card.blue .prob-value{color:var(--blue)}
+    .news-list,.calendar-list{display:grid;gap:9px;margin-top:10px}
+    .news-card,.calendar-row{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
+    .news-title{font-weight:800;color:var(--text);line-height:1.3}
+    .news-meta,.calendar-meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:.76rem;margin-top:6px}
+    .news-summary,.calendar-notes{color:var(--muted);font-size:.82rem;line-height:1.35;margin-top:7px}
+    .calendar-event{font-weight:800;color:var(--text);line-height:1.25}
+    .calendar-impact{color:var(--amber);font-weight:750}
     .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
     .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -1860,6 +2118,102 @@ def render_structure_tiles(primary_lines, latest_price, projection_time, closest
         )
     if tiles:
         st.markdown(f"<div class='structure-note'>Trigger values projected for {fmt_clock_time(projection_time)}</div><div class='structure-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
+
+
+def fmt_news_time(value) -> str:
+    if value is None:
+        return "Freshness unknown"
+    try:
+        ts = pd.Timestamp(value)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+        return ts.tz_convert(get_central_tz()).strftime("%b %d, %I:%M %p CT").replace(" 0", " ")
+    except Exception:
+        return "Freshness unknown"
+
+
+def render_learning_profile(profile: StructureLearningProfile) -> None:
+    st.markdown(
+        f"""
+        <div class='learning-hero'>
+          <div class='learning-head'>
+            <div>
+              <div class='panel-label'>Structure Learning</div>
+              <div class='learning-title'>{escape(profile.expected_direction)}</div>
+            </div>
+            {ui_icon('compass', 'green' if profile.target_first_rate >= profile.stop_first_rate else 'amber', 'lg')}
+          </div>
+          <div class='learning-copy'>
+            {escape(profile.confidence_label)} from {profile.matching_sample_size} matching outcomes
+            ({profile.sample_size} completed outcomes in memory). {escape(profile.caveat)}
+          </div>
+          <div class='probability-grid'>
+            <div class='prob-card green'><div class='prob-label'>Target first</div><div class='prob-value'>{fmt_pct(profile.target_first_rate * 100, 0)}</div></div>
+            <div class='prob-card red'><div class='prob-label'>Stop first</div><div class='prob-value'>{fmt_pct(profile.stop_first_rate * 100, 0)}</div></div>
+            <div class='prob-card blue'><div class='prob-label'>No hit</div><div class='prob-value'>{fmt_pct(profile.no_hit_rate * 100, 0)}</div></div>
+          </div>
+          <div class='pill-row'>
+            {_pill('Avg RR', fmt_float(profile.average_rr))}
+            {_pill('Avg favorable move', fmt_price(profile.average_max_favorable_move))}
+            {_pill('Avg adverse move', fmt_price(profile.average_max_adverse_move))}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if profile.best_context:
+        render_data_notice(profile.best_context)
+
+
+def render_news_feed(news_items: list[NewsItem]) -> None:
+    head = f"<div class='feed-head'><div><div class='panel-label'>News Feed</div><div class='panel-title'>SPY and volatility headlines</div></div>{ui_icon('pulse','blue','md')}</div>"
+    if not news_items:
+        st.markdown(f"<div class='terminal-panel'>{head}<div class='panel-copy'>Yahoo Finance headlines are unavailable right now. Try refresh, or continue with structure and macro timing.</div></div>", unsafe_allow_html=True)
+        return
+    cards = []
+    for item in news_items:
+        title = escape(item.title)
+        title_html = f"<a href='{escape(item.link)}' target='_blank'>{title}</a>" if item.link else title
+        summary = f"<div class='news-summary'>{escape(item.summary[:220])}</div>" if item.summary else ""
+        cards.append(
+            "<div class='news-card'>"
+            f"<div class='news-title'>{title_html}</div>"
+            f"<div class='news-meta'><span>{escape(item.relevance)}</span><span>{escape(fmt_news_time(item.published))}</span><span>{escape(item.source)}</span></div>"
+            f"{summary}"
+            "</div>"
+        )
+    st.markdown(f"<div class='terminal-panel'>{head}<div class='news-list'>{''.join(cards)}</div></div>", unsafe_allow_html=True)
+
+
+def render_economic_calendar(events: list[EconomicEvent]) -> None:
+    head = f"<div class='calendar-head'><div><div class='panel-label'>Economic Calendar</div><div class='panel-title'>Catalyst timing</div></div>{ui_icon('clock','amber','md')}</div>"
+    rows = []
+    for event in events:
+        notes = f"<div class='calendar-notes'>{escape(event.notes)}</div>" if event.notes else ""
+        rows.append(
+            "<div class='calendar-row'>"
+            f"<div class='calendar-event'>{escape(str(event.event))}</div>"
+            f"<div class='calendar-meta'><span>{escape(str(event.event_date))}</span><span>{escape(event.time_label)}</span><span class='calendar-impact'>{escape(event.impact)}</span><span>{escape(event.source)}</span></div>"
+            f"{notes}"
+            "</div>"
+        )
+    st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
+
+
+def render_market_context_tab(profile: StructureLearningProfile, news_items: list[NewsItem], economic_events: list[EconomicEvent], market_context: MarketContext | None, latest_price, closest_line, projection_time) -> None:
+    render_section_title("Market Context", "News, calendar, and structure statistics")
+    if market_context:
+        render_status_strip([
+            ("SPY", fmt_price(latest_price)),
+            ("VIX", f"{fmt_price(market_context.vix_price)} {market_context.vix_label}"),
+            ("Pressure", market_context.spy_pressure),
+            ("Nearest trigger", f"{display_line_name(closest_line.name) if closest_line else '-'} {fmt_price(closest_line.tradable_value_at(projection_time)) if closest_line else '-'}"),
+        ])
+    left, right = st.columns([1.05, 0.95])
+    with left:
+        render_learning_profile(profile)
+        render_economic_calendar(economic_events)
+    with right:
+        render_news_feed(news_items)
 
 
 
@@ -2568,6 +2922,21 @@ class JournalAnalytics:
     by_line: dict; by_signal_type: dict; by_quality_grade: dict; by_bias: dict; by_hour: dict; by_source: dict; warnings: list[str]
 
 @dataclass(frozen=True)
+class StructureLearningProfile:
+    sample_size: int
+    matching_sample_size: int
+    expected_direction: str
+    confidence_label: str
+    target_first_rate: float
+    stop_first_rate: float
+    no_hit_rate: float
+    average_rr: float
+    average_max_favorable_move: float
+    average_max_adverse_move: float
+    best_context: str | None
+    caveat: str
+
+@dataclass(frozen=True)
 class AutoJournalStatus:
     enabled: bool; saved_count: int; updated_count: int; skipped_duplicate_count: int; latest_saved_signal_id: str | None; warnings: list[str]; explanation: str
 
@@ -2659,6 +3028,109 @@ def compute_journal_analytics(entries):
         return out
     return JournalAnalytics(n,len(conf),len([e for e in entries if e.outcome=='TARGET_FIRST']),len([e for e in entries if e.outcome=='STOP_FIRST']),len([e for e in entries if e.outcome=='NO_HIT']),len([e for e in entries if e.outcome=='AMBIGUOUS_SAME_CANDLE']),len([e for e in entries if e.outcome in ['PENDING','PENDING_OUTCOME']]),len([e for e in entries if e.outcome in [None,'UNKNOWN']]),wr,float(pd.Series([e.rr_ratio for e in entries]).mean()),float(pd.Series([e.max_favorable_move for e in entries]).mean()),float(pd.Series([e.max_adverse_move for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in wins+losses]).mean()) if wins or losses else float('nan'),grp('line_name'),grp('signal_type'),grp('quality_grade'),grp('bias'),grp('hour'),grp('source'),[])
 
+def build_replay_learning_entries(df: pd.DataFrame, max_days: int = REPLAY_LEARNING_DAYS, slope_per_hour: float = DEFAULT_SLOPE_PER_HOUR) -> list[JournalEntry]:
+    if df is None or df.empty:
+        return []
+    dates = get_available_replay_dates(df)[-max_days:]
+    entries: list[JournalEntry] = []
+    for replay_date in dates:
+        rs = build_replay_state(df, replay_date, slope_per_hour=slope_per_hour, include_future_outcomes=True)
+        if rs.warnings and "NO_PRIOR_TRADING_DAY" in rs.warnings:
+            continue
+        entries.extend(build_journal_entries_from_replay_state(rs))
+    return entries
+
+
+def dedupe_learning_entries(entries: list[JournalEntry]) -> list[JournalEntry]:
+    out: list[JournalEntry] = []
+    seen: set[str] = set()
+    for entry in entries:
+        key = get_journal_signal_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
+def completed_learning_entries(entries: list[JournalEntry]) -> list[JournalEntry]:
+    complete = {"TARGET_FIRST", "STOP_FIRST", "NO_HIT", "AMBIGUOUS_SAME_CANDLE"}
+    return [entry for entry in entries if entry.outcome in complete]
+
+
+def infer_current_learning_filter(active_signal=None, bias_state=None, closest_line=None) -> tuple[str | None, str | None, str]:
+    signal_type = get_watch_option_type(active_signal, bias_state)
+    line_name = active_signal.line_name if active_signal else closest_line.name if closest_line else None
+    if active_signal:
+        direction = f"{active_signal.signal_type} setup at {display_line_name(active_signal.line_name)}"
+    elif signal_type:
+        direction = f"{signal_type} watch from current structure"
+    else:
+        direction = "No directional edge yet"
+    return signal_type, line_name, direction
+
+
+def confidence_from_sample_size(sample_size: int) -> str:
+    if sample_size >= 30:
+        return "Higher confidence"
+    if sample_size >= 12:
+        return "Moderate confidence"
+    if sample_size >= 5:
+        return "Early read"
+    if sample_size > 0:
+        return "Tiny sample"
+    return "No sample"
+
+
+def best_learning_context(entries: list[JournalEntry]) -> str | None:
+    analytics = compute_journal_analytics(entries)
+    candidates = []
+    for label, groups in [("trigger", analytics.by_line), ("direction", analytics.by_signal_type), ("quality", analytics.by_quality_grade)]:
+        for key, value in groups.items():
+            if value.get("count", 0) < 3 or pd.isna(value.get("win_rate", float("nan"))):
+                continue
+            candidates.append((value["win_rate"], value["count"], label, key))
+    if not candidates:
+        return None
+    win_rate, count, label, key = sorted(candidates, reverse=True)[0]
+    display_key = display_line_name(key) if label == "trigger" else display_state_label(key)
+    return f"Best {label}: {display_key} ({fmt_pct(win_rate * 100, 0)} target-first across {count} samples)"
+
+
+def build_structure_learning_profile(entries: list[JournalEntry], active_signal=None, bias_state=None, closest_line=None) -> StructureLearningProfile:
+    all_complete = completed_learning_entries(dedupe_learning_entries(entries))
+    signal_type, line_name, direction = infer_current_learning_filter(active_signal, bias_state, closest_line)
+    matching = all_complete
+    if signal_type:
+        matching = [entry for entry in matching if entry.signal_type == signal_type]
+    if line_name:
+        same_line = [entry for entry in matching if entry.line_name == line_name]
+        if same_line:
+            matching = same_line
+    sample = matching or all_complete
+    n = len(sample)
+    if n == 0:
+        return StructureLearningProfile(0, 0, direction, "No sample", float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), None, "The app needs completed replay or journal outcomes before it can form a statistical read.")
+    target = len([entry for entry in sample if entry.outcome == "TARGET_FIRST"])
+    stop = len([entry for entry in sample if entry.outcome == "STOP_FIRST"])
+    no_hit = len([entry for entry in sample if entry.outcome == "NO_HIT"])
+    caveat = "This is a historical tendency from completed outcomes, not a guarantee of the next candle or day."
+    return StructureLearningProfile(
+        len(all_complete),
+        len(matching),
+        direction,
+        confidence_from_sample_size(n),
+        target / n,
+        stop / n,
+        no_hit / n,
+        float(pd.Series([entry.rr_ratio for entry in sample]).mean()),
+        float(pd.Series([entry.max_favorable_move for entry in sample]).mean()),
+        float(pd.Series([entry.max_adverse_move for entry in sample]).mean()),
+        best_learning_context(all_complete),
+        caveat,
+    )
+
+
 def generate_journal_insights(a):
     out=[]
     if a.total_entries==0: return ["No journal history yet."]
@@ -2701,7 +3173,7 @@ def main() -> None:
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
     st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
 
-    df = fetch_spy_hourly(period="10d")
+    df = fetch_spy_hourly(period="60d")
     latest_price = None
     prior_day = None
     signal_day = None
@@ -2736,13 +3208,20 @@ def main() -> None:
                 option_state = build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
                 market_context = build_market_context(df, latest_price, closest, structure_projection_time)
 
+    journal_path='data/signal_journal.json'
+    journal_entries = load_signal_journal(journal_path)
+    replay_learning_entries = build_replay_learning_entries(df, max_days=REPLAY_LEARNING_DAYS, slope_per_hour=slope)
+    learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
+    news_items = fetch_market_news(limit=8)
+    economic_events = get_upcoming_economic_events(now_ct, days=7)
+
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tab_names = ["Live Terminal", "Prophet Chart", "Replay Lab", "Options", "Journal"]
+    tab_names = ["Live Terminal", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
     if show_debug:
         tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -2771,6 +3250,12 @@ def main() -> None:
             option_state,
             latest_price,
         )
+        render_status_strip([
+            ("Learning", learning_profile.confidence_label),
+            ("Matching outcomes", learning_profile.matching_sample_size),
+            ("Target first", fmt_pct(learning_profile.target_first_rate * 100, 0)),
+            ("Stop first", fmt_pct(learning_profile.stop_first_rate * 100, 0)),
+        ])
         render_structure_tiles(primary_lines, latest_price, structure_projection_time, closest, prior_day)
         if option_state:
             if option_state.entry_target_projection:
@@ -2779,6 +3264,9 @@ def main() -> None:
                     ("Target premium", fmt_price(option_state.entry_target_projection.estimated_target_mark)),
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
+
+    with tabs["Market Context"]:
+        render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
     with tabs["Prophet Chart"]:
         render_section_title("Prophet Chart", "Decision map and technical candle views")
