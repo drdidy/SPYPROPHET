@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import (DynamicLine, SecondaryPivot, TradeSignal, build_options_cockpit_state, get_central_tz, get_default_projection_time, option_quote_card_html, project_option_entry_to_target, quote_has_live_market_data, resolve_entry_target_lines, simulate_option_scenarios)
+from app import (DynamicLine, SecondaryPivot, TradeSignal, build_options_cockpit_state, get_central_tz, get_default_projection_time, option_mark_from_bid_ask_or_last, option_provider_label, option_quote_card_html, project_option_entry_to_target, quote_has_live_market_data, resolve_entry_target_lines, simulate_option_scenarios)
 
 
 def _ts(s): return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
@@ -155,6 +155,47 @@ def test_chain_only_contracts_do_not_count_as_live_quotes():
     assert state.scenarios == [] and state.entry_target_projection is None
     assert "Live quote streaming" in state.warning
     assert "Contract found" in option_quote_card_html(state.call_quote, 717, state.warning)
+
+
+def test_yfinance_delayed_quotes_are_allowed_for_marks():
+    class YFinanceProvider:
+        provider_name = "YFINANCE_DELAYED"
+
+        def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+            base = {
+                "underlying": "SPY",
+                "expiration": expiration_date,
+                "bid": float("nan"),
+                "ask": float("nan"),
+                "mark": 1.35,
+                "spread": float("nan"),
+                "delta": float("nan"),
+                "gamma": float("nan"),
+                "theta": float("nan"),
+                "vega": float("nan"),
+                "iv": 0.22,
+                "provider": "YFINANCE_DELAYED",
+                "timestamp": _ts("2026-04-29T10:00:00"),
+                "warning": "Delayed yfinance quote.",
+            }
+            return {
+                "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", **base},
+                "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", **base},
+                "warning": "Using delayed yfinance option data.",
+            }
+
+    state = build_options_cockpit_state(Strikes(712.61,717,708,_ts("2026-04-29").date()), provider=YFinanceProvider())
+
+    assert state.provider == "YFINANCE_DELAYED"
+    assert state.call_quote.mark == 1.35
+    assert state.scenarios == []
+    assert option_provider_label(state) == "YFINANCE delayed"
+    assert "Delayed yfinance price" in option_quote_card_html(state.call_quote, 717, state.warning)
+
+
+def test_option_mark_prefers_midpoint_then_last_price():
+    assert option_mark_from_bid_ask_or_last(1.0, 1.2, 0.9) == 1.1
+    assert option_mark_from_bid_ask_or_last(float("nan"), float("nan"), 0.85) == 0.85
 
 
 def test_scenarios_and_projection_behaviors():

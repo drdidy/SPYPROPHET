@@ -1604,19 +1604,20 @@ def render_live_command_center(
         watch_lines = bias_state.watched_call_lines + bias_state.watched_put_lines
     signal_body = signal_setup_copy(latest_signal)
     signal_title = signal_setup_label(latest_signal)
-    options_live = bool(options_state and provider_is_live_tastytrade(options_state.provider) and (quote_has_live_market_data(options_state.call_quote) or quote_has_live_market_data(options_state.put_quote)))
-    call_mark = fmt_price(options_state.call_quote.mark) if options_live and options_state.call_quote else "-"
-    put_mark = fmt_price(options_state.put_quote.mark) if options_live and options_state.put_quote else "-"
+    options_market_data = bool(options_state and provider_is_allowed_option_data(options_state.provider) and (quote_has_live_market_data(options_state.call_quote) or quote_has_live_market_data(options_state.put_quote)))
+    options_live = bool(options_state and provider_is_live_tastytrade(options_state.provider) and options_market_data)
+    call_mark = fmt_price(options_state.call_quote.mark) if options_market_data and options_state.call_quote else "-"
+    put_mark = fmt_price(options_state.put_quote.mark) if options_market_data and options_state.put_quote else "-"
     projection = options_state.entry_target_projection if options_live and options_state else None
     projection_text = (
         f"Entry {display_line_name(projection.entry_line_name)} at {fmt_price(projection.entry_line_value)}; "
         f"target {display_line_name(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
-        if projection else "Live option premiums appear after Tastytrade is connected and a setup resolves."
+        if projection else "Live option premium projections appear when Tastytrade quotes include Greeks."
     )
     options_copy = (
         f"CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}"
-        if options_live
-        else "Live Tastytrade premiums are not connected yet. Strikes are shown, but no option prices are displayed until quotes are live."
+        if options_market_data
+        else "Live Tastytrade premiums are not connected yet. The app will use delayed yfinance option prices when available."
     )
     provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
     direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
@@ -2130,6 +2131,14 @@ class OptionsCockpitState:
     provider: str; underlying_price: float; expiration: object; call_quote: OptionQuote | None; put_quote: OptionQuote | None; selected_trade_quote: OptionQuote | None
     scenarios: list[OptionsScenario]; entry_target_projection: EntryTargetOptionProjection | None; warning: str | None; explanation: str
 
+
+class YFinanceOptionProvider:
+    provider_name = "YFINANCE_DELAYED"
+
+    def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+        return fetch_yfinance_option_quotes(expiration_date, call_strike, put_strike)
+
+
 def is_mock_option_provider_name(name: str | None) -> bool:
     text = str(name or "").upper()
     return "MOCK" in text or text == "MOC"
@@ -2140,11 +2149,90 @@ def provider_is_live_tastytrade(name: str | None) -> bool:
     return "TASTYTRADE" in text and not is_mock_option_provider_name(text)
 
 
+def provider_is_yfinance_delayed(name: str | None) -> bool:
+    return "YFINANCE" in str(name or "").upper()
+
+
+def provider_is_allowed_option_data(name: str | None) -> bool:
+    return provider_is_live_tastytrade(name) or provider_is_yfinance_delayed(name)
+
+
 def quote_has_live_market_data(quote: OptionQuote | None) -> bool:
     if quote is None:
         return False
     values = [quote.bid, quote.ask, quote.mark, quote.delta]
     return any(value is not None and not pd.isna(value) for value in values)
+
+
+def quote_has_projection_inputs(quote: OptionQuote | None) -> bool:
+    return bool(quote and quote.mark is not None and not pd.isna(quote.mark) and quote.delta is not None and not pd.isna(quote.delta))
+
+
+def _finite_float(value, default: float = float("nan")) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out
+
+
+def option_mark_from_bid_ask_or_last(bid: float, ask: float, last_price: float) -> float:
+    if not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask > 0:
+        return round((bid + ask) / 2, 2)
+    if not pd.isna(last_price) and last_price > 0:
+        return round(last_price, 2)
+    return float("nan")
+
+
+def _quote_from_yfinance_row(row, option_type: str, expiration_date) -> dict:
+    bid = _finite_float(row.get("bid"))
+    ask = _finite_float(row.get("ask"))
+    last_price = _finite_float(row.get("lastPrice"))
+    mark = option_mark_from_bid_ask_or_last(bid, ask, last_price)
+    spread = round(ask - bid, 2) if not pd.isna(bid) and not pd.isna(ask) else float("nan")
+    return {
+        "symbol": str(row.get("contractSymbol") or row.get("symbol") or ""),
+        "underlying": SYMBOL,
+        "expiration": expiration_date,
+        "strike": int(float(row.get("strike", 0))),
+        "option_type": option_type,
+        "bid": bid,
+        "ask": ask,
+        "mark": mark,
+        "spread": spread,
+        "delta": float("nan"),
+        "gamma": float("nan"),
+        "theta": float("nan"),
+        "vega": float("nan"),
+        "iv": _finite_float(row.get("impliedVolatility")),
+        "provider": "YFINANCE_DELAYED",
+        "timestamp": pd.Timestamp.now(tz=get_central_tz()),
+        "warning": "Delayed yfinance quote. Mark uses bid/ask midpoint when available, otherwise last traded price.",
+    }
+
+
+def _select_yfinance_option_row(df: pd.DataFrame, strike: int):
+    if df is None or df.empty or "strike" not in df:
+        return None
+    rows = df.copy()
+    rows["strike_distance"] = (rows["strike"].astype(float) - float(strike)).abs()
+    return rows.sort_values("strike_distance").iloc[0]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_yfinance_option_quotes(expiration_date, call_strike: int, put_strike: int) -> dict:
+    try:
+        ticker = yf.Ticker(SYMBOL)
+        expiration = str(expiration_date)
+        chain = ticker.option_chain(expiration)
+        call_row = _select_yfinance_option_row(chain.calls, call_strike)
+        put_row = _select_yfinance_option_row(chain.puts, put_strike)
+        call_quote = _quote_from_yfinance_row(call_row, "CALL", expiration) if call_row is not None else None
+        put_quote = _quote_from_yfinance_row(put_row, "PUT", expiration) if put_row is not None else None
+        warning = "Using delayed yfinance option data because live Tastytrade quotes are unavailable."
+        return {"CALL": call_quote, "PUT": put_quote, "warning": warning}
+    except Exception as e:
+        return {"CALL": None, "PUT": None, "warning": f"Yfinance option fallback failed: {type(e).__name__}"}
 
 
 def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
@@ -2208,18 +2296,18 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     provider_names = [provider_name, getattr(call_q, "provider", None), getattr(put_q, "provider", None)]
     if any(is_mock_option_provider_name(name) for name in provider_names):
         return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Mock option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
-    if (call_q or put_q) and not any(provider_is_live_tastytrade(name) for name in provider_names):
-        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Non-Tastytrade option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
+    if (call_q or put_q) and not any(provider_is_allowed_option_data(name) for name in provider_names):
+        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Unsupported option quote provider. Use live Tastytrade or delayed yfinance data.', 'No supported options provider available.')
     missing_market_data = (call_q or put_q) and not (quote_has_live_market_data(call_q) or quote_has_live_market_data(put_q))
     opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
     sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
-    scenarios = simulate_option_scenarios(sel) if sel and quote_has_live_market_data(sel) else []
+    scenarios = simulate_option_scenarios(sel) if quote_has_projection_inputs(sel) else []
     proj=None; warning=q.get("warning")
     if missing_market_data:
         warning = 'Tastytrade returned contracts, but bid/ask/delta were not in the chain response. Live quote streaming is required for option bid/ask/spread/delta.'
     if sel and all_lines:
         entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
-        if entry and quote_has_live_market_data(sel):
+        if entry and quote_has_projection_inputs(sel):
             proj = project_option_entry_to_target(sel, selected_strikes.underlying_price, entry, target, entry_projection_time=projection_time or get_default_projection_time(now), target_projection_time=projection_time or get_default_projection_time(now))
         elif entry is None:
             warning = 'Could not resolve entry line; projection unavailable.'
@@ -2242,6 +2330,8 @@ def option_provider_label(state: OptionsCockpitState | None, provider_status: di
     provider_status = provider_status or {}
     if state and is_mock_option_provider_name(state.provider):
         return "TASTYTRADE unavailable"
+    if state and provider_is_yfinance_delayed(state.provider):
+        return "YFINANCE delayed"
     if state and (state.call_quote or state.put_quote):
         return state.provider
     if provider_status.get("missing_secrets"):
@@ -2255,7 +2345,7 @@ def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | Non
     strike = quote.strike if quote else fallback_strike
     detail = f"Bid {fmt_price(quote.bid if quote else None)} Ask {fmt_price(quote.ask if quote else None)} Spread {fmt_price(quote.spread if quote else None)} Delta {fmt_float(quote.delta if quote else None)}"
     if quote_has_live_market_data(quote):
-        status = "Live bid/ask and Greeks from Tastytrade."
+        status = "Delayed yfinance price; mark is midpoint when bid/ask exist, otherwise last trade." if provider_is_yfinance_delayed(quote.provider) else "Live bid/ask and Greeks from Tastytrade."
     elif quote:
         status = "Contract found, but live bid/ask/delta are not available yet."
     else:
@@ -2450,6 +2540,10 @@ def main() -> None:
                 latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
                 decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
                 option_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+                if not (option_state and (quote_has_live_market_data(option_state.call_quote) or quote_has_live_market_data(option_state.put_quote))):
+                    yfinance_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=YFinanceOptionProvider(), current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+                    if yfinance_state and (quote_has_live_market_data(yfinance_state.call_quote) or quote_has_live_market_data(yfinance_state.put_quote)):
+                        option_state = yfinance_state
                 market_context = build_market_context(df, latest_price, closest, structure_projection_time)
 
     render_terminal_hero(
@@ -2565,10 +2659,14 @@ def main() -> None:
         render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
             state = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+            if not (state and (quote_has_live_market_data(state.call_quote) or quote_has_live_market_data(state.put_quote))):
+                yfinance_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=YFinanceOptionProvider(), current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+                if yfinance_state and (quote_has_live_market_data(yfinance_state.call_quote) or quote_has_live_market_data(yfinance_state.put_quote)):
+                    state = yfinance_state
             render_status_strip([
                 ("Provider", option_provider_label(state, provider_status)),
-                ("Connection", "Live" if state.call_quote or state.put_quote else "Unavailable"),
-                ("Mode", "TASTYTRADE"),
+                ("Connection", "Live" if provider_is_live_tastytrade(state.provider) and (state.call_quote or state.put_quote) else "Delayed" if provider_is_yfinance_delayed(state.provider) and (state.call_quote or state.put_quote) else "Unavailable"),
+                ("Mode", "TASTYTRADE" if provider_is_live_tastytrade(state.provider) else "YFINANCE fallback" if provider_is_yfinance_delayed(state.provider) else "TASTYTRADE"),
             ])
             if provider_status.get("missing_secrets"): st.warning(f"Missing secrets: {provider_status.get('missing_secrets')}")
             if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
