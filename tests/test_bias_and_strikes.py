@@ -8,9 +8,13 @@ from app import (
     DynamicLine,
     calculate_bias_strength,
     determine_preopen_bias,
+    format_watch_contract,
+    get_contract_watch_price,
     get_central_tz,
     get_line_by_name,
+    select_watch_contracts,
     select_0dte_strikes,
+    TradeSignal,
 )
 
 
@@ -37,8 +41,11 @@ def test_get_line_by_name() -> None:
 def test_bullish_preopen() -> None:
     b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T08:30:00"))
     assert b.bias == "BULLISH"
-    assert "UA" in b.watched_call_lines and "UD" in b.watched_call_lines
+    assert b.watched_call_lines == ["UD"]
+    assert b.watched_put_lines == []
     assert b.primary_line == "UD"
+    s = select_0dte_strikes(101.0, _ts("2026-04-29T08:30:00"))
+    assert format_watch_contract(s, bias_state=b) == "WATCH CALL 105"
 
 
 def test_neutral_preopen() -> None:
@@ -47,6 +54,8 @@ def test_neutral_preopen() -> None:
     assert "UD" in b.watched_call_lines
     assert "UA" in b.watched_put_lines
     assert b.final_take_profit_line in {"UA", "UD"}
+    s = select_0dte_strikes(100.0, _ts("2026-04-29T08:30:00"))
+    assert format_watch_contract(s, bias_state=b) == "CALL 104 / PUT 96"
 
 
 def test_bearish_preopen() -> None:
@@ -98,3 +107,21 @@ def test_strike_selection_whole_number() -> None:
 def test_invalid_price() -> None:
     s = select_0dte_strikes(float("nan"), _ts("2026-04-29T08:30:00"))
     assert s.warning is not None
+
+
+def test_watch_contracts_use_pending_signal_trigger_price() -> None:
+    lines = _lines()
+    sig = TradeSignal("p","PUT","PENDING_CONFIRMATION","UA",100,_ts("2026-04-29T10:00:00"),0,0,0,0,None,float("nan"),0,None,float("nan"),0,0,0,"","")
+    s = select_watch_contracts(96.0, _ts("2026-04-29T10:00:00"), sig, lines)
+    assert get_contract_watch_price(96.0, _ts("2026-04-29T10:00:00"), sig, lines) == 100.0
+    assert s.put_strike == 96
+    assert format_watch_contract(s, sig) == "WATCH PUT 96"
+
+
+def test_watch_contracts_use_confirmed_signal_entry_price() -> None:
+    lines = _lines()
+    sig = TradeSignal("c","CALL","CONFIRMED","UD",100,_ts("2026-04-29T10:00:00"),0,0,0,0,_ts("2026-04-29T11:00:00"),101.2,0,None,float("nan"),0,0,0,"","")
+    s = select_watch_contracts(96.0, _ts("2026-04-29T11:00:00"), sig, lines)
+    assert s.underlying_price == 101.2
+    assert s.call_strike == 106
+    assert format_watch_contract(s, sig) == "WATCH CALL 106"

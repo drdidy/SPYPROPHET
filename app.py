@@ -423,7 +423,7 @@ def determine_preopen_bias(lines: list[DynamicLine], current_price: float, curre
 
     if current_price > top:
         bias = "BULLISH" if preopen else "REGULAR_SESSION"
-        watched_call, watched_put = ["UA", "UD"], []
+        watched_call, watched_put = ["UD"], []
         primary, tp = "UD", None
         expl = "Price is above the upper structure; primary CALL watch is the Upper Call Trigger." if preopen else "Regular session posture: above upper structure; pre-open mode no longer active."
     elif bot <= current_price <= top:
@@ -450,6 +450,61 @@ def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedS
     call_strike = int(math.ceil(current_price) + DEFAULT_OTM_STRIKE_OFFSET)
     put_strike = int(math.floor(current_price) - DEFAULT_OTM_STRIKE_OFFSET)
     return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "0DTE", None)
+
+
+def get_contract_watch_price(current_price: float, current_dt: datetime, active_signal=None, all_lines=None) -> float:
+    if active_signal is None:
+        return current_price
+    if active_signal.entry_price is not None and not pd.isna(active_signal.entry_price):
+        return float(active_signal.entry_price)
+    line = get_line_by_name(all_lines or [], active_signal.line_name)
+    if line is not None:
+        line_value = line.tradable_value_at(current_dt)
+        if line_value is not None and not pd.isna(line_value):
+            return float(line_value)
+    if active_signal.line_value_at_rejection is not None and not pd.isna(active_signal.line_value_at_rejection):
+        return float(active_signal.line_value_at_rejection)
+    return current_price
+
+
+def select_watch_contracts(current_price: float, current_dt: datetime, active_signal=None, all_lines=None) -> SelectedStrikes:
+    reference_price = get_contract_watch_price(current_price, current_dt, active_signal, all_lines)
+    return select_0dte_strikes(reference_price, current_dt)
+
+
+def get_watch_option_type(active_signal=None, bias_state=None) -> str | None:
+    if active_signal and active_signal.signal_type in {"CALL", "PUT"}:
+        return active_signal.signal_type
+    if bias_state:
+        has_call = bool(bias_state.watched_call_lines)
+        has_put = bool(bias_state.watched_put_lines)
+        if has_call and not has_put:
+            return "CALL"
+        if has_put and not has_call:
+            return "PUT"
+    return None
+
+
+def format_watch_contract(selected_strikes: SelectedStrikes | None, active_signal=None, bias_state=None) -> str:
+    if selected_strikes is None:
+        return "-"
+    watch_type = get_watch_option_type(active_signal, bias_state)
+    if watch_type == "CALL":
+        return f"WATCH CALL {selected_strikes.call_strike}"
+    if watch_type == "PUT":
+        return f"WATCH PUT {selected_strikes.put_strike}"
+    return f"CALL {selected_strikes.call_strike} / PUT {selected_strikes.put_strike}"
+
+
+def format_watch_contract_short(selected_strikes: SelectedStrikes | None, active_signal=None, bias_state=None) -> str:
+    if selected_strikes is None:
+        return "C -<br>P -"
+    watch_type = get_watch_option_type(active_signal, bias_state)
+    if watch_type == "CALL":
+        return f"CALL<br>{selected_strikes.call_strike}"
+    if watch_type == "PUT":
+        return f"PUT<br>{selected_strikes.put_strike}"
+    return f"C {selected_strikes.call_strike}<br>P {selected_strikes.put_strike}"
 
 
 
@@ -1182,8 +1237,7 @@ def render_terminal_hero(
     signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
     closest_value = closest_line.tradable_value_at(now_ct) if closest_line else None
     closest_text = f"<span class='quote-level'>{display_line_name(closest_line.name)}</span>{fmt_price(closest_value)}" if closest_line else "-"
-    call_text = f"C {selected_strikes.call_strike}" if selected_strikes else "C -"
-    put_text = f"P {selected_strikes.put_strike}" if selected_strikes else "P -"
+    contract_text = format_watch_contract_short(selected_strikes, latest_signal, bias_state)
     st.markdown(
         f"""
         <div class='terminal-hero'>
@@ -1222,7 +1276,7 @@ def render_terminal_hero(
               </div>
               <div class='quote-mini'>
                 <div class='hero-label'>0DTE</div>
-                <div class='quote-value'>{call_text}<br>{put_text}</div>
+                <div class='quote-value'>{contract_text}</div>
                 <div class='hero-sub'>{provider_status}</div>
               </div>
             </div>
@@ -1289,7 +1343,7 @@ def render_live_command_center(
           </div>
           <div class='terminal-panel'>
             <div class='panel-label'>Options Data</div>
-            <div class='panel-title'>CALL {selected_strikes.call_strike if selected_strikes else '-'} / PUT {selected_strikes.put_strike if selected_strikes else '-'}</div>
+            <div class='panel-title'>{format_watch_contract(selected_strikes, latest_signal, bias_state)}</div>
             <div class='panel-copy'>{options_copy}</div>
             <div class='pill-row'>
               {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
@@ -1826,9 +1880,9 @@ def main() -> None:
                 secondary_lines = build_secondary_lines(secondary_pivots, slope)
                 proj_df = project_lines(primary_lines + secondary_lines, now_ct, latest_price)
                 bias = determine_preopen_bias(primary_lines, latest_price if latest_price is not None else float("nan"), now_ct)
-                strikes = select_0dte_strikes(latest_price if latest_price is not None else float("nan"), now_ct)
                 signals = detect_rejection_signals(signal_rth_df, primary_lines, secondary_lines)
                 active_signal = get_latest_active_signal(signals, signal_rth_df)
+                strikes = select_watch_contracts(latest_price if latest_price is not None else float("nan"), now_ct, active_signal, primary_lines+secondary_lines)
                 closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
                 latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
                 decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
