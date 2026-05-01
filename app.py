@@ -51,6 +51,7 @@ TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/coun
 TRADING_ECONOMICS_GUEST_CREDENTIAL = "guest:guest"
 MORNING_BRIEFING_PATH = "data/morning_briefings.json"
 MORNING_BRIEFING_NEWS_MAX_AGE_DAYS = 1
+MARKET_MOVING_NEWS_LIMIT = 4
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_WEB_SEARCH_DEFAULT = "true"
@@ -418,11 +419,57 @@ def strip_markup(value: str | None) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescape(str(value)))).strip()
 
 
+def market_moving_news_score(title: str, summary: str | None = None) -> int:
+    title_text = (title or "").lower()
+    text = f"{title or ''} {summary or ''}".lower()
+    macro_terms = [
+        "fed", "fomc", "powell", "cpi", "pce", "payroll", "nonfarm", "jobs report", "jobless claims",
+        "unemployment", "inflation", "gdp", "retail sales", "ism", "pmi", "rate cut", "rate hike",
+    ]
+    index_terms = [
+        "spy", "spx", "s&p", "s&p 500", "spdr", "equity futures", "stock futures", "futures rise",
+        "futures fall", "wall street", "nasdaq", "dow jones", "russell", "stocks open", "stocks rise",
+        "stocks fall", "market rally", "market selloff",
+    ]
+    volatility_terms = ["vix", "volatility", "treasury", "yield", "yields", "bond auction", "dollar", "dxy", "oil", "geopolitical"]
+    mega_cap_terms = ["nvidia", "nvda", "apple", "aapl", "microsoft", "msft", "amazon", "amzn", "meta", "tesla", "tsla", "alphabet", "googl"]
+    personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance", "social security"]
+    stale_investor_terms = ["if i had invested", "turn $", "turned $", "portfolio over"]
+    company_noise_terms = [
+        "airline", "airlines", "spirit airlines", "restaurant", "retailer", "bankruptcy", "chapter 11",
+        "merger", "acquisition", "ceo", "analyst says", "shares of", "stock jumps", "stock falls",
+    ]
+    asset_noise_terms = ["gold", "bitcoin", "crypto", "ethereum", "forex"]
+
+    score = 0
+    macro_hit = any(term in text for term in macro_terms)
+    index_hit = any(term in text for term in index_terms)
+    title_macro_hit = any(term in title_text for term in macro_terms)
+    title_index_hit = any(term in title_text for term in index_terms)
+    volatility_hit = any(term in text for term in volatility_terms)
+    mega_cap_hit = any(term in text for term in mega_cap_terms)
+    if macro_hit:
+        score += 100
+    if index_hit:
+        score += 80
+    if volatility_hit:
+        score += 65
+    if mega_cap_hit:
+        score += 30
+    if any(term in text for term in personal_finance_terms + stale_investor_terms):
+        score -= 120
+    if any(term in title_text for term in company_noise_terms) and not (title_macro_hit or title_index_hit):
+        score -= 100
+    if any(term in title_text for term in asset_noise_terms) and not (title_macro_hit or title_index_hit):
+        score -= 180
+    return score
+
+
 def classify_news_relevance(title: str, summary: str | None = None) -> str:
     text = f"{title or ''} {summary or ''}".lower()
     high_impact = ["fed", "fomc", "powell", "cpi", "pce", "payroll", "jobs report", "unemployment", "inflation", "rate cut", "rate hike"]
     volatility = ["vix", "volatility", "treasury", "yield", "auction", "dollar", "oil", "geopolitical"]
-    spy_market = ["spy", "s&p", "s&p 500", "nasdaq", "stocks", "equities", "earnings"]
+    spy_market = ["spy", "spx", "s&p", "s&p 500", "nasdaq", "stock futures", "equity futures", "wall street"]
     if any(word in text for word in high_impact):
         return "Macro catalyst"
     if any(word in text for word in volatility):
@@ -433,26 +480,7 @@ def classify_news_relevance(title: str, summary: str | None = None) -> str:
 
 
 def is_market_news_relevant(title: str, summary: str | None = None) -> bool:
-    title_text = (title or "").lower()
-    text = f"{title or ''} {summary or ''}".lower()
-    strong_terms = [
-        "spy", "s&p", "s&p 500", "spdr", "vix", "volatility", "equity futures", "stock futures",
-        "fed", "fomc", "powell", "cpi", "pce", "payroll", "jobs report", "inflation",
-        "treasury", "yield", "rate cut", "rate hike", "nasdaq", "dow", "russell",
-    ]
-    weak_terms = ["stocks", "equities", "earnings", "oil", "dollar", "risk-on", "risk off"]
-    personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance", "social security"]
-    stale_investor_terms = ["if i had invested", "turn $", "turned $", "portfolio over"]
-    title_market_terms = ["spy", "s&p", "spdr", "vix", "stock", "equity", "futures", "fed", "cpi", "pce", "yield", "rate"]
-    if any(term in title_text for term in personal_finance_terms) and not any(term in title_text for term in title_market_terms):
-        return False
-    strong_score = sum(1 for term in strong_terms if term in text)
-    weak_score = sum(1 for term in weak_terms if term in text)
-    if any(term in text for term in personal_finance_terms) and strong_score == 0:
-        return False
-    if any(term in text for term in stale_investor_terms):
-        return False
-    return strong_score > 0 or weak_score >= 2
+    return market_moving_news_score(title, summary) >= 60
 
 
 def parse_rss_items(xml_text: str, source: str = "Yahoo Finance", limit: int = 8) -> list[NewsItem]:
@@ -520,7 +548,7 @@ def news_sort_key(item: NewsItem) -> tuple[int, int, pd.Timestamp]:
         published = published.tz_localize("UTC") if published.tzinfo is None else published.tz_convert("UTC")
     except Exception:
         published = pd.Timestamp.min.tz_localize("UTC")
-    return relevance_rank, official_rank, -published.value
+    return -market_moving_news_score(item.title, item.summary), relevance_rank, official_rank, -published.value
 
 
 def is_fresh_for_0dte(published, now_ct=None, max_age_days: int = MORNING_BRIEFING_NEWS_MAX_AGE_DAYS) -> bool:
@@ -541,7 +569,7 @@ def is_fresh_for_0dte(published, now_ct=None, max_age_days: int = MORNING_BRIEFI
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_market_news_rows(limit: int = 8) -> list[dict]:
+def fetch_market_news_rows(limit: int = MARKET_MOVING_NEWS_LIMIT) -> list[dict]:
     now_ct = datetime.now(tz=get_central_tz())
     results: list[NewsItem] = []
     seen: set[str] = set()
@@ -551,7 +579,7 @@ def fetch_market_news_rows(limit: int = 8) -> list[dict]:
             response.raise_for_status()
         except Exception:
             continue
-        for item in parse_rss_items(response.text, source, limit=max(limit, 6)):
+        for item in parse_rss_items(response.text, source, limit=max(limit * 4, 12)):
             if not is_fresh_for_0dte(item.published, now_ct):
                 continue
             if not is_market_news_relevant(item.title, item.summary):
@@ -591,7 +619,7 @@ def news_item_from_row(row: dict) -> NewsItem:
     )
 
 
-def fetch_market_news(limit: int = 8) -> list[NewsItem]:
+def fetch_market_news(limit: int = MARKET_MOVING_NEWS_LIMIT) -> list[NewsItem]:
     return [news_item_from_row(row) for row in fetch_market_news_rows(limit)]
 
 
@@ -3056,10 +3084,11 @@ def inject_global_css() -> None:
       --border:#243244;--border2:#314357;--text:#f4f7fb;--muted:#9aa7b5;
       --blue:#4ea8de;--green:#2ecc71;--red:#f45d75;--amber:#f5c451;
       --cyan:#28d2c2;--shadow:0 14px 34px rgba(0,0,0,.26);
-      --ui-font:Inter,"Source Sans 3","Segoe UI",system-ui,sans-serif;
-      --mono-font:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+      --ui-font:"Inter","Source Sans 3","Segoe UI",Roboto,system-ui,sans-serif;
+      --mono-font:"IBM Plex Mono","Roboto Mono","JetBrains Mono",Consolas,monospace;
     }
     html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
+    .stMarkdown,.stText,.stCaption,.stDataFrame,p,span,button,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
     .block-container{padding-top:2.25rem;max-width:1240px}
     [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
     [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
@@ -4012,15 +4041,16 @@ def render_learning_profile(profile: StructureLearningProfile) -> None:
 
 
 def render_news_feed(news_items: list[NewsItem]) -> None:
-    head = f"<div class='feed-head'><div><div class='panel-label'>News Feed</div><div class='panel-title'>SPY and volatility headlines</div></div>{ui_icon('pulse','blue','md')}</div>"
-    if not news_items:
-        st.markdown(f"<div class='terminal-panel'>{head}<div class='panel-copy'>Yahoo Finance headlines are unavailable right now. Try refresh, or continue with structure and macro timing.</div></div>", unsafe_allow_html=True)
+    head = f"<div class='feed-head'><div><div class='panel-label'>Market Movers</div><div class='panel-title'>SPY/SPX catalysts only</div></div>{ui_icon('pulse','blue','md')}</div>"
+    items_to_show = list(news_items or [])[:MARKET_MOVING_NEWS_LIMIT]
+    if not items_to_show:
+        st.markdown(f"<div class='terminal-panel'>{head}<div class='panel-copy'>No fresh SPY/SPX-moving headline passed the filter. Trade from structure, catalyst timing, flow, and risk controls.</div></div>", unsafe_allow_html=True)
         return
     cards = []
-    for item in news_items:
+    for item in items_to_show:
         title = escape(item.title)
         title_html = f"<a href='{escape(item.link)}' target='_blank'>{title}</a>" if item.link else title
-        summary = f"<div class='news-summary'>{escape(item.summary[:220])}</div>" if item.summary else ""
+        summary = f"<div class='news-summary'>{escape(item.summary[:160])}</div>" if item.summary else ""
         cards.append(
             "<div class='news-card'>"
             f"<div class='news-title'>{title_html}</div>"
@@ -4962,7 +4992,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
 
     return f"""
     <style>
-      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Inter,Segoe UI,system-ui,sans-serif;color:#f4f7fb}}
+      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Inter,"Source Sans 3","Segoe UI",Roboto,system-ui,sans-serif;color:#f4f7fb}}
       .svg-map-shell svg{{display:block;width:100%;height:auto}}
       .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
       .svg-map-title h3{{margin:0;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
@@ -5676,7 +5706,7 @@ def main() -> None:
     journal_entries = load_signal_journal(journal_path)
     replay_learning_entries = build_replay_learning_entries(df, max_days=REPLAY_LEARNING_DAYS, slope_per_hour=slope)
     learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
-    news_items = fetch_market_news(limit=8)
+    news_items = fetch_market_news(limit=MARKET_MOVING_NEWS_LIMIT)
     economic_events = get_upcoming_economic_events(now_ct, days=0)
     morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
     flow_tags_for_learning = premium_flow_tags(morning_bundle.options_intelligence)
