@@ -1257,6 +1257,11 @@ def render_live_command_center(
         f"target {display_line_name(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
         if projection else "Live option premiums appear after Tastytrade is connected and a setup resolves."
     )
+    options_copy = (
+        f"CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}"
+        if options_live
+        else "Live Tastytrade premiums are not connected yet. Strikes are shown, but no option prices are displayed until quotes are live."
+    )
     provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
 
     st.markdown(
@@ -1285,7 +1290,7 @@ def render_live_command_center(
           <div class='terminal-panel'>
             <div class='panel-label'>Options Data</div>
             <div class='panel-title'>CALL {selected_strikes.call_strike if selected_strikes else '-'} / PUT {selected_strikes.put_strike if selected_strikes else '-'}</div>
-            <div class='panel-copy'>CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}</div>
+            <div class='panel-copy'>{options_copy}</div>
             <div class='pill-row'>
               {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
               {_pill('Provider', provider_text)}
@@ -1304,7 +1309,6 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) ->
         if not line:
             continue
         value = line.tradable_value_at(now_ct)
-        raw_value = line.raw_value_at(now_ct)
         distance = line.distance_from_price(latest_price, now_ct) if latest_price is not None else float("nan")
         kind = "tile-call" if line.zone_type == "CALL_ZONE" else "tile-put" if line.zone_type == "PUT_ZONE" else ""
         closest_cls = " closest" if closest_line is not None and closest_line.name == name else ""
@@ -1313,7 +1317,7 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) ->
             f"<div class='tile-label'>{line.zone_type.replace('_', ' ')}</div>"
             f"<div class='tile-name'>{display_line_name(name)}</div>"
             f"<div class='tile-value'>{fmt_price(value)}</div>"
-            f"<div class='tile-meta'>raw {fmt_float(raw_value, 3)} | dist {fmt_float(distance)}</div>"
+            f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
             f"<div class='tile-meta'>{display_line_description(name)}</div>"
             "</div>"
         )
@@ -1786,16 +1790,17 @@ def main() -> None:
     now_ct = datetime.now(tz=get_central_tz())
 
     st.sidebar.header("SPY Prophet Controls")
-    refresh = st.sidebar.button("Refresh data")
-    slope = st.sidebar.number_input("Slope per hour", min_value=0.050, max_value=0.200, value=DEFAULT_SLOPE_PER_HOUR, step=0.001, format="%.3f")
-    st.sidebar.selectbox("Auto-refresh", ["Off","30 sec","60 sec","5 min"])
-    show_debug = st.sidebar.toggle("Show Debug Lab", value=False)
+    st.sidebar.button("Refresh data")
+    show_debug = st.sidebar.toggle("Advanced diagnostics", value=False)
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
+    slope = DEFAULT_SLOPE_PER_HOUR
+    if show_debug:
+        slope = st.sidebar.number_input("Slope per hour", min_value=0.050, max_value=0.200, value=DEFAULT_SLOPE_PER_HOUR, step=0.001, format="%.3f")
     provider = "TASTYTRADE"
     st.sidebar.caption("Provider: TASTYTRADE")
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
 
-    df = fetch_spy_hourly(period="10d") if (refresh or True) else pd.DataFrame()
+    df = fetch_spy_hourly(period="10d")
     latest_price = None
     prior_day = None
     signal_day = None
@@ -1847,8 +1852,12 @@ def main() -> None:
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tabs = st.tabs(["Live Terminal","Structure Map","Prophet Chart","Signal Engine","Replay Lab","Options Cockpit","Journal Analytics","Playbook","Debug Lab"])
-    with tabs[0]:
+    tab_names = ["Live Terminal", "Prophet Chart", "Replay Lab", "Options", "Journal"]
+    if show_debug:
+        tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
+    tabs = dict(zip(tab_names, st.tabs(tab_names)))
+
+    with tabs["Live Terminal"]:
         render_live_command_center(
             bias,
             decision_state,
@@ -1866,17 +1875,7 @@ def main() -> None:
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
 
-    with tabs[1]:
-        st.caption("Technical structure tables for primary and secondary levels.")
-        render_section_title("Structure Map", "Primary and secondary projected structure")
-        if not proj_df.empty:
-            primary_view = proj_df[proj_df['is_primary']==True][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
-            secondary_view = proj_df[proj_df['is_primary']==False][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
-            st.dataframe(primary_view, use_container_width=True)
-            st.dataframe(secondary_view, use_container_width=True)
-            st.caption("CALL triggers use descending structure. PUT triggers use ascending structure. Secondary levels are target-only structure.")
-
-    with tabs[2]:
+    with tabs["Prophet Chart"]:
         render_section_title("Prophet Chart", "Decision map, then advanced candle detail")
         chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
@@ -1900,42 +1899,7 @@ def main() -> None:
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
 
-    with tabs[3]:
-        st.caption("Latest rejection signals, quality, and guardrails.")
-        render_section_title("Signal Engine", "Hourly rejection rules")
-        render_signal_card(active_signal)
-        if decision_state and decision_state.signal_quality:
-            q = decision_state.signal_quality
-            render_status_strip([
-                ("Quality", q.grade),
-                ("Score", f"{q.score:.1f}"),
-                ("Close dist", f"{q.close_distance:.2f}"),
-                ("Wick ratio", f"{q.wick_rejection_ratio:.2f}"),
-                ("Action", q.action_label),
-            ])
-            if q.warnings:
-                st.warning(", ".join(q.warnings).replace("_", " ").title())
-            if q.strengths:
-                st.success(", ".join(q.strengths).replace("_", " ").title())
-        if signals:
-            signal_rows = []
-            for sg in signals[-5:]:
-                signal_rows.append({
-                    "type": sg.signal_type,
-                    "status": _humanize(sg.status),
-                    "trigger": display_line_name(sg.line_name),
-                    "rejection_time": sg.rejection_time,
-                    "entry_time": sg.entry_time,
-                    "entry_price": sg.entry_price,
-                    "stop_price": sg.stop_price,
-                    "target": display_line_name(sg.target_line_name),
-                    "target_price": sg.target_price,
-                    "rr_ratio": sg.rr_ratio,
-                })
-            st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
-        st.caption("CALL rejection: red candle rejects descending line from above. PUT rejection: green candle rejects ascending line from below. Entry is next candle open.")
-
-    with tabs[4]:
+    with tabs["Replay Lab"]:
         st.caption("Historical replay as a decision story.")
         render_section_title("Replay Lab", "Replay a session against prior-day structure")
         dates = get_available_replay_dates(df)
@@ -1978,7 +1942,7 @@ def main() -> None:
             if table:
                 st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
 
-    with tabs[5]:
+    with tabs["Options"]:
         st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")
         render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
@@ -2018,39 +1982,7 @@ def main() -> None:
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
 
-    with tabs[7]:
-        st.caption("Concise command brief from current state.")
-        render_section_title("Playbook", "Plain-English read from calculated structure")
-        if not bias:
-            st.write("Prophet Read: Waiting for structure.")
-        else:
-            render_status_strip([("Bias", bias.bias), ("Primary watch", display_line_name(bias.primary_line))])
-            if decision_state and decision_state.signal_quality:
-                render_status_strip([("Decision", decision_state.final_decision), ("Quality", f"{decision_state.signal_quality.grade} ({decision_state.signal_quality.score:.1f})")])
-                if decision_state.guardrail_state.chase_warning: st.warning(decision_state.guardrail_state.chase_warning)
-                if decision_state.guardrail_state.retest_status != "NONE": st.info(f"Retest: {decision_state.guardrail_state.retest_status}")
-                if decision_state.guardrail_state.structure_warning: st.error(decision_state.guardrail_state.structure_warning)
-            if not active_signal:
-                st.write(f"Trigger Needed: Waiting for hourly rejection at {display_line_list(bias.watched_call_lines + bias.watched_put_lines)}.")
-            else:
-                ls=active_signal
-                if ls.status=="PENDING_CONFIRMATION":
-                    st.write(f"Trigger Needed: Pending {ls.signal_type} confirmation on next candle open.")
-                else:
-                    st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {display_line_name(ls.target_line_name)} at {fmt_price(ls.target_price)}.")
-                st.write(f"Final Destination: {display_line_name(ls.target_line_name)}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
-                if strikes:
-                    ps = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-                    if ps.selected_trade_quote:
-                        render_status_strip([("Options", f"{ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike}")])
-                    if ps.entry_target_projection:
-                        render_status_strip([
-                            ("Entry premium", fmt_price(ps.entry_target_projection.estimated_entry_mark)),
-                            ("Target premium", fmt_price(ps.entry_target_projection.estimated_target_mark)),
-                            ("Est. P/L", fmt_price(ps.entry_target_projection.estimated_profit_per_contract)),
-                        ])
-
-    with tabs[6]:
+    with tabs["Journal"]:
         st.caption("Signal memory, outcomes, and expectancy analytics.")
         render_section_title("Journal Analytics", "Self-learning signal memory")
         journal_path='data/signal_journal.json'
@@ -2097,11 +2029,56 @@ def main() -> None:
             st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         for ins in generate_journal_insights(a): st.info(ins)
 
-    with tabs[8]:
-        st.caption("Technical debug and raw object inspection (secrets redacted).")
-        if not show_debug:
-            st.info("Enable Debug Lab in sidebar.")
-        else:
+    if show_debug:
+        with tabs["Structure Details"]:
+            st.caption("Advanced structure table for validating calculated levels.")
+            render_section_title("Structure Details", "Projected triggers and targets")
+            if not proj_df.empty:
+                primary_view = proj_df[proj_df['is_primary']==True][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
+                secondary_view = proj_df[proj_df['is_primary']==False][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
+                st.dataframe(primary_view, use_container_width=True)
+                st.dataframe(secondary_view, use_container_width=True)
+            else:
+                st.info("No projected structure available yet.")
+
+        with tabs["Signal Details"]:
+            st.caption("Advanced signal diagnostics for checking rejection quality.")
+            render_section_title("Signal Details", "Hourly rejection diagnostics")
+            render_signal_card(active_signal)
+            if decision_state and decision_state.signal_quality:
+                q = decision_state.signal_quality
+                render_status_strip([
+                    ("Quality", q.grade),
+                    ("Score", f"{q.score:.1f}"),
+                    ("Close dist", f"{q.close_distance:.2f}"),
+                    ("Wick ratio", f"{q.wick_rejection_ratio:.2f}"),
+                    ("Action", q.action_label),
+                ])
+                if q.warnings:
+                    st.warning(", ".join(q.warnings).replace("_", " ").title())
+                if q.strengths:
+                    st.success(", ".join(q.strengths).replace("_", " ").title())
+            if signals:
+                signal_rows = []
+                for sg in signals[-5:]:
+                    signal_rows.append({
+                        "type": sg.signal_type,
+                        "status": _humanize(sg.status),
+                        "trigger": display_line_name(sg.line_name),
+                        "rejection_time": sg.rejection_time,
+                        "entry_time": sg.entry_time,
+                        "entry_price": sg.entry_price,
+                        "stop_price": sg.stop_price,
+                        "target": display_line_name(sg.target_line_name),
+                        "target_price": sg.target_price,
+                        "rr_ratio": sg.rr_ratio,
+                    })
+                st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
+            else:
+                st.info("No current-session rejection signals.")
+
+        with tabs["Diagnostics"]:
+            st.caption("Raw object inspection for development and support.")
             render_debug_json("Primary lines", [asdict(x) for x in primary_lines])
             st.dataframe(df.tail(20) if not df.empty else pd.DataFrame())
             st.dataframe(rth_df.tail(20) if not rth_df.empty else pd.DataFrame())
