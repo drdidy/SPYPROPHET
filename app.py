@@ -197,22 +197,16 @@ def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
     if rth_df is None or rth_df.empty:
         return _empty_pivot("HIGH_PIVOT")
     df = rth_df.sort_index()
-    for i in range(len(df) - 2, -1, -1):
-        if candle_color(df.iloc[i]) == "green" and candle_color(df.iloc[i + 1]) == "red":
-            return Pivot("HIGH_PIVOT", float(df.iloc[i]["High"]), df.index[i], "primary_transition", "green", False)
     high_ts = df["High"].idxmax()
-    return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), high_ts, "session_high_fallback", "green", True)
+    return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), high_ts, "session_high", candle_color(df.loc[high_ts]), False)
 
 
 def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
     if rth_df is None or rth_df.empty:
         return _empty_pivot("LOW_PIVOT")
     df = rth_df.sort_index()
-    for i in range(len(df) - 2, -1, -1):
-        if candle_color(df.iloc[i]) == "red" and candle_color(df.iloc[i + 1]) == "green":
-            return Pivot("LOW_PIVOT", float(df.iloc[i]["Low"]), df.index[i], "primary_transition", "red", False)
     low_ts = df["Low"].idxmin()
-    return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), low_ts, "session_low_fallback", "red", True)
+    return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), low_ts, "session_low", candle_color(df.loc[low_ts]), False)
 
 
 def find_primary_pivots(rth_df: pd.DataFrame) -> dict:

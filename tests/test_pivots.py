@@ -36,10 +36,10 @@ def test_high_pivot_found() -> None:
         ("2026-04-28T09:30:00", 11, 12, 10, 10),
     ])
     p = find_high_pivot(df)
-    assert p.price == 11
-    assert p.timestamp == df.index[0]
+    assert p.price == 12
+    assert p.timestamp == df.index[1]
     assert p.fallback_used is False
-    assert p.candle_color == "green"
+    assert p.source == "session_high"
 
 
 def test_low_pivot_found() -> None:
@@ -71,14 +71,14 @@ def test_newest_pattern_selected_for_high_and_low() -> None:
     assert lp.timestamp == df.index[6]
 
 
-def test_doji_invalidates_primary() -> None:
+def test_doji_does_not_invalidate_session_extreme_primary() -> None:
     df = _df([
         ("2026-04-28T08:30:00", 10, 12, 9, 11),
         ("2026-04-28T09:30:00", 11, 12, 10, 11),
         ("2026-04-28T10:30:00", 11, 12, 10, 10),
     ])
     hp = find_high_pivot(df)
-    assert hp.fallback_used
+    assert hp.price == 12 and not hp.fallback_used and hp.source == "session_high"
 
     df2 = _df([
         ("2026-04-28T08:30:00", 10, 11, 8, 9),
@@ -86,7 +86,7 @@ def test_doji_invalidates_primary() -> None:
         ("2026-04-28T10:30:00", 9, 10, 8.5, 10),
     ])
     lp = find_low_pivot(df2)
-    assert lp.fallback_used
+    assert lp.price == 8 and not lp.fallback_used and lp.source == "session_low"
 
 
 def test_fallbacks() -> None:
@@ -96,7 +96,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 12, 13, 11, 13),
     ])
     hp = find_high_pivot(high_no_pattern)
-    assert hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[1]
+    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[1]
 
     low_no_pattern = _df([
         ("2026-04-28T08:30:00", 10, 11, 8, 9),
@@ -104,7 +104,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 8, 9, 7, 7),
     ])
     lp = find_low_pivot(low_no_pattern)
-    assert lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[1]
+    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[1]
 
 
 def test_secondary_pivots() -> None:
