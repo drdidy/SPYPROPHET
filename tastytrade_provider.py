@@ -27,7 +27,6 @@ class TastytradeProviderStatus:
     auth_ok: bool = False
     chain_ok: bool = False
     quotes_ok: bool = False
-    fallback_used: bool = False
 
     def __post_init__(self):
         if self.missing_secrets is None:
@@ -163,7 +162,6 @@ class TastytradeProvider:
     def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
         c,p,w = self.select_contracts("SPY", expiration_date, call_strike, put_strike)
         if not c or not p:
-            self.status.fallback_used = True
             self.status.quotes_ok = False
             return {"CALL": None, "PUT": None, "status": asdict(self.status), "warning": w or "Contract selection failed."}
         self.status.quotes_ok = True

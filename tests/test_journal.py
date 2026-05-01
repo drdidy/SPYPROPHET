@@ -8,7 +8,7 @@ from app import JournalEntry, ensure_data_dir, load_signal_journal, save_signal_
 def _ts(s): return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
 
 def _entry(signal_id='s1', outcome=None, source='LIVE_MANUAL'):
-    e=JournalEntry('',_ts('2026-04-29T10:00:00'),None,_ts('2026-04-29T10:00:00').date(),source,signal_id,'CALL','CONFIRMED','UD','CALL_ZONE','BULLISH','A',90,'TRADE_ALLOWED','TRADE_ALLOWED',_ts('2026-04-29T09:00:00'),_ts('2026-04-29T10:00:00'),100,99,'UA',101,1.5,outcome,None,1.2,-0.4,2,'CALL',709,2.1,3.1,100,'MOCK',None,[])
+    e=JournalEntry('',_ts('2026-04-29T10:00:00'),None,_ts('2026-04-29T10:00:00').date(),source,signal_id,'CALL','CONFIRMED','UD','CALL_ZONE','BULLISH','A',90,'TRADE_ALLOWED','TRADE_ALLOWED',_ts('2026-04-29T09:00:00'),_ts('2026-04-29T10:00:00'),100,99,'UA',101,1.5,outcome,None,1.2,-0.4,2,'CALL',709,2.1,3.1,100,'TASTYTRADE_TEST',None,[])
     return e.__class__(make_journal_id(e), *list(e.__dict__.values())[1:])
 
 

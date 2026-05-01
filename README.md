@@ -17,7 +17,7 @@ streamlit run app.py
 - Prior-day pivot and dynamic line projection engines.
 - Bias, signal, decision quality, risk guardrails.
 - Prophet Chart, Replay Lab, Options Cockpit, Journal Analytics.
-- Mock options mode + optional Tastytrade quote mode.
+- Options Cockpit uses live Tastytrade quotes when credentials are configured.
 
 ## Tastytrade secrets (optional)
 Create `.streamlit/secrets.toml` locally:
@@ -29,12 +29,13 @@ TASTYTRADE_REFRESH_TOKEN = "your_refresh_token"
 TASTYTRADE_ENVIRONMENT = "production"
 ```
 
-- Missing secrets => safe fallback to MOCK provider.
+- Missing secrets => Options Cockpit stays unavailable until live Tastytrade credentials are configured.
 - Never commit secrets.
 
-## Modes
-- **MOCK**: deterministic fake quote data for UI/testing.
-- **TASTYTRADE**: live quote attempt; falls back to MOCK on failure.
+## Data Sources
+- **SPY candles**: loaded from `yfinance`.
+- **Options quotes**: loaded from Tastytrade only.
+- No mock quote mode is used in the product app.
 
 ## Replay bias safety
 - **Step Replay** hides future candles/signals by default.
@@ -49,15 +50,14 @@ TASTYTRADE_ENVIRONMENT = "production"
 ## Troubleshooting
 - `ModuleNotFoundError: pandas` (or others): reinstall requirements in active venv.
 - Empty SPY data: retry and verify network/data availability.
-- Missing secrets: app reports missing key names and uses MOCK fallback.
-- Tastytrade failures: app reports provider error and uses MOCK fallback.
+- Missing secrets: app reports missing key names and leaves Options Cockpit unavailable.
+- Tastytrade failures: app reports the provider error and does not substitute fake quotes.
 
 ## Known limitations
 - yfinance may have delays/gaps.
 - Hourly candles cannot resolve intrabar target-vs-stop sequence.
 - Option projection is delta-only (ignores gamma/IV/theta/liquidity/spread).
 - 0DTE Greeks can change rapidly.
-- Mock quotes are not live market data.
 
 ## Safety
 **No order execution is implemented.**
