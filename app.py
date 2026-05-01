@@ -979,7 +979,7 @@ def score_headline_sentiment(news_items: list[NewsItem]) -> SentimentContext:
         bear += sum(1 for word in bearish_words if word in text)
     score = bull - bear
     label = "Bullish headlines" if score > 1 else "Bearish headlines" if score < -1 else "Mixed headlines"
-    return SentimentContext(source_status("Headline sentiment", True if news_items else False, "Keyword sentiment from verified market headlines. Social feed requires SOCIAL_SENTIMENT_API_URL."), score, label, bull, bear, None)
+    return SentimentContext(source_status("Fresh headline read", True if news_items else False, "Same-day and previous-day market headlines scanned for catalyst tone."), score, label, bull, bear, None)
 
 
 def structure_lines_for_briefing(primary_lines: list[DynamicLine], projection_time) -> list[dict]:
@@ -1016,7 +1016,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
-        else "No verified calendar rows loaded from data/economic_calendar.json or Trading Economics API."
+        else "Calendar pending. Click Generate AI web briefing or connect a calendar source for dated macro events."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
@@ -1246,7 +1246,7 @@ def bundle_with_economic_events(bundle: MorningBriefingBundle, events: list[Econ
     calendar_detail = (
         f"{len(events)} verified calendar rows found by OpenAI web search for today's 0DTE session."
         if events
-        else scout_warning or "OpenAI web search found no verified economic calendar rows for today's 0DTE session."
+        else scout_warning or "Calendar scout finished with no dated macro events for today's 0DTE session."
     )
     statuses.append(source_status("Economic calendar", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
     statuses.append(source_status("OpenAI calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
@@ -2235,7 +2235,14 @@ def build_replay_state(full_df: pd.DataFrame, replay_date, replay_time=None, slo
 
 
 def fmt_nan(value, fallback="-"):
-    return fallback if value is None or (isinstance(value,float) and pd.isna(value)) else value
+    if value is None:
+        return fallback
+    try:
+        if pd.isna(value) is True:
+            return fallback
+    except Exception:
+        pass
+    return value
 
 def fmt_price(value, digits=2):
     v=fmt_nan(value,None)
@@ -2647,15 +2654,18 @@ def _humanize(value: str | None) -> str:
 def display_state_label(value: str | None) -> str:
     text = _humanize(value)
     labels = {
+        "CONNECTED": "Connected",
         "WAIT": "Wait",
         "WAIT FOR CONFIRMATION": "Wait for confirmation",
         "WAIT FOR RETEST": "Wait for retest",
         "TRADE ALLOWED": "Trade allowed",
         "NO TRADE": "No trade",
         "REGULAR SESSION": "Session watch",
-        "YFINANCE FALLBACK": "Delayed quote fallback",
+        "YFINANCE FALLBACK": "Delayed yfinance quotes",
         "TASTYTRADE LIVE": "Tastytrade live",
         "YFINANCE DELAYED": "Delayed quotes",
+        "UNAVAILABLE": "Needs data",
+        "NOT USED": "Not used",
     }
     return labels.get(text.upper(), text.title() if text == text.upper() else text)
 
@@ -3055,7 +3065,7 @@ def render_live_command_center(
     options_copy = (
         f"CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}"
         if options_market_data
-        else "Live Tastytrade premiums are not connected yet. The app will use delayed yfinance option prices when available."
+        else "Live Tastytrade quotes are not active in this session. Delayed yfinance prices appear when available."
     )
     provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
     direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
@@ -3223,9 +3233,9 @@ def render_economic_calendar(events: list[EconomicEvent]) -> None:
     if not rows:
         rows.append(
             "<div class='calendar-row'>"
-            "<div class='calendar-event'>No verified economic calendar loaded</div>"
-            "<div class='calendar-meta'><span>Connect Trading Economics or add data/economic_calendar.json</span></div>"
-            "<div class='calendar-notes'>The app will not create generic CPI, jobs, or Fed reminders when no dated event source is available.</div>"
+            "<div class='calendar-event'>Calendar pending</div>"
+            "<div class='calendar-meta'><span>Generate the AI briefing or connect a calendar source</span></div>"
+            "<div class='calendar-notes'>Only dated, sourced macro events appear here.</div>"
             "</div>"
         )
     st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
@@ -3356,7 +3366,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     tone, label = _morning_confidence_tone(result.confidence)
     ring = {"green": "#2ecc71", "blue": "#67b7ff", "amber": "#f5c451", "red": "#ff5f7c"}.get(tone, "#67b7ff")
     event = _first_high_impact_event(bundle.economic_events)
-    event_value = f"{event.event} at {event.time_label}" if event else "No dated event loaded"
+    event_value = f"{event.event} at {event.time_label}" if event else "Run calendar scout for today's events"
     source_count = len([status for status in bundle.source_statuses if status.status == "connected"])
     source_total = len([status for status in bundle.source_statuses if status.status != "skipped"])
     provider = result.provider if result.provider else "Verified briefing"
@@ -3368,10 +3378,10 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
             <div>
               <div class='morning-kicker'>{ui_icon('spark', tone, 'sm')} Morning Command Center</div>
               <div class='morning-title'>SPY Prophet Morning Briefing</div>
-              <div class='morning-subtitle'>External market context consolidated with today's SPY Prophet lines before the 0DTE session. The agent only uses loaded or verifiable data and leaves missing feeds out of the read.</div>
+              <div class='morning-subtitle'>External market context consolidated with today's SPY Prophet lines before the 0DTE session. Only dated, sourced, current context is allowed into the read.</div>
               <div class='morning-hero-metrics'>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>AI State</div><div class='morning-stat-value'>{escape('Connected' if ai_ready else 'Rule-based')}</div><div class='morning-stat-copy'>{escape(provider + model)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'No verified event')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Calendar pending')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Generated</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Central time stamp</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Verified Sources</div><div class='morning-stat-value'>{source_count}/{source_total}</div><div class='morning-stat-copy'>Loaded feeds in this briefing</div></div>
               </div>
@@ -3415,7 +3425,7 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
     action_title = "Wait for a clean trigger confirmation"
     if first_line:
         action_title = f"Primary watch: {first_line.get('name')} near {fmt_price(first_line.get('value'))}"
-    risk_note = f"First verified macro event: {event.event} at {event.time_label}." if event else "No verified economic calendar event is loaded, so the briefing will not invent CPI/Fed/jobs timing."
+    risk_note = f"First macro catalyst: {event.event} at {event.time_label}." if event else "Calendar pending: run the AI briefing or connect a calendar source before treating the session as catalyst-free."
     option_note = f"OI magnet {fmt_price(options.max_pain)} with call wall {fmt_price(options.call_wall)} and put wall {fmt_price(options.put_wall)}."
     learning_note = f"Historical structure set: target first {fmt_pct(learning.target_first_rate * 100, 0)}, stop first {fmt_pct(learning.stop_first_rate * 100, 0)}, confidence {learning.confidence_label}."
     st.markdown(
@@ -3497,8 +3507,8 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_value = f"{event.event} at {event.time_label}" if event else "No verified event loaded"
-    event_copy = f"{event.impact} impact from {event.source}." if event else "Add data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, or ECONOMIC_CALENDAR_API_URL to show actual calendar events."
+    event_value = f"{event.event} at {event.time_label}" if event else "Calendar pending"
+    event_copy = f"{event.impact} impact from {event.source}." if event else "Click Generate AI web briefing or connect a calendar source to fill today's macro timing."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
     technical = bundle.technical_context
@@ -3560,10 +3570,10 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_source = event.source if event else "No calendar row"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No verified economic calendar row was loaded; the app will not substitute generic CPI/Fed reminders."
+    event_source = event.source if event else "Calendar pending"
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No dated macro row is loaded for this run. Use Generate AI web briefing to scout public calendar sources."
     event_state = "connected" if event else "watch"
-    quote_providers = sorted({str(q.get("provider") or "quote") for q in (bundle.options_intelligence.selected_quotes or [])})
+    quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
     options_detail = f"{bundle.options_intelligence.status.detail} Selected quote source: {quote_detail}"
     news_asof = bundle.news_items[0].published if bundle.news_items else None
@@ -3583,9 +3593,9 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("AI Synthesis", "OpenAI + verified JSON" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
     steps = [
-        ("1", "Collect", "The app loads structure, options, technicals, news, macro, sectors, and learning stats."),
-        ("2", "Package", "Those fields become VERIFIED_DATA_JSON inside the Morning Briefing prompt."),
-        ("3", "Search", "If OpenAI web search is enabled, the model may add cited current public sources."),
+        ("1", "Collect", "The app loads structure, options, technicals, news, macro, and learning stats."),
+        ("2", "Package", "Those fields become the verified data bundle for the briefing agent."),
+        ("3", "Scout", "With OpenAI web search on, the agent can cite current public sources."),
         ("4", "Merge", "The recommendation must tie external context back to the four SPY Prophet lines."),
     ]
     step_html = "".join(
@@ -3598,7 +3608,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
           <div class='evidence-head'>
             <div>
               <div class='evidence-title'>Evidence Trail</div>
-              <div class='evidence-copy'>This is the proof layer: what the briefing used, where it came from, and how it was merged before the decision.</div>
+              <div class='evidence-copy'>Proof layer for the briefing: what was loaded, where it came from, and how it supports the trade read.</div>
             </div>
             {ui_icon('shield', 'blue', 'md')}
           </div>
@@ -3632,11 +3642,11 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
         for citation in result.citations[:8]:
             rows.append(_source_row_html(citation.get("title") or "AI web citation", "connected", "OpenAI web search cited this source in the generated briefing.", result.generated_at, citation.get("url"), "scout"))
     else:
-        rows.append(_source_row_html("OpenAI web citations", "unavailable", "No web citations were returned for this briefing run. The briefing is using the verified app data bundle only.", result.generated_at))
+        rows.append(_source_row_html("OpenAI web citations", "not used", "No AI web search citations were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
-        ("Economic calendar", "Use data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, ECONOMIC_CALENDAR_API_URL, or the OpenAI calendar scout for cited CPI/FOMC/NFP times."),
-        ("Verified social/flow feed", "Add SOCIAL_SENTIMENT_API_URL only if you have a reliable endpoint; otherwise the app will not invent social sentiment."),
-        ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current public pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
+        ("Economic calendar", "Click Generate AI web briefing for current public calendar scouting, or connect Trading Economics/custom JSON for scheduled releases."),
+        ("Options depth", "Live Tastytrade gives bid, ask, spread, and Greeks. Delayed yfinance remains a price-only backup when live quotes are not active."),
+        ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
     ]
     upgrade_html = "".join(
         f"<div class='upgrade-card'><div class='upgrade-name'>{escape(name)}</div><div class='upgrade-meta'>{escape(copy)}</div></div>"
@@ -3648,7 +3658,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
           <div class='source-ledger-head'>
             <div>
               <div class='source-ledger-title'>Sources Actually Used</div>
-              <div class='source-ledger-copy'>Green rows were loaded into this briefing. Amber rows mean the app did not have verified data for that source during this run.</div>
+              <div class='source-ledger-copy'>Green rows fed this briefing. Amber rows are sources to connect or scout before relying on that area.</div>
             </div>
             {ui_icon('compass', 'blue', 'md')}
           </div>
@@ -4291,10 +4301,10 @@ def fetch_yfinance_option_quotes(expiration_date, call_strike: int, put_strike: 
         put_row = _select_yfinance_option_row(chain.puts, put_strike)
         call_quote = _quote_from_yfinance_row(call_row, "CALL", expiration) if call_row is not None else None
         put_quote = _quote_from_yfinance_row(put_row, "PUT", expiration) if put_row is not None else None
-        warning = "Using delayed yfinance option data because live Tastytrade quotes are unavailable."
+        warning = "Delayed yfinance option quotes are active for this session."
         return {"CALL": call_quote, "PUT": put_quote, "warning": warning}
     except Exception as e:
-        return {"CALL": None, "PUT": None, "warning": f"Yfinance option fallback failed: {type(e).__name__}"}
+        return {"CALL": None, "PUT": None, "warning": f"Delayed yfinance option quotes could not load: {type(e).__name__}"}
 
 
 def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
@@ -4429,6 +4439,20 @@ def option_provider_label(state: OptionsCockpitState | None, provider_status: di
     if provider_status.get("last_error") or (state and state.warning):
         return "TASTYTRADE unavailable"
     return provider_status.get("provider") or "TASTYTRADE"
+
+
+def friendly_provider_error(error: str | None) -> str:
+    text = str(error or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "404" in lowered or "chain failed" in lowered:
+        return "Tastytrade could not return that option chain. Delayed yfinance quotes will be used when available."
+    if "timeout" in lowered:
+        return "Tastytrade took too long to respond. Refresh once or continue with delayed quote context."
+    if "auth" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
+        return "Tastytrade sign-in needs attention. Check the app secrets for the live quote connection."
+    return "Tastytrade live quotes are not active for this run. Delayed quote context remains available when yfinance has the chain."
 
 
 def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | None = None, warning: str | None = None) -> str:
@@ -4894,15 +4918,15 @@ def main() -> None:
             render_status_strip([
                 ("Provider", display_state_label(option_provider_label(state, provider_status))),
                 ("Connection", "Live" if provider_is_live_tastytrade(state.provider) and (state.call_quote or state.put_quote) else "Delayed" if provider_is_yfinance_delayed(state.provider) and (state.call_quote or state.put_quote) else "Unavailable"),
-                ("Mode", "Tastytrade live" if provider_is_live_tastytrade(state.provider) else "Delayed quote fallback" if provider_is_yfinance_delayed(state.provider) else "Tastytrade"),
+                ("Mode", "Tastytrade live" if provider_is_live_tastytrade(state.provider) else "Delayed yfinance quotes" if provider_is_yfinance_delayed(state.provider) else "Tastytrade"),
             ])
-            if provider_status.get("missing_secrets"): render_data_notice("Live Tastytrade setup is incomplete. Delayed quotes can still support mark-only review.")
-            if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
+            if provider_status.get("missing_secrets"): render_data_notice("Live Tastytrade is not active in this session. Delayed quotes can still support mark-only review.")
+            if provider_status.get("last_error"): render_data_notice(friendly_provider_error(provider_status.get('last_error')), tone="warn")
             if state.warning:
                 if provider_is_yfinance_delayed(state.provider):
-                    render_data_notice("Delayed quotes active. Live Greeks appear when Tastytrade streaming is connected.")
+                    render_data_notice("Delayed yfinance quotes are active. Bid, ask, and mark can display; Greeks require live Tastytrade.")
                 else:
-                    st.warning(state.warning)
+                    render_data_notice(friendly_provider_error(state.warning), tone="warn")
             c1,c2=st.columns(2)
             with c1:
                 cq=state.call_quote
@@ -4959,8 +4983,8 @@ def main() -> None:
         render_status_strip([
             ("Entries", a.total_entries),
             ("Confirmed", a.total_confirmed),
-            ("Win rate", a.win_rate),
-            ("Avg RR", a.average_rr),
+            ("Win rate", fmt_pct(a.win_rate * 100, 0) if not pd.isna(a.win_rate) else "-"),
+            ("Avg RR", fmt_float(a.average_rr)),
             ("Expectancy", fmt_price(a.expectancy_per_contract)),
         ])
         journal_view = pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50)

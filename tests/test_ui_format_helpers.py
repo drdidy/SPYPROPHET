@@ -1,9 +1,11 @@
 from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, display_state_label, fmt_price, fmt_nan, safe_to_dict, render_badge, render_brand_logo, ui_icon
+import pandas as pd
 
 
 def test_fmt_helpers():
     assert fmt_price(1.234) == '1.23'
     assert fmt_nan(float('nan')) == '-'
+    assert fmt_nan(pd.NA) == '-'
 
 
 def test_safe_to_dict_redacts():
@@ -45,3 +47,7 @@ def test_display_state_labels_hide_internal_enums():
     assert display_state_label("REGULAR_SESSION") == "Session watch"
     assert display_state_label("WAIT_FOR_CONFIRMATION") == "Wait for confirmation"
     assert display_state_label("YFINANCE delayed") == "Delayed quotes"
+    assert display_state_label("YFINANCE_FALLBACK") == "Delayed yfinance quotes"
+    assert display_state_label("unavailable") == "Needs data"
+    assert display_state_label("connected") == "Connected"
+    assert display_state_label("not used") == "Not used"
