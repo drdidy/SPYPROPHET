@@ -39,6 +39,28 @@ NEWS_RSS_URLS = (
 ECONOMIC_CALENDAR_PATH = "data/economic_calendar.json"
 REPLAY_LEARNING_DAYS = 45
 TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
+MORNING_BRIEFING_PATH = "data/morning_briefings.json"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
+GLOBAL_CONTEXT_TICKERS = {
+    "ES futures": "ES=F",
+    "DAX": "^GDAXI",
+    "FTSE 100": "^FTSE",
+    "Nikkei 225": "^N225",
+    "Hang Seng": "^HSI",
+    "Dollar Index": "DX-Y.NYB",
+    "10Y yield": "^TNX",
+    "5Y yield": "^FVX",
+}
+SECTOR_TICKERS = {
+    "Technology": "XLK",
+    "Financials": "XLF",
+    "Healthcare": "XLV",
+    "Consumer Disc.": "XLY",
+    "Industrials": "XLI",
+    "Energy": "XLE",
+    "Utilities": "XLU",
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +114,101 @@ class EconomicEvent:
     impact: str
     source: str
     notes: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceStatus:
+    name: str
+    status: str
+    detail: str
+    as_of: pd.Timestamp | None = None
+    url: str | None = None
+
+
+@dataclass(frozen=True)
+class MarketMove:
+    label: str
+    symbol: str
+    last: float
+    change: float
+    change_pct: float
+    as_of: pd.Timestamp | None
+    source: str
+
+
+@dataclass(frozen=True)
+class OptionsIntelligence:
+    status: SourceStatus
+    put_call_open_interest_ratio: float
+    put_call_volume_ratio: float
+    max_pain: float
+    call_wall: float
+    put_wall: float
+    high_open_interest: list[dict]
+    provider_payload: dict | None = None
+
+
+@dataclass(frozen=True)
+class GammaExposureInsight:
+    status: SourceStatus
+    gamma_flip: float | None
+    dealer_tone: str
+    magnet_strikes: list[float]
+    notes: str
+    provider_payload: dict | None = None
+
+
+@dataclass(frozen=True)
+class TechnicalContext:
+    status: SourceStatus
+    prior_high: float
+    prior_low: float
+    prior_close: float
+    ma50: float
+    ma200: float
+    weekly_high: float
+    weekly_low: float
+    monthly_high: float
+    monthly_low: float
+    gap_from_prior_close: float
+
+
+@dataclass(frozen=True)
+class SentimentContext:
+    status: SourceStatus
+    headline_score: int
+    label: str
+    bullish_count: int
+    bearish_count: int
+    social_payload: dict | None = None
+
+
+@dataclass(frozen=True)
+class MorningBriefingBundle:
+    generated_at: pd.Timestamp
+    lines: list[dict]
+    economic_events: list[EconomicEvent]
+    global_context: list[MarketMove]
+    macro_context: list[MarketMove]
+    sector_context: list[MarketMove]
+    options_intelligence: OptionsIntelligence
+    gamma_insight: GammaExposureInsight
+    sentiment: SentimentContext
+    technical_context: TechnicalContext
+    news_items: list[NewsItem]
+    learning_profile: "StructureLearningProfile"
+    source_statuses: list[SourceStatus]
+
+
+@dataclass(frozen=True)
+class MorningBriefingResult:
+    generated_at: pd.Timestamp
+    provider: str
+    model: str | None
+    text: str
+    confidence: int
+    warnings: list[str]
+    source_statuses: list[SourceStatus]
 
 
 @dataclass(frozen=True)
@@ -473,6 +590,400 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
     if live_events:
         return [event for event in live_events if today <= event.event_date <= end]
     return default_macro_watchlist(now_ct)
+
+
+def get_secret_or_env(name: str, default: str = "") -> str:
+    try:
+        value = str(st.secrets.get(name, "")).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.getenv(name, default).strip()
+
+
+def source_status(name: str, ok: bool, detail: str, as_of=None, url: str | None = None) -> SourceStatus:
+    return SourceStatus(name, "connected" if ok else "unavailable", detail, pd.Timestamp(as_of) if as_of is not None else None, url)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_yfinance_history(ticker: str, period: str = "5d", interval: str = "1d") -> pd.DataFrame:
+    try:
+        raw = yf.download(tickers=ticker, period=period, interval=interval, prepost=True, progress=False, auto_adjust=False, actions=False)
+        return normalize_yfinance_frame(raw)
+    except Exception:
+        return pd.DataFrame()
+
+
+def market_move_from_history(label: str, symbol: str, df: pd.DataFrame, source: str = "Yahoo Finance") -> MarketMove | None:
+    if df is None or df.empty or "Close" not in df:
+        return None
+    close = df["Close"].dropna()
+    if close.empty:
+        return None
+    last = float(close.iloc[-1])
+    prev = float(close.iloc[-2]) if len(close) > 1 else last
+    change = last - prev
+    change_pct = (change / prev) * 100 if prev else float("nan")
+    as_of = close.index[-1] if isinstance(close.index, pd.DatetimeIndex) else None
+    return MarketMove(label, symbol, last, change, change_pct, pd.Timestamp(as_of) if as_of is not None else None, source)
+
+
+def fetch_market_moves(tickers: dict[str, str], period: str = "5d", interval: str = "1d") -> list[MarketMove]:
+    moves = []
+    for label, symbol in tickers.items():
+        move = market_move_from_history(label, symbol, fetch_yfinance_history(symbol, period, interval))
+        if move is not None:
+            moves.append(move)
+    return moves
+
+
+def fetch_global_context() -> list[MarketMove]:
+    return fetch_market_moves(GLOBAL_CONTEXT_TICKERS, period="5d", interval="1d")
+
+
+def fetch_sector_context() -> list[MarketMove]:
+    return sorted(fetch_market_moves(SECTOR_TICKERS, period="5d", interval="1d"), key=lambda m: m.change_pct if not pd.isna(m.change_pct) else -999, reverse=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_spy_daily(period: str = "1y") -> pd.DataFrame:
+    try:
+        raw = yf.download(tickers=SYMBOL, period=period, interval="1d", prepost=False, progress=False, auto_adjust=False, actions=False)
+        return normalize_yfinance_frame(raw)
+    except Exception:
+        return pd.DataFrame()
+
+
+def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None) -> TechnicalContext:
+    if daily_df is None or daily_df.empty or "Close" not in daily_df:
+        return TechnicalContext(source_status("Yahoo Finance daily SPY", False, "Daily SPY history unavailable."), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
+    df = daily_df.dropna(subset=["Close"]).sort_index()
+    prior = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
+    close = df["Close"].dropna()
+    ma50 = float(close.tail(50).mean()) if len(close) >= 50 else float("nan")
+    ma200 = float(close.tail(200).mean()) if len(close) >= 200 else float("nan")
+    weekly = df.tail(5)
+    monthly = df.tail(21)
+    gap = float(latest_price - prior["Close"]) if latest_price is not None and not pd.isna(latest_price) else float("nan")
+    return TechnicalContext(
+        source_status("Yahoo Finance daily SPY", True, "Prior levels and moving averages from daily SPY candles.", df.index[-1]),
+        float(prior.get("High", float("nan"))),
+        float(prior.get("Low", float("nan"))),
+        float(prior.get("Close", float("nan"))),
+        ma50,
+        ma200,
+        float(weekly["High"].max()) if "High" in weekly else float("nan"),
+        float(weekly["Low"].min()) if "Low" in weekly else float("nan"),
+        float(monthly["High"].max()) if "High" in monthly else float("nan"),
+        float(monthly["Low"].min()) if "Low" in monthly else float("nan"),
+        gap,
+    )
+
+
+def option_chain_for_expiration(expiration_date) -> tuple[pd.DataFrame, pd.DataFrame, SourceStatus]:
+    try:
+        chain = yf.Ticker(SYMBOL).option_chain(str(expiration_date))
+        return chain.calls, chain.puts, source_status("Yahoo Finance option chain", True, "Delayed option chain. Flow, sweeps, and dealer gamma require a premium provider.")
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame(), source_status("Yahoo Finance option chain", False, f"Option chain unavailable: {type(e).__name__}")
+
+
+def calculate_max_pain(calls: pd.DataFrame, puts: pd.DataFrame) -> float:
+    if calls is None or puts is None or calls.empty or puts.empty or "strike" not in calls or "strike" not in puts:
+        return float("nan")
+    strikes = sorted(set(calls["strike"].dropna().astype(float)).union(set(puts["strike"].dropna().astype(float))))
+    if not strikes:
+        return float("nan")
+    call_oi = calls.set_index("strike")["openInterest"].fillna(0) if "openInterest" in calls else pd.Series(dtype="float64")
+    put_oi = puts.set_index("strike")["openInterest"].fillna(0) if "openInterest" in puts else pd.Series(dtype="float64")
+    losses = {}
+    for expiry_price in strikes:
+        call_loss = sum(max(0.0, expiry_price - float(strike)) * float(oi) for strike, oi in call_oi.items())
+        put_loss = sum(max(0.0, float(strike) - expiry_price) * float(oi) for strike, oi in put_oi.items())
+        losses[expiry_price] = call_loss + put_loss
+    return float(min(losses.items(), key=lambda kv: kv[1])[0])
+
+
+def top_open_interest_rows(calls: pd.DataFrame, puts: pd.DataFrame, limit: int = 6) -> list[dict]:
+    rows = []
+    for option_type, df in [("CALL", calls), ("PUT", puts)]:
+        if df is None or df.empty or "openInterest" not in df:
+            continue
+        for _, row in df.sort_values("openInterest", ascending=False).head(limit).iterrows():
+            rows.append({
+                "type": option_type,
+                "strike": float(row.get("strike", float("nan"))),
+                "open_interest": int(row.get("openInterest") or 0),
+                "volume": int(row.get("volume") or 0),
+                "last": _finite_float(row.get("lastPrice")),
+                "bid": _finite_float(row.get("bid")),
+                "ask": _finite_float(row.get("ask")),
+            })
+    return sorted(rows, key=lambda r: r["open_interest"], reverse=True)[:limit]
+
+
+def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> tuple[dict | None, SourceStatus]:
+    url = get_secret_or_env(url_key)
+    if not url:
+        return None, source_status(url_key, False, f"{url_key} is not configured.")
+    headers = {"User-Agent": "SPYProphet/1.0"}
+    token = get_secret_or_env(token_key) if token_key else ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        return None, source_status(url_key, False, f"Configured endpoint failed: {type(e).__name__}", url=url)
+    return payload if isinstance(payload, dict) else {"data": payload}, source_status(url_key, True, "Configured external endpoint returned data.", pd.Timestamp.now(tz=get_central_tz()), url)
+
+
+def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_price: float | None, width: float = 25.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if underlying_price is None or pd.isna(underlying_price):
+        return calls, puts
+    def _near(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty or "strike" not in df:
+            return df
+        return df[(df["strike"].astype(float) - float(underlying_price)).abs() <= width]
+    near_calls, near_puts = _near(calls), _near(puts)
+    if near_calls.empty or near_puts.empty:
+        return calls, puts
+    return near_calls, near_puts
+
+
+def build_options_intelligence(expiration_date, underlying_price: float | None = None) -> OptionsIntelligence:
+    provider_payload, provider_status = fetch_external_json_payload("OPTIONS_FLOW_API_URL", "OPTIONS_FLOW_API_KEY")
+    calls, puts, chain_status = option_chain_for_expiration(expiration_date)
+    calls, puts = filter_near_spy_strikes(calls, puts, underlying_price)
+    if calls.empty or puts.empty:
+        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], provider_payload)
+    call_oi = float(calls.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
+    put_oi = float(puts.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
+    call_vol = float(calls.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
+    put_vol = float(puts.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
+    call_wall = float(calls.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if call_oi > 0 else float("nan")
+    put_wall = float(puts.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if put_oi > 0 else float("nan")
+    detail = "Delayed yfinance OI/volume proxy using strikes near SPY. Unusual sweeps and block trades require OPTIONS_FLOW_API_URL."
+    if provider_payload:
+        detail = "Provider payload connected; yfinance OI ratios are shown beside the premium flow feed."
+    return OptionsIntelligence(
+        source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz()), provider_status.url),
+        put_oi / call_oi if call_oi else float("nan"),
+        put_vol / call_vol if call_vol else float("nan"),
+        calculate_max_pain(calls, puts),
+        call_wall,
+        put_wall,
+        top_open_interest_rows(calls, puts),
+        provider_payload,
+    )
+
+
+def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExposureInsight:
+    payload, status = fetch_external_json_payload("GEX_API_URL", "GEX_API_KEY")
+    if payload:
+        gamma_flip = _finite_float(payload.get("gamma_flip") or payload.get("gammaFlip") or payload.get("flip"))
+        magnets = payload.get("magnet_strikes") or payload.get("magnets") or []
+        magnets = [float(x) for x in magnets if not pd.isna(_finite_float(x))][:6] if isinstance(magnets, list) else []
+        tone = str(payload.get("dealer_tone") or payload.get("tone") or "Provider supplied")
+        notes = str(payload.get("notes") or "True GEX supplied by configured provider.")
+        return GammaExposureInsight(source_status("Gamma exposure", True, "Configured GEX provider returned data.", pd.Timestamp.now(tz=get_central_tz()), status.url), gamma_flip if not pd.isna(gamma_flip) else None, tone, magnets, notes, payload)
+    magnets = [x for x in [options_intel.put_wall, options_intel.max_pain, options_intel.call_wall] if x is not None and not pd.isna(x)]
+    notes = "True dealer GEX is not available without GEX_API_URL. Showing delayed open-interest magnet proxy only."
+    return GammaExposureInsight(source_status("Gamma exposure", False, "GEX_API_URL is not configured; using OI magnet proxy."), None, "Proxy only", magnets, notes, None)
+
+
+def score_headline_sentiment(news_items: list[NewsItem]) -> SentimentContext:
+    social_payload, social_status = fetch_external_json_payload("SOCIAL_SENTIMENT_API_URL", "SOCIAL_SENTIMENT_API_KEY")
+    if social_payload:
+        label = str(social_payload.get("label") or social_payload.get("sentiment") or "Provider supplied")
+        score = int(_finite_float(social_payload.get("score"), 0))
+        return SentimentContext(source_status("Social sentiment", True, "Configured social sentiment provider returned data.", pd.Timestamp.now(tz=get_central_tz()), social_status.url), score, label, 0, 0, social_payload)
+    bullish_words = ["rally", "risk-on", "higher", "beats", "easing", "cooling inflation", "cut", "green", "surge"]
+    bearish_words = ["selloff", "risk-off", "lower", "miss", "hot inflation", "hike", "red", "fear", "stress"]
+    bull = bear = 0
+    for item in news_items:
+        text = f"{item.title} {item.summary or ''}".lower()
+        bull += sum(1 for word in bullish_words if word in text)
+        bear += sum(1 for word in bearish_words if word in text)
+    score = bull - bear
+    label = "Bullish headlines" if score > 1 else "Bearish headlines" if score < -1 else "Mixed headlines"
+    return SentimentContext(source_status("Headline sentiment", True if news_items else False, "Keyword sentiment from verified market headlines. Social feed requires SOCIAL_SENTIMENT_API_URL."), score, label, bull, bear, None)
+
+
+def structure_lines_for_briefing(primary_lines: list[DynamicLine], projection_time) -> list[dict]:
+    rows = []
+    for name in ["UA", "UD", "LA", "LD"]:
+        line = get_line_by_name(primary_lines or [], name)
+        if not line:
+            continue
+        rows.append({
+            "code": name,
+            "name": display_line_name(name),
+            "role": zone_side_label(line.zone_type),
+            "value": line.tradable_value_at(projection_time),
+            "anchor_price": line.anchor_price,
+            "anchor_time": fmt_time(line.anchor_time),
+        })
+    return rows
+
+
+def build_morning_briefing_bundle(primary_lines, projection_time, economic_events, news_items, learning_profile, latest_price, selected_strikes=None) -> MorningBriefingBundle:
+    global_context = fetch_global_context()
+    sector_context = fetch_sector_context()
+    daily = fetch_spy_daily("1y")
+    technical = build_technical_context(daily, latest_price)
+    expiration = selected_strikes.expiration_date if selected_strikes else pd.Timestamp(projection_time).date()
+    options_intel = build_options_intelligence(expiration, latest_price)
+    gamma = build_gamma_exposure_insight(options_intel)
+    sentiment = score_headline_sentiment(news_items)
+    macro_context = [move for move in global_context if move.label in {"Dollar Index", "10Y yield", "5Y yield"}]
+    source_statuses = [technical.status, options_intel.status, gamma.status, sentiment.status]
+    for group_name, rows in [("Global yfinance markets", global_context), ("Sector yfinance ETFs", sector_context)]:
+        source_statuses.append(source_status(group_name, bool(rows), f"{len(rows)} instruments loaded from Yahoo Finance."))
+    source_statuses.append(source_status("Economic calendar", bool(economic_events), f"{len(economic_events)} calendar rows loaded."))
+    source_statuses.append(source_status("Market news", bool(news_items), f"{len(news_items)} market headlines loaded from Yahoo Finance RSS."))
+    return MorningBriefingBundle(
+        pd.Timestamp.now(tz=get_central_tz()),
+        structure_lines_for_briefing(primary_lines, projection_time),
+        economic_events,
+        global_context,
+        macro_context,
+        sector_context,
+        options_intel,
+        gamma,
+        sentiment,
+        technical,
+        news_items,
+        learning_profile,
+        source_statuses,
+    )
+
+
+def briefing_bundle_to_dict(bundle: MorningBriefingBundle) -> dict:
+    return json.loads(json.dumps(asdict(bundle), default=str))
+
+
+def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
+    payload = briefing_bundle_to_dict(bundle)
+    return (
+        "You are the Morning Briefing Agent inside SPY Prophet. Produce a concise premium premarket briefing for 0DTE SPY options.\n"
+        "Rules: use only the JSON facts provided; do not invent unavailable options flow, GEX, social, or news. "
+        "Clearly mark unavailable premium feeds. Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
+        "Do not claim a prediction as guaranteed. Tie every recommendation back to SPY Prophet lines and external context.\n\n"
+        f"VERIFIED_DATA_JSON:\n{json.dumps(payload, default=str, indent=2)}"
+    )
+
+
+def extract_openai_text(payload: dict) -> str:
+    if payload.get("output_text"):
+        return str(payload["output_text"]).strip()
+    pieces = []
+    for item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
+        for content in item.get("content", []) if isinstance(item, dict) else []:
+            text = content.get("text") if isinstance(content, dict) else None
+            if text:
+                pieces.append(str(text))
+    return "\n".join(pieces).strip()
+
+
+def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None]:
+    api_key = get_secret_or_env("OPENAI_API_KEY")
+    if not api_key:
+        return None, "OPENAI_API_KEY is not configured."
+    model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
+    try:
+        response = requests.post(
+            OPENAI_RESPONSES_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "input": prompt, "max_output_tokens": 1600},
+            timeout=45,
+        )
+        response.raise_for_status()
+        text = extract_openai_text(response.json())
+    except Exception as e:
+        return None, f"OpenAI briefing failed: {type(e).__name__}"
+    return text or None, None if text else "OpenAI returned an empty briefing."
+
+
+def move_line(move: MarketMove) -> str:
+    return f"{move.label} {fmt_price(move.last)} ({fmt_float(move.change_pct)}%)"
+
+
+def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str | None = None) -> MorningBriefingResult:
+    warnings = [status.detail for status in bundle.source_statuses if status.status != "connected"]
+    if ai_warning:
+        warnings.insert(0, ai_warning)
+    high_events = [event for event in bundle.economic_events if str(event.impact).lower() == "high"]
+    risk_score = 45
+    risk_score += min(len(high_events) * 8, 24)
+    if bundle.gamma_insight.status.status != "connected":
+        risk_score -= 5
+    if bundle.sentiment.label.startswith("Bullish"):
+        risk_score += 6
+    if bundle.sentiment.label.startswith("Bearish"):
+        risk_score -= 6
+    risk_score = int(max(15, min(85, risk_score)))
+    lines = "\n".join(f"- {row['name']}: {fmt_price(row['value'])} ({row['role']}, anchor {fmt_price(row['anchor_price'])})" for row in bundle.lines) or "- Structure lines unavailable."
+    event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No dated macro events loaded."
+    global_lines = "\n".join(f"- {move_line(move)}" for move in bundle.global_context[:8]) or "- Global market data unavailable."
+    top_sectors = ", ".join(move_line(move) for move in bundle.sector_context[:3]) or "Unavailable"
+    weak_sectors = ", ".join(move_line(move) for move in bundle.sector_context[-3:]) or "Unavailable"
+    technical = bundle.technical_context
+    options = bundle.options_intelligence
+    gamma = bundle.gamma_insight
+    recommendation = "Wait for a clean hourly rejection at one of the SPY Prophet triggers before choosing direction."
+    if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.lines:
+        recommendation = f"Favor the nearest valid trigger only after confirmation; historical target-first rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
+    text = f"""Good morning. Here is what you need to know for SPY trading today.
+
+YOUR LINES TODAY:
+{lines}
+
+EXTERNAL FACTORS AFFECTING THESE LINES:
+{event_lines}
+- Options OI put/call ratio: {fmt_float(options.put_call_open_interest_ratio)}; volume put/call ratio: {fmt_float(options.put_call_volume_ratio)}.
+- Max pain/OI magnet proxy: {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.
+- Gamma: {gamma.dealer_tone}. {gamma.notes}
+- Global tone: {global_lines}
+- Sector leadership: {top_sectors}. Laggards: {weak_sectors}.
+- Macro: 10Y/DXY context is shown from Yahoo Finance where available; VIX term structure requires a configured premium/futures source.
+- Technical: prior high {fmt_price(technical.prior_high)}, prior low {fmt_price(technical.prior_low)}, prior close {fmt_price(technical.prior_close)}, 50DMA {fmt_price(technical.ma50)}, 200DMA {fmt_price(technical.ma200)}, gap {fmt_price(technical.gap_from_prior_close)}.
+- Sentiment: {bundle.sentiment.label} (headline score {bundle.sentiment.headline_score}; social feed {'connected' if bundle.sentiment.social_payload else 'not connected'}).
+
+MY RECOMMENDATION:
+{recommendation}
+
+Confidence: {risk_score}%
+
+RISK FACTORS:
+{chr(10).join('- ' + w for w in warnings[:8]) if warnings else '- All configured sources returned data.'}
+"""
+    return MorningBriefingResult(bundle.generated_at, "Rule-based verified briefing", None, text, risk_score, warnings, bundle.source_statuses)
+
+
+def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True) -> MorningBriefingResult:
+    if use_ai:
+        ai_text, warning = call_openai_morning_briefing(build_morning_briefing_prompt(bundle))
+        if ai_text:
+            base = rule_based_morning_briefing(bundle)
+            return MorningBriefingResult(bundle.generated_at, "OpenAI Responses API", get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, base.confidence, base.warnings, bundle.source_statuses)
+        return rule_based_morning_briefing(bundle, warning)
+    return rule_based_morning_briefing(bundle)
+
+
+def save_morning_briefing(result: MorningBriefingResult, path: str = MORNING_BRIEFING_PATH) -> None:
+    ensure_data_dir(Path(path).parent)
+    p = Path(path)
+    rows = []
+    if p.exists():
+        try:
+            rows = json.loads(p.read_text())
+        except Exception:
+            rows = []
+    rows.append(json.loads(json.dumps(asdict(result), default=str)))
+    p.write_text(json.dumps(rows[-60:], indent=2, default=str))
 
 
 def get_primary_anchor_summary(primary_lines: list[DynamicLine] | None) -> dict:
@@ -1504,12 +2015,28 @@ def inject_global_css() -> None:
     .news-summary,.calendar-notes{color:var(--muted);font-size:.82rem;line-height:1.35;margin-top:7px}
     .calendar-event{font-weight:800;color:var(--text);line-height:1.25}
     .calendar-impact{color:var(--amber);font-weight:750}
+    .briefing-shell{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(14,22,33,.98),rgba(8,13,18,.98));padding:16px;margin-top:12px}
+    .briefing-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.18);padding-bottom:12px}
+    .briefing-title{font-size:1.45rem;font-weight:900;color:var(--text);line-height:1.12}
+    .briefing-sub{color:var(--muted);font-size:.88rem;margin-top:6px;line-height:1.4}
+    .briefing-body{white-space:pre-wrap;color:#dbe8f5;font-size:.95rem;line-height:1.55;margin-top:14px}
+    .source-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+    .source-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:9px;min-height:82px}
+    .source-card.connected{border-color:rgba(46,204,113,.38)} .source-card.unavailable{border-color:rgba(245,196,81,.34)}
+    .source-name{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .source-state{font-weight:850;margin-top:4px}.source-card.connected .source-state{color:var(--green)}.source-card.unavailable .source-state{color:var(--amber)}
+    .source-detail{font-size:.76rem;color:var(--muted);line-height:1.3;margin-top:4px}
+    .briefing-mini-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+    .briefing-mini{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
+    .briefing-mini-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .briefing-mini-value{font-family:var(--mono-font);font-size:1.15rem;font-weight:850;color:var(--text);margin-top:4px}
+    .briefing-mini-copy{font-size:.78rem;color:var(--muted);margin-top:4px;line-height:1.3}
     .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
     .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -2214,6 +2741,80 @@ def render_market_context_tab(profile: StructureLearningProfile, news_items: lis
         render_economic_calendar(economic_events)
     with right:
         render_news_feed(news_items)
+
+
+def render_source_statuses(statuses: list[SourceStatus]) -> None:
+    cards = []
+    for status in statuses:
+        cls = "connected" if status.status == "connected" else "unavailable"
+        cards.append(
+            f"<div class='source-card {cls}'>"
+            f"<div class='source-name'>{escape(status.name)}</div>"
+            f"<div class='source-state'>{escape(display_state_label(status.status))}</div>"
+            f"<div class='source-detail'>{escape(status.detail)}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='source-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
+    event = bundle.economic_events[0] if bundle.economic_events else None
+    leader = bundle.sector_context[0] if bundle.sector_context else None
+    laggard = bundle.sector_context[-1] if bundle.sector_context else None
+    mini = [
+        ("Macro Event", event.event if event else "None loaded", event.time_label if event else "Calendar connector"),
+        ("Put/Call OI", fmt_float(bundle.options_intelligence.put_call_open_interest_ratio), "Delayed yfinance proxy"),
+        ("GEX", bundle.gamma_insight.dealer_tone, bundle.gamma_insight.notes[:80]),
+        ("Sentiment", bundle.sentiment.label, f"Score {bundle.sentiment.headline_score}"),
+        ("Sector Leader", leader.label if leader else "-", fmt_float(leader.change_pct) + "%" if leader else "-"),
+        ("Sector Laggard", laggard.label if laggard else "-", fmt_float(laggard.change_pct) + "%" if laggard else "-"),
+        ("Prior Close", fmt_price(bundle.technical_context.prior_close), f"Gap {fmt_price(bundle.technical_context.gap_from_prior_close)}"),
+        ("Learning", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}"),
+    ]
+    html = "".join(
+        f"<div class='briefing-mini'><div class='briefing-mini-label'>{escape(label)}</div><div class='briefing-mini-value'>{escape(str(value))}</div><div class='briefing-mini-copy'>{escape(str(copy))}</div></div>"
+        for label, value, copy in mini
+    )
+    st.markdown(f"<div class='briefing-mini-grid'>{html}</div>", unsafe_allow_html=True)
+
+
+def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
+    render_section_title("Morning Briefing", "External context for today's SPY Prophet lines")
+    ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
+    render_status_strip([
+        ("AI", "Connected" if ai_ready else "Needs OPENAI_API_KEY"),
+        ("Generated", fmt_time(bundle.generated_at)),
+        ("Sources", f"{len([s for s in bundle.source_statuses if s.status == 'connected'])}/{len(bundle.source_statuses)} connected"),
+        ("Premium flow", "Connected" if bundle.options_intelligence.provider_payload else "Not connected"),
+    ])
+    render_briefing_snapshot(bundle)
+    if not ai_ready:
+        render_data_notice("AI synthesis is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
+    use_ai = st.toggle("Use OpenAI synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
+    if st.button("Generate morning briefing", type="primary", key="generate_morning_briefing"):
+        result = generate_morning_briefing(bundle, use_ai=use_ai)
+        save_morning_briefing(result)
+        st.session_state["morning_briefing_result"] = result
+    result = st.session_state.get("morning_briefing_result")
+    if result is None:
+        result = generate_morning_briefing(bundle, use_ai=False)
+    st.markdown(
+        f"""
+        <div class='briefing-shell'>
+          <div class='briefing-head'>
+            <div>
+              <div class='briefing-title'>SPY Prophet Morning Briefing</div>
+              <div class='briefing-sub'>{escape(result.provider)}{f" / {escape(result.model)}" if result.model else ""} • Confidence {result.confidence}% • {escape(fmt_time(result.generated_at))}</div>
+            </div>
+            {ui_icon('spark', 'green' if result.confidence >= 65 else 'amber', 'lg')}
+          </div>
+          <div class='briefing-body'>{escape(result.text)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("**Source Truth Table**")
+    render_source_statuses(result.source_statuses)
 
 
 
@@ -3214,6 +3815,7 @@ def main() -> None:
     learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
     news_items = fetch_market_news(limit=8)
     economic_events = get_upcoming_economic_events(now_ct, days=7)
+    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes)
 
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
@@ -3221,7 +3823,7 @@ def main() -> None:
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tab_names = ["Live Terminal", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
+    tab_names = ["Live Terminal", "Morning Briefing", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
     if show_debug:
         tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -3267,6 +3869,9 @@ def main() -> None:
 
     with tabs["Market Context"]:
         render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
+
+    with tabs["Morning Briefing"]:
+        render_morning_briefing_tab(morning_bundle)
 
     with tabs["Prophet Chart"]:
         render_section_title("Prophet Chart", "Decision map and technical candle views")
