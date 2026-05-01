@@ -16,6 +16,7 @@ SYMBOL = "SPY"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
+DEFAULT_OTM_STRIKE_OFFSET = 4
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 
@@ -424,8 +425,8 @@ def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedS
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if current_price is None or pd.isna(current_price):
         return SelectedStrikes(float("nan"), 0, 0, now.date(), "0DTE", "Invalid underlying price.")
-    call_strike = int(math.ceil(current_price) - 4)
-    put_strike = int(math.floor(current_price) + 4)
+    call_strike = int(math.ceil(current_price) + DEFAULT_OTM_STRIKE_OFFSET)
+    put_strike = int(math.floor(current_price) - DEFAULT_OTM_STRIKE_OFFSET)
     return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "0DTE", None)
 
 

@@ -81,14 +81,18 @@ def test_bias_strength_bounds() -> None:
 
 def test_strike_selection() -> None:
     s = select_0dte_strikes(712.61, _ts("2026-04-29T08:30:00"))
-    assert s.call_strike == 709
-    assert s.put_strike == 716
+    assert s.call_strike == 717
+    assert s.call_strike > s.underlying_price
+    assert s.put_strike == 708
+    assert s.put_strike < s.underlying_price
 
 
 def test_strike_selection_whole_number() -> None:
     s = select_0dte_strikes(713.00, _ts("2026-04-29T08:30:00"))
-    assert s.call_strike == 709
-    assert s.put_strike == 717
+    assert s.call_strike == 717
+    assert s.call_strike > s.underlying_price
+    assert s.put_strike == 709
+    assert s.put_strike < s.underlying_price
 
 
 def test_invalid_price() -> None:
