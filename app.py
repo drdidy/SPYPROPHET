@@ -923,14 +923,14 @@ def get_unusual_whales_token() -> str:
 
 def unusual_whales_status(ok: bool, detail: str, as_of=None, url: str | None = None, skipped: bool = False) -> SourceStatus:
     state = "skipped" if skipped else "connected" if ok else "unavailable"
-    return SourceStatus("Unusual Whales intelligence", state, detail, pd.Timestamp(as_of) if as_of is not None else None, url)
+    return SourceStatus("Order Flow Feed", state, detail, pd.Timestamp(as_of) if as_of is not None else None, url)
 
 
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_unusual_whales_json(endpoint: str, params: tuple[tuple[str, object], ...] = ()) -> tuple[dict | None, str | None]:
     token = get_unusual_whales_token()
     if not token:
-        return None, "UNUSUAL_WHALES_API_KEY or UNUSUAL_WHALES_REFRESH_TOKEN is not configured."
+        return None, "Order flow token is not configured."
     url = f"{UNUSUAL_WHALES_BASE_URL}{endpoint}"
     headers = {
         "Accept": "application/json",
@@ -944,9 +944,9 @@ def fetch_unusual_whales_json(endpoint: str, params: tuple[tuple[str, object], .
         payload = response.json()
     except requests.HTTPError as e:
         status = getattr(e.response, "status_code", "HTTP")
-        return None, f"Unusual Whales {endpoint} failed with {status}."
+        return None, f"Order flow feed returned {status}."
     except Exception as e:
-        return None, f"Unusual Whales {endpoint} failed: {type(e).__name__}."
+        return None, f"Order flow feed failed: {type(e).__name__}."
     if isinstance(payload, dict):
         return payload, None
     return {"data": payload}, None
@@ -1195,7 +1195,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     now = pd.Timestamp(now_ct if now_ct is not None else datetime.now(tz=get_central_tz()))
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if not get_unusual_whales_token():
-        return None, unusual_whales_status(False, "Unusual Whales token is not configured.", skipped=True)
+        return None, unusual_whales_status(False, "Premium order-flow feed is not configured.", skipped=True)
     today = str(now.date())
     errors = []
     flow_payload, err = fetch_unusual_whales_json(
@@ -1248,12 +1248,12 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     uw_news_rows = [row for row in payload_rows(news_payload) if row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))][:5]
     has_data = bool(flow["alert_count"] or tide or volume or iv or darkpool or uw_news_rows or gex.get("levels"))
     if not has_data:
-        detail = "Unusual Whales token was found, but no current SPY 0DTE rows returned yet."
+        detail = "Premium order-flow feed is connected, but no current SPY 0DTE rows returned yet."
         if errors:
             detail = errors[0]
         return None, unusual_whales_status(False, detail, now)
     payload = {
-        "source": "Unusual Whales API",
+        "source": "Premium order-flow feed",
         "date": today,
         "flow_alerts": flow,
         "market_tide": tide,
@@ -1263,7 +1263,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         "fresh_news": [
             {
                 "title": row.get("title") or row.get("headline"),
-                "source": row.get("source") or row.get("provider") or "Unusual Whales",
+                "source": row.get("source") or row.get("provider") or "Premium order-flow feed",
                 "published_at": row.get("created_at") or row.get("published_at") or row.get("timestamp") or row.get("date"),
                 "url": row.get("url") or row.get("link"),
             }
@@ -1280,8 +1280,8 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         bits.append("GEX by strike")
     if darkpool:
         bits.append("SPY dark-pool prints")
-    detail = "Loaded " + ", ".join(bits or ["Unusual Whales SPY context"]) + "."
-    return payload, unusual_whales_status(True, detail, flow.get("as_of") or now, f"{UNUSUAL_WHALES_BASE_URL}/docs")
+    detail = "Loaded " + ", ".join(bits or ["premium SPY flow context"]) + "."
+    return payload, unusual_whales_status(True, detail, flow.get("as_of") or now)
 
 
 def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_price: float | None, width: float = 25.0) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1315,7 +1315,7 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
     put_wall = float(puts.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if put_oi > 0 else float("nan")
     detail = "Available option-chain context using near-SPY open interest, volume, and selected contract quotes."
     if whales_payload:
-        detail += " Unusual Whales paid flow/GEX context is loaded."
+        detail += " Premium flow and gamma context is loaded."
     status = source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz()))
     return OptionsIntelligence(
         status,
@@ -1336,11 +1336,11 @@ def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExp
     if isinstance(whales_gex, dict) and (whales_gex.get("levels") or whales_gex.get("gamma_flip")):
         levels = whales_gex.get("levels") or []
         magnets = [row.get("strike") for row in levels if isinstance(row, dict) and row.get("strike") is not None]
-        notes = "Unusual Whales spot GEX by strike is loaded; use these levels as volatility/magnet context, not as standalone entries."
+        notes = "Spot GEX by strike is loaded; use these levels as volatility/magnet context, not as standalone entries."
         return GammaExposureInsight(
-            source_status("Unusual Whales GEX", True, "SPY spot GEX by strike loaded from Unusual Whales.", pd.Timestamp.now(tz=get_central_tz()), f"{UNUSUAL_WHALES_BASE_URL}/docs"),
+            source_status("Dealer Gamma", True, "SPY spot GEX by strike loaded.", pd.Timestamp.now(tz=get_central_tz())),
             whales_gex.get("gamma_flip"),
-            str(whales_gex.get("dealer_tone") or "Unusual Whales GEX"),
+            str(whales_gex.get("dealer_tone") or "Dealer Gamma"),
             [float(x) for x in magnets[:6] if not pd.isna(_finite_float(x))],
             notes,
             whales,
@@ -1409,9 +1409,9 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     whales_status_raw = (options_intel.unusual_whales or {}).get("status") if isinstance(options_intel.unusual_whales, dict) else None
     if isinstance(whales_status_raw, dict):
         source_statuses.append(SourceStatus(
-            str(whales_status_raw.get("name") or "Unusual Whales intelligence"),
+            str(whales_status_raw.get("name") or "Order Flow Feed"),
             str(whales_status_raw.get("status") or "connected"),
-            str(whales_status_raw.get("detail") or "Unusual Whales data loaded."),
+            str(whales_status_raw.get("detail") or "Premium order-flow data loaded."),
             pd.Timestamp(whales_status_raw.get("as_of")) if whales_status_raw.get("as_of") else None,
             whales_status_raw.get("url"),
         ))
@@ -1421,7 +1421,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
-        else "Calendar pending. Click Generate AI web briefing or connect a calendar source for dated macro events."
+        else "Calendar pending. Generate Foresight or connect a calendar source for dated macro events."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
@@ -1456,9 +1456,9 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
-        "You are the Morning Briefing Agent inside SPY Prophet. Produce an actionable, structured briefing for a novice 0DTE SPY options trader.\n"
+        "You are the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a novice 0DTE SPY options trader.\n"
         "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
-        "If options_intelligence.unusual_whales is present, treat it as the primary paid options-flow source and explicitly weigh SPY 0DTE OTM flow, market tide, key strikes, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
+        "If premium order-flow data is present, treat it as the primary paid options-flow source and explicitly weigh SPY 0DTE OTM flow, market tide, key strikes, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
         "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
@@ -1644,7 +1644,7 @@ def economic_event_from_ai_calendar_dict(raw: dict) -> EconomicEvent | None:
     except Exception:
         return None
     time_label = str(raw.get("time_label") or raw.get("time") or raw.get("release_time") or "").strip()
-    source = str(raw.get("source") or raw.get("provider") or "OpenAI calendar scout").strip()
+    source = str(raw.get("source") or raw.get("provider") or "Calendar scout").strip()
     if not time_label or not source:
         return None
     impact_raw = str(raw.get("impact") or "Medium").strip().lower()
@@ -1656,9 +1656,9 @@ def economic_event_from_ai_calendar_dict(raw: dict) -> EconomicEvent | None:
 def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEvent], list[dict], str | None]:
     api_key = get_secret_or_env("OPENAI_API_KEY")
     if not api_key:
-        return [], [], "OPENAI_API_KEY is not configured."
+        return [], [], "Live synthesis key is not configured."
     if not openai_web_search_enabled():
-        return [], [], "OPENAI_ENABLE_WEB_SEARCH is not enabled."
+        return [], [], "Current source scan is not enabled."
     model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
     try:
         response = requests.post(
@@ -1673,9 +1673,9 @@ def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEven
         citations = extract_openai_citations(payload)
         data = extract_json_payload_from_text(text)
     except Exception as e:
-        return [], [], f"OpenAI calendar scout failed: {type(e).__name__}"
+        return [], [], f"Calendar scout failed: {type(e).__name__}"
     if not isinstance(data, dict):
-        return [], citations, "OpenAI calendar scout did not return parseable JSON."
+        return [], citations, "Calendar scout did not return parseable JSON."
     start = pd.Timestamp(now_ct).date()
     end = (pd.Timestamp(start) + pd.Timedelta(days=days)).date()
     rows = data.get("events") if isinstance(data.get("events"), list) else []
@@ -1688,14 +1688,14 @@ def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEven
 
 
 def bundle_with_economic_events(bundle: MorningBriefingBundle, events: list[EconomicEvent], scout_warning: str | None = None) -> MorningBriefingBundle:
-    statuses = [status for status in bundle.source_statuses if status.name not in {"Economic calendar", "OpenAI calendar scout"}]
+    statuses = [status for status in bundle.source_statuses if status.name not in {"Economic calendar", "Calendar scout"}]
     calendar_detail = (
-        f"{len(events)} verified calendar rows found by OpenAI web search for today's 0DTE session."
+        f"{len(events)} verified calendar rows found by current source scan for today's 0DTE session."
         if events
         else scout_warning or "Calendar scout finished with no dated macro events for today's 0DTE session."
     )
     statuses.append(source_status("Economic calendar", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
-    statuses.append(source_status("OpenAI calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
+    statuses.append(source_status("Calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
     return replace(bundle, economic_events=events, source_statuses=statuses)
 
 
@@ -1750,7 +1750,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     confidence = int(result.confidence if result else 45)
     flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
     flow_reason = (
-        f"Unusual Whales 0DTE flow reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}."
+        f"Flow pressure reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}."
         if isinstance(flow, dict) and flow.get("flow_bias")
         else f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}."
     )
@@ -1787,7 +1787,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
 def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
     api_key = get_secret_or_env("OPENAI_API_KEY")
     if not api_key:
-        return None, "OPENAI_API_KEY is not configured.", []
+        return None, "Live synthesis key is not configured.", []
     model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
     try:
         response = requests.post(
@@ -1801,8 +1801,8 @@ def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, l
         text = extract_openai_text(payload)
         citations = extract_openai_citations(payload)
     except Exception as e:
-        return None, f"OpenAI briefing failed: {type(e).__name__}", []
-    return text or None, None if text else "OpenAI returned an empty briefing.", citations
+        return None, f"Foresight synthesis failed: {type(e).__name__}", []
+    return text or None, None if text else "Foresight synthesis returned an empty read.", citations
 
 
 def move_line(move: MarketMove) -> str:
@@ -1850,7 +1850,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     if flow:
         first_strike = (flow.get("key_strikes") or [{}])[0]
         strike_text = f" Key strike {fmt_price(first_strike.get('strike'), 0)}." if isinstance(first_strike, dict) and first_strike.get("strike") is not None else ""
-        flow_line = f"- Unusual Whales: {flow.get('flow_bias')} with net premium pressure {fmt_money_short(flow.get('net_premium_pressure'))}.{strike_text}\n"
+        flow_line = f"- Flow pressure: {flow.get('flow_bias')} with net premium pressure {fmt_money_short(flow.get('net_premium_pressure'))}.{strike_text}\n"
     if tide:
         flow_line += f"- Market tide: {tide.get('tone')} with call net {fmt_money_short(tide.get('net_call_premium'))} and put net {fmt_money_short(tide.get('net_put_premium'))}.\n"
     risk_items = []
@@ -1859,7 +1859,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     if options.put_call_open_interest_ratio is not None and not pd.isna(options.put_call_open_interest_ratio) and options.put_call_open_interest_ratio > 1.5:
         risk_items.append("Put open interest is heavy near today's chain; treat bearish reads carefully because hedging can look directional.")
     if isinstance(flow, dict) and flow.get("flow_bias") in {"Bearish flow", "Bullish flow"}:
-        risk_items.append(f"Unusual Whales flow is {flow.get('flow_bias').lower()}; do not take the opposite side unless SPY Prophet confirms a rejection.")
+        risk_items.append(f"Flow pressure is {flow.get('flow_bias').lower()}; do not take the opposite side unless SPY Prophet confirms a rejection.")
     risk_text = "\n".join(f"- {item}" for item in risk_items) if risk_items else "- No major risk flags from the loaded sources."
     text = f"""Good morning. Here is what you need to know for SPY trading today.
 
@@ -1894,7 +1894,7 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
         ai_text, warning, citations = call_openai_morning_briefing(build_morning_briefing_prompt(bundle))
         if ai_text:
             base = rule_based_morning_briefing(bundle)
-            provider = "OpenAI Responses API + web search" if openai_web_search_enabled() else "OpenAI Responses API"
+            provider = "Prophet Foresight synthesis"
             decision = extract_json_payload_from_text(ai_text)
             confidence = base.confidence
             if isinstance(decision, dict):
@@ -1905,7 +1905,7 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
                     confidence = base.confidence
             warnings = list(base.warnings)
             if not isinstance(decision, dict):
-                warnings.insert(0, "OpenAI returned narrative text instead of the structured decision schema.")
+                warnings.insert(0, "Foresight synthesis returned narrative text instead of the structured decision schema.")
             return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, confidence, warnings, bundle.source_statuses, citations)
         return rule_based_morning_briefing(bundle, warning)
     return rule_based_morning_briefing(bundle)
@@ -3936,7 +3936,7 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
     tide = whales.get("market_tide") or {}
     darkpool = whales.get("darkpool") or {}
     volume = whales.get("options_volume") or {}
-    bias = str(flow.get("flow_bias") or tide.get("tone") or "Paid flow loaded")
+    bias = str(flow.get("flow_bias") or tide.get("tone") or "Flow context loaded")
     net_pressure = flow.get("net_premium_pressure")
     value = f"{bias} {fmt_money_short(net_pressure)}" if net_pressure is not None and not pd.isna(_finite_float(net_pressure)) else bias
     key_strikes = flow.get("key_strikes") if isinstance(flow, dict) else []
@@ -3971,7 +3971,7 @@ def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str
     flip = gex.get("gamma_flip")
     value = f"Flip {fmt_price(flip)}" if flip is not None and not pd.isna(_finite_float(flip)) else str(gex.get("dealer_tone") or "GEX loaded")
     levels = [row for row in (gex.get("levels") or []) if isinstance(row, dict)]
-    copy = "Dealer hedging context from Unusual Whales spot GEX by strike."
+    copy = "Dealer hedging context from spot GEX by strike."
     if levels:
         copy = "Largest GEX strike " + fmt_price(levels[0].get("strike"), 0) + "; use as magnet/volatility context."
     chips = [f"{fmt_price(row.get('strike'), 0)} {fmt_money_short(row.get('total_gex'))}" for row in levels[:3]]
@@ -3999,18 +3999,17 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     event_value = f"{event.event} at {event.time_label}" if event else "Run calendar scout for today's events"
     source_count = len([status for status in bundle.source_statuses if status.status == "connected"])
     source_total = len([status for status in bundle.source_statuses if status.status != "skipped"])
-    provider = result.provider if result.provider else "Verified briefing"
-    model = f" / {result.model}" if result.model else ""
+    provider = "Live synthesis" if result.model else "Verified rules"
     st.markdown(
         f"""
         <div class='morning-hero'>
           <div class='morning-hero-inner'>
             <div>
-              <div class='morning-kicker'>{ui_icon('spark', tone, 'sm')} Morning Command Center</div>
-              <div class='morning-title'>SPY Prophet Morning Briefing</div>
-              <div class='morning-subtitle'>External market context consolidated with today's SPY Prophet lines before the 0DTE session. Only dated, sourced, current context is allowed into the read.</div>
+              <div class='morning-kicker'>{ui_icon('spark', tone, 'sm')} Foresight Command</div>
+              <div class='morning-title'>SPY Prophet Foresight</div>
+              <div class='morning-subtitle'>A clear premarket read that blends structure, flow, macro, volatility, and current market tone into one 0DTE decision map.</div>
               <div class='morning-hero-metrics'>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>AI State</div><div class='morning-stat-value'>{escape('Connected' if ai_ready else 'Rule-based')}</div><div class='morning-stat-copy'>{escape(provider + model)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Foresight</div><div class='morning-stat-value'>{escape('Live' if ai_ready else 'Rules')}</div><div class='morning-stat-copy'>{escape(provider)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Calendar pending')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Generated</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Central time stamp</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Verified Sources</div><div class='morning-stat-value'>{source_count}/{source_total}</div><div class='morning-stat-copy'>Loaded feeds in this briefing</div></div>
@@ -4123,27 +4122,27 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
     citation_count = len(merge_citations(result.citations, None))
     cards = [
         _ai_verify_card(
-            "API Key",
-            "Configured" if ai_ready else "Missing",
-            "Streamlit can see OPENAI_API_KEY." if ai_ready else "Add OPENAI_API_KEY to Streamlit secrets.",
+            "Synthesis",
+            "Live" if ai_ready else "Offline",
+            "Foresight synthesis can refresh the read." if ai_ready else "Connect the synthesis key to unlock live reasoning.",
             "good" if ai_ready else "warn",
         ),
         _ai_verify_card(
-            "This Briefing",
-            "OpenAI used" if used_openai else "Rule-based",
-            "Provider returned an AI result." if used_openai else "Click Generate AI web briefing with OpenAI synthesis on.",
+            "This Read",
+            "Synthesized" if used_openai else "Rule-based",
+            "The engine consolidated the loaded inputs." if used_openai else "Click Generate Foresight to run live synthesis.",
             "good" if used_openai else "warn",
         ),
         _ai_verify_card(
-            "Model",
-            result.model or get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
-            "Model charged only when an OpenAI briefing is generated.",
+            "Reasoning Core",
+            "Ready" if ai_ready else "Standby",
+            "Used only when you generate a fresh Foresight read.",
             "info",
         ),
         _ai_verify_card(
-            "Web Search",
+            "Current Scan",
             "Enabled" if web_enabled else "Off",
-            f"{citation_count} unique citations returned in this run.",
+            f"{citation_count} current source references returned in this run.",
             "good" if web_enabled and citation_count else "info" if web_enabled else "warn",
         ),
     ]
@@ -4152,8 +4151,8 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         <div class='ai-verify'>
           <div class='ai-verify-head'>
             <div>
-              <div class='ai-verify-title'>AI Verification</div>
-              <div class='ai-verify-copy'>This tells you whether this briefing actually used the OpenAI API. Your OpenAI balance may stay unchanged until you click Generate, and dashboard usage can lag.</div>
+              <div class='ai-verify-title'>Foresight Health</div>
+              <div class='ai-verify-copy'>A quiet check that the read was freshly synthesized from current structure, flow, macro, and market inputs.</div>
             </div>
             {ui_icon('spark', 'green' if used_openai else 'amber', 'md')}
           </div>
@@ -4167,7 +4166,7 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_value = f"{event.event} at {event.time_label}" if event else "Calendar pending"
-    event_copy = f"{event.impact} impact from {event.source}." if event else "Click Generate AI web briefing or connect a calendar source to fill today's macro timing."
+    event_copy = f"{event.impact} impact event on today's calendar." if event else "Generate Foresight to fill today's macro timing."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
     technical = bundle.technical_context
@@ -4178,7 +4177,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     cards = []
     whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(options)
     if whale_value:
-        cards.append(_morning_card_html("Whale Flow", whale_value, whale_copy, "bolt", whale_tone, whale_chips))
+        cards.append(_morning_card_html("Flow Pressure", whale_value, whale_copy, "bolt", whale_tone, whale_chips))
     gex_card = unusual_whales_gex_card_data(options)
     if gex_card:
         gex_value, gex_copy, gex_chips, gex_tone = gex_card
@@ -4237,8 +4236,8 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_source = event.source if event else "Calendar pending"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No dated macro row is loaded for this run. Use Generate AI web briefing to scout public calendar sources."
+    event_source = "Macro Calendar" if event else "Calendar pending"
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No dated macro row is loaded for this run. Generate Foresight to scan current calendar sources."
     event_state = "connected" if event else "watch"
     quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
@@ -4248,7 +4247,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     whale_detail = (
         f"{whale_flow.get('alert_count', 0)} SPY 0DTE OTM alerts; {whale_flow.get('flow_bias', 'flow loaded')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
         if whale_flow
-        else "Unusual Whales paid feed was not loaded into this run."
+        else "Premium order-flow feed was not loaded into this run."
     )
     news_asof = bundle.news_items[0].published if bundle.news_items else None
     global_asof = bundle.global_context[0].as_of if bundle.global_context else None
@@ -4260,17 +4259,17 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from your pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
         _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
         _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
-        _evidence_card("Unusual Whales", "Paid flow connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
+        _evidence_card("Flow Pressure", "Connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
         _evidence_card("Fresh Headlines", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded for catalyst context.", news_asof, "connected" if bundle.news_items else "watch"),
         _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
-        _evidence_card("AI Synthesis", "OpenAI + verified JSON" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
+        _evidence_card("Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
     steps = [
         ("1", "Collect", "The app loads structure, options, technicals, news, macro, and learning stats."),
         ("2", "Package", "Those fields become the verified data bundle for the briefing agent."),
-        ("3", "Scout", "With OpenAI web search on, the agent can cite current public sources."),
+        ("3", "Scan", "When live synthesis is on, the engine can check current public sources."),
         ("4", "Merge", "The recommendation must tie external context back to the four SPY Prophet lines."),
     ]
     step_html = "".join(
@@ -4316,14 +4315,14 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
     citations = merge_citations(result.citations, None)
     if citations:
         for citation in citations[:4]:
-            rows.append(_source_row_html(citation_title(citation), "connected", "AI web search cited this source in the generated briefing.", result.generated_at, citation.get("url"), "scout"))
+            rows.append(_source_row_html(citation_title(citation), "connected", "Current source scan referenced this page in the generated read.", result.generated_at, citation.get("url"), "scout"))
     else:
-        rows.append(_source_row_html("OpenAI web citations", "not used", "No AI web search citations were returned for this run.", result.generated_at, state="scout"))
+        rows.append(_source_row_html("Current source scan", "not used", "No current source references were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
-        ("Economic calendar", "Click Generate AI web briefing for current public calendar scouting, or connect Trading Economics/custom JSON for scheduled releases."),
-        ("Unusual Whales", "Add UNUSUAL_WHALES_API_KEY or UNUSUAL_WHALES_REFRESH_TOKEN in Streamlit secrets for paid 0DTE flow, market tide, dark-pool, IV, and GEX context."),
-        ("Options depth", "Live Tastytrade gives bid, ask, spread, and Greeks. Unusual Whales adds order-flow context; yfinance remains a delayed backup."),
-        ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
+        ("Macro calendar", "Generate Foresight for current calendar scanning, or connect a structured calendar source for scheduled releases."),
+        ("Flow pressure", "Connect the premium flow token for 0DTE flow, market tide, dark-pool, IV, and GEX context."),
+        ("Options depth", "Live broker data gives bid, ask, spread, and Greeks. Premium flow adds order-flow context; market data remains the delayed backup."),
+        ("Current scan", "Keep live synthesis enabled so the engine can cite current public pages when accessible."),
     ]
     upgrade_html = "".join(
         f"<div class='upgrade-card'><div class='upgrade-name'>{escape(name)}</div><div class='upgrade-meta'>{escape(copy)}</div></div>"
@@ -4334,8 +4333,8 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
         <div class='source-ledger'>
           <div class='source-ledger-head'>
             <div>
-              <div class='source-ledger-title'>Sources Actually Used</div>
-              <div class='source-ledger-copy'>Green rows fed this briefing. Amber rows are sources to connect or scout before relying on that area.</div>
+              <div class='source-ledger-title'>Inputs Behind The Read</div>
+              <div class='source-ledger-copy'>A compact health layer for the data that fed this Foresight read.</div>
             </div>
             {ui_icon('compass', 'blue', 'md')}
           </div>
@@ -4375,22 +4374,22 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
             f"<div class='citation-url'>{escape(url)}</div>"
             "</div>"
         )
-    st.markdown("**Key AI Sources**")
+    st.markdown("**Key Current Sources**")
     st.markdown(f"<div class='citation-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Morning Briefing", "External context for today's SPY Prophet lines")
+    render_section_title("Prophet Foresight", "Clear 0DTE context for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
         active_bundle = bundle
     if not ai_ready:
-        render_data_notice("AI web briefing is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
-        with st.expander("How to connect the ChatGPT/OpenAI API"):
+        render_data_notice("Live synthesis is not connected. The verified rule-based Foresight read below still uses loaded structure and market data.", tone="warn")
+        with st.expander("How to connect live synthesis"):
             st.markdown(
-                "Create an OpenAI API key, then add it to Streamlit secrets as `OPENAI_API_KEY`. "
-                "Your regular ChatGPT subscription is separate from API billing. Optional: set `OPENAI_MODEL = \"gpt-4.1-mini\"` and `OPENAI_ENABLE_WEB_SEARCH = \"true\"`."
+                "Add the live synthesis key in Streamlit secrets to unlock the full Foresight engine. "
+                "The rule-based read stays available when live synthesis is off."
             )
     control_cols = st.columns([0.62, 0.38])
     with control_cols[0]:
@@ -4398,8 +4397,8 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
             f"""
             <div class='morning-control'>
               <div>
-                <div class='morning-control-title'>Briefing Engine</div>
-                <div class='morning-control-copy'>{escape('OpenAI web synthesis is ready.' if ai_ready else 'Verified rule-based briefing is active until OPENAI_API_KEY is added.')}</div>
+                <div class='morning-control-title'>Foresight Engine</div>
+                <div class='morning-control-copy'>{escape('Live synthesis is ready.' if ai_ready else 'Verified rule-based Foresight is active until live synthesis is connected.')}</div>
               </div>
               {ui_icon('spark' if ai_ready else 'shield', 'green' if ai_ready else 'amber', 'md')}
             </div>
@@ -4407,12 +4406,12 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
             unsafe_allow_html=True,
         )
     with control_cols[1]:
-        use_ai = st.toggle("Use OpenAI synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
-        if st.button("Generate AI web briefing" if ai_ready else "Generate morning briefing", type="primary", key="generate_morning_briefing", use_container_width=True):
+        use_ai = st.toggle("Use live synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
+        if st.button("Generate Foresight" if ai_ready else "Generate Foresight read", type="primary", key="generate_morning_briefing", use_container_width=True):
             working_bundle = bundle
             calendar_citations = []
             if use_ai and not working_bundle.economic_events:
-                with st.spinner("Checking current economic calendar sources with OpenAI web search..."):
+                with st.spinner("Checking current macro calendar sources..."):
                     ai_events, calendar_citations, calendar_warning = call_openai_calendar_scout(working_bundle.generated_at, days=0)
                 working_bundle = bundle_with_economic_events(working_bundle, ai_events, calendar_warning)
             result = generate_morning_briefing(working_bundle, use_ai=use_ai)
@@ -4431,7 +4430,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_action_panel(active_bundle, result)
     render_morning_lines_deck(active_bundle)
     render_morning_context_deck(active_bundle)
-    with st.expander("Evidence, AI verification, and sources"):
+    with st.expander("Foresight health and inputs"):
         render_ai_verification_panel(result, ai_ready, use_ai)
         render_briefing_evidence_trail(active_bundle, result)
         render_actual_source_ledger(active_bundle, result)
@@ -4442,7 +4441,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         <div class='briefing-shell'>
           <div class='briefing-head'>
             <div>
-              <div class='briefing-title'>SPY Prophet Morning Briefing</div>
+              <div class='briefing-title'>SPY Prophet Foresight</div>
               <div class='briefing-sub'>{escape(result.provider)}{f" / {escape(result.model)}" if result.model else ""} • Confidence {result.confidence}% • {escape(fmt_time(result.generated_at))}</div>
             </div>
             {ui_icon('spark', 'green' if result.confidence >= 65 else 'amber', 'lg')}
@@ -5477,7 +5476,7 @@ def main() -> None:
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tab_names = ["Live Terminal", "Morning Briefing", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
+    tab_names = ["Live Terminal", "Prophet Foresight", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
     if show_debug:
         tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -5524,7 +5523,7 @@ def main() -> None:
     with tabs["Market Context"]:
         render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
-    with tabs["Morning Briefing"]:
+    with tabs["Prophet Foresight"]:
         render_morning_briefing_tab(morning_bundle)
 
     with tabs["Prophet Chart"]:
