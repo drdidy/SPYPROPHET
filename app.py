@@ -3089,7 +3089,7 @@ def inject_global_css() -> None:
     .brand-title{font-size:2.25rem;font-weight:850;color:var(--text);line-height:1;letter-spacing:0}
     .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
     .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
-    .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:14px;margin-top:16px}
+    .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:16px;margin-top:16px;align-items:stretch}
     .hero-price-row{align-items:flex-start}
     .hero-price{font-family:var(--mono-font);font-size:2.85rem;font-weight:800;color:var(--text);line-height:1}
     .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
@@ -3127,11 +3127,13 @@ def inject_global_css() -> None:
     .strike-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .strike-value{font-family:var(--mono-font);font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
     .terminal-section{margin-top:14px}
-    .command-grid{display:grid;grid-template-columns:1.15fr .95fr .9fr;gap:14px}
+    .command-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
     .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:none}
-    .terminal-panel{padding:14px}
-    .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px}
-    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:8px}
+    .terminal-panel{padding:16px;min-height:184px;display:flex;flex-direction:column;gap:10px}
+    .panel-head{min-width:0}
+    .panel-head>div{min-width:0}
+    .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px;line-height:1.22;overflow-wrap:anywhere}
+    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:0;flex:1;overflow-wrap:anywhere}
     .data-notice{border:1px solid rgba(78,168,222,.28);border-radius:8px;background:rgba(78,168,222,.08);padding:11px 13px;color:#b9dcfb;font-size:.9rem;margin:10px 0}
     .data-notice.warn{border-color:rgba(245,196,81,.34);background:rgba(245,196,81,.08);color:#f8dfa0}
     .option-quote-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 8px}
@@ -3159,7 +3161,7 @@ def inject_global_css() -> None:
     .replay-copy{font-size:.88rem;color:var(--muted);margin-top:6px;line-height:1.45}
     .outcome-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-top:12px}
     .outcome-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
-    .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
+    .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted);margin:14px 0}
     .status-strip b{color:var(--text);font-weight:600}
     .context-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;margin-top:12px}
     .context-stack{display:grid;gap:14px}
@@ -3224,13 +3226,13 @@ def inject_global_css() -> None:
     .morning-line-card.call{border-color:rgba(46,204,113,.32);--wash:rgba(46,204,113,.18)}
     .morning-line-card.put{border-color:rgba(255,95,124,.34);--wash:rgba(255,95,124,.18)}
     .morning-line-card.neutral{--wash:rgba(103,183,255,.16)}
-    .morning-dashboard{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
-    .morning-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(18,28,42,.9),rgba(9,14,21,.96));padding:12px;min-height:166px}
+    .morning-dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+    .morning-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(18,28,42,.9),rgba(9,14,21,.96));padding:14px;min-height:168px;display:flex;flex-direction:column}
     .morning-card.green{border-color:rgba(46,204,113,.34)}.morning-card.red{border-color:rgba(255,95,124,.34)}.morning-card.amber{border-color:rgba(245,196,81,.36)}.morning-card.blue{border-color:rgba(103,183,255,.34)}
     .morning-card-head{display:flex;align-items:center;gap:10px}
     .morning-card-title{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
     .morning-card-value{font-size:1.08rem;font-weight:900;color:var(--text);line-height:1.22;margin-top:10px}
-    .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px}
+    .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px;flex:1}
     .morning-chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .morning-chip{border:1px solid rgba(141,160,184,.18);border-radius:999px;background:rgba(255,255,255,.045);padding:4px 8px;font-size:.72rem;color:var(--text)}
     .action-brief{border:1px solid rgba(46,204,113,.34);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.10),rgba(78,168,222,.08),rgba(8,13,18,.98));padding:15px;margin:12px 0}
@@ -4240,10 +4242,12 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     tone, label = _morning_confidence_tone(result.confidence)
     ring = {"green": "#2ecc71", "blue": "#67b7ff", "amber": "#f5c451", "red": "#ff5f7c"}.get(tone, "#67b7ff")
     event = _first_high_impact_event(bundle.economic_events)
-    event_value = f"{event.event} at {event.time_label}" if event else "Run calendar scout for today's events"
-    source_count = len([status for status in bundle.source_statuses if status.status == "connected"])
-    source_total = len([status for status in bundle.source_statuses if status.status != "skipped"])
-    provider = "Live synthesis" if result.model else "Verified rules"
+    event_value = f"{event.event} at {event.time_label}" if event else "No timed catalyst loaded"
+    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    stance = display_state_label(str(decision.get("stance") or "WAIT").upper())
+    contract = str(trade.get("contract") or "Wait for setup")
+    trigger = str(trade.get("trigger_line") or "No trigger selected")
     st.markdown(
         f"""
         <div class='morning-hero'>
@@ -4251,12 +4255,12 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
             <div>
               <div class='morning-kicker'>{ui_icon('spark', tone, 'sm')} Foresight Command</div>
               <div class='morning-title'>SPY Prophet Foresight</div>
-              <div class='morning-subtitle'>A clear premarket read that blends structure, flow, macro, volatility, and current market tone into one 0DTE decision map.</div>
+              <div class='morning-subtitle'>Only the trade plan, trigger lines, and filters that can change today's 0DTE decision.</div>
               <div class='morning-hero-metrics'>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Foresight</div><div class='morning-stat-value'>{escape('Live' if ai_ready else 'Rules')}</div><div class='morning-stat-copy'>{escape(provider)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Catalyst Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Scan needed')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Generated</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Central time stamp</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Verified Sources</div><div class='morning-stat-value'>{source_count}/{source_total}</div><div class='morning-stat-copy'>Loaded feeds in this briefing</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Action</div><div class='morning-stat-value'>{escape(stance)}</div><div class='morning-stat-copy'>{escape(trigger)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Contract</div><div class='morning-stat-value'>{escape(contract)}</div><div class='morning-stat-copy'>Use only after confirmation.</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Catalyst</div><div class='morning-stat-value'>{escape(event.impact if event else 'None loaded')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Timing</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Refresh before trading.</div></div>
               </div>
             </div>
             <div class='morning-orb' style='--confidence:{max(0, min(100, int(result.confidence or 0)))};--ring-color:{ring}'>
@@ -4410,12 +4414,11 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_value = f"{event.event} at {event.time_label}" if event else "No timed catalyst loaded"
-    event_copy = f"{event.impact} impact event on today's calendar." if event else "Use the Foresight scan before trading; the app will not invent macro times."
+    event_copy = f"{event.impact} impact event: avoid blind entries around this time." if event else "No dated macro event is loaded; structure and flow must do the work."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
-    technical = bundle.technical_context
-    gap_tone = "green" if technical.gap_from_prior_close and technical.gap_from_prior_close > 0 else "red" if technical.gap_from_prior_close and technical.gap_from_prior_close < 0 else "blue"
     cards = []
+    cards.append(_morning_card_html("Catalyst Clock", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"))
     whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(options)
     if whale_value:
         cards.append(_morning_card_html("Flow Pressure", whale_value, whale_copy, "bolt", whale_tone, whale_chips))
@@ -4424,34 +4427,16 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
         gex_value, gex_copy, gex_chips, gex_tone = gex_card
         cards.append(_morning_card_html("Dealer Gamma", gex_value, gex_copy, "gauge", gex_tone, gex_chips))
     cards.extend([
-        _morning_card_html("Catalyst Clock", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"),
-        _morning_card_html(
-            "OI Map",
-            f"Put/Call OI {fmt_float(options.put_call_open_interest_ratio)}",
-            f"Max pain {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.",
-            "target",
-            "blue",
-            [f"Volume P/C {fmt_float(options.put_call_volume_ratio)}"],
-        ),
         _morning_card_html("Contract Watch", quote_value, quote_copy, "contract", "green", quote_chips),
-        _morning_card_html("Overnight Tone", _joined_moves(bundle.global_context, 3), "Premarket risk-on/risk-off context; useful before the open, secondary after cash trading starts.", "compass", "blue"),
-        _morning_card_html("Rates/Dollar Pressure", _joined_moves(bundle.macro_context, 3), "10Y yields and the dollar can help or fight SPY line reactions.", "pulse", "amber"),
-        _morning_card_html(
-            "Technical Map",
-            f"Prior {fmt_price(technical.prior_high)} / {fmt_price(technical.prior_low)}",
-            f"Close {fmt_price(technical.prior_close)}; 50DMA {fmt_price(technical.ma50)}; 200DMA {fmt_price(technical.ma200)}; gap {fmt_price(technical.gap_from_prior_close)}.",
-            "peak",
-            gap_tone,
-        ),
         _morning_card_html(
             "Structure Learning",
             bundle.learning_profile.confidence_label,
-            f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}; no hit {fmt_pct(bundle.learning_profile.no_hit_rate * 100, 0)}.",
+            f"Matched history: target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}, stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.",
             "shield",
             "green" if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate else "amber",
         ),
     ])
-    st.markdown(f"<div class='morning-dashboard'>{''.join(cards)}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='morning-dashboard'>{''.join(cards[:4])}</div>", unsafe_allow_html=True)
 
 
 def _evidence_time(value) -> str:
@@ -4619,18 +4604,13 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Prophet Foresight", "Clear 0DTE context for today's SPY Prophet lines")
+    render_section_title("Prophet Foresight", "Actionable 0DTE plan for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
         active_bundle = bundle
     if not ai_ready:
-        render_data_notice("Live synthesis is not connected. The verified rule-based Foresight read below still uses loaded structure and market data.", tone="warn")
-        with st.expander("How to connect live synthesis"):
-            st.markdown(
-                "Add the live synthesis key in Streamlit secrets to unlock the full Foresight engine. "
-                "The rule-based read stays available when live synthesis is off."
-            )
+        render_data_notice("Live synthesis is not connected. A verified rule-based Foresight read is still available.", tone="warn")
     control_cols = st.columns([0.62, 0.38])
     with control_cols[0]:
         st.markdown(
@@ -4638,7 +4618,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
             <div class='morning-control'>
               <div>
                 <div class='morning-control-title'>Foresight Engine</div>
-                <div class='morning-control-copy'>{escape('Live synthesis is ready.' if ai_ready else 'Verified rule-based Foresight is active until live synthesis is connected.')}</div>
+                <div class='morning-control-copy'>{escape('Ready to refresh the trade plan.' if ai_ready else 'Rule-based read is active until live synthesis is connected.')}</div>
               </div>
               {ui_icon('spark' if ai_ready else 'shield', 'green' if ai_ready else 'amber', 'md')}
             </div>
@@ -4670,30 +4650,13 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_action_panel(active_bundle, result)
     render_morning_lines_deck(active_bundle)
     render_morning_context_deck(active_bundle)
-    with st.expander("Foresight health and inputs"):
-        render_ai_verification_panel(result, ai_ready, use_ai)
-        render_briefing_evidence_trail(active_bundle, result)
-        render_actual_source_ledger(active_bundle, result)
-        render_briefing_citations(result.citations)
+    if is_admin_diagnostics_enabled():
+        with st.expander("Foresight health and inputs"):
+            render_ai_verification_panel(result, ai_ready, use_ai)
+            render_briefing_evidence_trail(active_bundle, result)
+            render_actual_source_ledger(active_bundle, result)
+            render_briefing_citations(result.citations)
     return
-    st.markdown(
-        f"""
-        <div class='briefing-shell'>
-          <div class='briefing-head'>
-            <div>
-              <div class='briefing-title'>SPY Prophet Foresight</div>
-              <div class='briefing-sub'>{escape(result.provider)}{f" / {escape(result.model)}" if result.model else ""} • Confidence {result.confidence}% • {escape(fmt_time(result.generated_at))}</div>
-            </div>
-            {ui_icon('spark', 'green' if result.confidence >= 65 else 'amber', 'lg')}
-          </div>
-          <div class='briefing-body'>{escape(result.text)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    render_briefing_citations(result.citations)
-    with st.expander("Source audit"):
-        render_source_statuses(result.source_statuses)
 
 
 
