@@ -46,6 +46,7 @@ NEWS_RSS_URLS = tuple(url for _, url in NEWS_RSS_FEEDS)
 ECONOMIC_CALENDAR_PATH = "data/economic_calendar.json"
 REPLAY_LEARNING_DAYS = 45
 TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
+TRADING_ECONOMICS_GUEST_CREDENTIAL = "guest:guest"
 MORNING_BRIEFING_PATH = "data/morning_briefings.json"
 MORNING_BRIEFING_NEWS_MAX_AGE_DAYS = 1
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -639,20 +640,81 @@ def economic_event_from_trading_economics(raw: dict) -> EconomicEvent | None:
     return EconomicEvent(event_date, time_label, str(event_name), impact, str(raw.get("Source") or "Trading Economics"), "; ".join(values) or None)
 
 
+def economic_event_from_provider_dict(raw: dict, default_source: str = "Configured calendar API") -> EconomicEvent | None:
+    event_name = raw.get("event") or raw.get("name") or raw.get("title") or raw.get("Event") or raw.get("Category")
+    if not event_name:
+        return None
+    date_value = raw.get("date") or raw.get("datetime") or raw.get("time") or raw.get("Date") or raw.get("timestamp")
+    event_date, time_label = format_calendar_time_from_utc(str(date_value) if date_value else None)
+    if event_date is None:
+        day = raw.get("event_date") or raw.get("release_date")
+        if not day:
+            return None
+        try:
+            event_date = pd.Timestamp(day).date()
+        except Exception:
+            return None
+        time_label = str(raw.get("time_label") or raw.get("release_time") or "Time varies")
+    impact_raw = str(raw.get("impact") or raw.get("importance") or raw.get("volatility") or raw.get("Impact") or "Medium").strip()
+    if impact_raw.isdigit():
+        impact = "High" if int(impact_raw) >= 3 else "Medium" if int(impact_raw) == 2 else "Low"
+    else:
+        impact = "High" if impact_raw.lower() in {"high", "3"} else "Medium" if impact_raw.lower() in {"medium", "med", "2"} else "Low" if impact_raw.lower() in {"low", "1"} else impact_raw.title()
+    source = str(raw.get("source") or raw.get("Source") or raw.get("provider") or default_source)
+    notes = []
+    for label, keys in [("Forecast", ("forecast", "consensus", "Forecast")), ("Previous", ("previous", "Previous")), ("Actual", ("actual", "Actual"))]:
+        for key in keys:
+            value = raw.get(key)
+            if value not in [None, ""]:
+                notes.append(f"{label} {value}")
+                break
+    return EconomicEvent(event_date, time_label, str(event_name), impact, source, "; ".join(notes) or None)
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_trading_economics_calendar(start_iso: str, end_iso: str, credential: str = "") -> list[EconomicEvent]:
-    if not credential:
-        return []
+    credentials = [credential] if credential else []
+    if TRADING_ECONOMICS_GUEST_CREDENTIAL not in credentials:
+        credentials.append(TRADING_ECONOMICS_GUEST_CREDENTIAL)
     url = TRADING_ECONOMICS_CALENDAR_URL.format(start=start_iso, end=end_iso)
+    for cred in credentials:
+        try:
+            response = requests.get(url, params={"c": cred, "importance": "2", "f": "json"}, timeout=8)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            continue
+        if isinstance(payload, list):
+            events = [event for event in (economic_event_from_trading_economics(row) for row in payload if isinstance(row, dict)) if event is not None]
+            if events:
+                return sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label))
+    return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_configured_economic_calendar(start_iso: str, end_iso: str) -> list[EconomicEvent]:
+    url = get_secret_or_env("ECONOMIC_CALENDAR_API_URL")
+    if not url:
+        return []
+    headers = {"User-Agent": "SPYProphet/1.0", "Accept": "application/json"}
+    token = get_secret_or_env("ECONOMIC_CALENDAR_API_KEY")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        response = requests.get(url, params={"c": credential, "importance": "2", "f": "json"}, timeout=8)
+        response = requests.get(url, params={"start": start_iso, "end": end_iso, "country": "US"}, headers=headers, timeout=10)
         response.raise_for_status()
         payload = response.json()
     except Exception:
         return []
-    if not isinstance(payload, list):
+    rows = payload
+    if isinstance(payload, dict):
+        for key in ["events", "data", "calendar", "results"]:
+            if isinstance(payload.get(key), list):
+                rows = payload[key]
+                break
+    if not isinstance(rows, list):
         return []
-    events = [event for event in (economic_event_from_trading_economics(row) for row in payload if isinstance(row, dict)) if event is not None]
+    events = [event for event in (economic_event_from_provider_dict(row) for row in rows if isinstance(row, dict)) if event is not None]
     return sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label))
 
 
@@ -662,6 +724,9 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
     local_events = [event for event in load_economic_calendar(path) if today <= event.event_date <= end]
     if local_events:
         return local_events
+    configured_events = [event for event in fetch_configured_economic_calendar(str(today), str(end)) if today <= event.event_date <= end]
+    if configured_events:
+        return configured_events
     live_events = fetch_trading_economics_calendar(str(today), str(end), get_trading_economics_credential())
     if live_events:
         return [event for event in live_events if today <= event.event_date <= end]
@@ -947,8 +1012,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     source_statuses = [technical.status, options_intel.status, sentiment.status]
     if gamma.provider_payload:
         source_statuses.append(gamma.status)
-    for group_name, rows in [("Global yfinance markets", global_context), ("Sector yfinance ETFs", sector_context)]:
-        source_statuses.append(source_status(group_name, bool(rows), f"{len(rows)} instruments loaded from Yahoo Finance."))
+    source_statuses.append(source_status("Global yfinance markets", bool(global_context), f"{len(global_context)} instruments loaded from Yahoo Finance."))
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
@@ -3273,12 +3337,13 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_value = f"{event.event} at {event.time_label}" if event else "No verified event loaded"
-    event_copy = f"{event.impact} impact from {event.source}." if event else "Connect Trading Economics or add data/economic_calendar.json to show actual calendar events."
+    event_copy = f"{event.impact} impact from {event.source}." if event else "Add data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, or ECONOMIC_CALENDAR_API_URL to show actual calendar events."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
-    leader = bundle.sector_context[0] if bundle.sector_context else None
-    laggard = bundle.sector_context[-1] if bundle.sector_context else None
     technical = bundle.technical_context
+    headline_sources = sorted({item.source for item in bundle.news_items})
+    headline_value = f"{len(bundle.news_items)} fresh headlines" if bundle.news_items else "No fresh headlines"
+    headline_copy = f"Loaded from {', '.join(headline_sources[:3])}." if headline_sources else "Only same-day or previous-day market headlines are allowed."
     gap_tone = "green" if technical.gap_from_prior_close and technical.gap_from_prior_close > 0 else "red" if technical.gap_from_prior_close and technical.gap_from_prior_close < 0 else "blue"
     cards = [
         _morning_card_html("Macro Timing", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"),
@@ -3294,26 +3359,13 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
         _morning_card_html("Global Tape", _joined_moves(bundle.global_context, 3), "Overnight and global instruments from yfinance context.", "compass", "blue"),
         _morning_card_html("Macro Pulse", _joined_moves(bundle.macro_context, 3), "Dollar and yield pressure that can change how cleanly the lines react.", "pulse", "amber"),
         _morning_card_html(
-            "Sector Leadership",
-            leader.label if leader else "No sector data",
-            f"Leader {move_line(leader) if leader else '-'}; laggard {move_line(laggard) if laggard else '-'}.",
-            "bolt",
-            "green" if leader and leader.change_pct > 0 else "red" if leader and leader.change_pct < 0 else "blue",
-        ),
-        _morning_card_html(
             "Technical Map",
             f"Prior {fmt_price(technical.prior_high)} / {fmt_price(technical.prior_low)}",
             f"Close {fmt_price(technical.prior_close)}; 50DMA {fmt_price(technical.ma50)}; 200DMA {fmt_price(technical.ma200)}; gap {fmt_price(technical.gap_from_prior_close)}.",
             "peak",
             gap_tone,
         ),
-        _morning_card_html(
-            "Sentiment",
-            bundle.sentiment.label,
-            f"Headline score {bundle.sentiment.headline_score}; bullish words {bundle.sentiment.bullish_count}; bearish words {bundle.sentiment.bearish_count}.",
-            "spark",
-            "green" if "Bullish" in bundle.sentiment.label else "red" if "Bearish" in bundle.sentiment.label else "blue",
-        ),
+        _morning_card_html("Fresh Headlines", headline_value, headline_copy, "spark", "blue"),
         _morning_card_html(
             "Structure Learning",
             bundle.learning_profile.confidence_label,
@@ -3355,7 +3407,6 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     options_detail = f"{bundle.options_intelligence.status.detail} Selected quote source: {quote_detail}"
     news_asof = bundle.news_items[0].published if bundle.news_items else None
     global_asof = bundle.global_context[0].as_of if bundle.global_context else None
-    sector_asof = bundle.sector_context[0].as_of if bundle.sector_context else None
     ai_detail = (
         f"{result.provider}. Web search citations returned: {len(result.citations or [])}. "
         f"Model: {result.model or 'rule-based engine'}."
@@ -3365,9 +3416,8 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
         _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
-        _evidence_card("Sector Context", f"{len(bundle.sector_context)} sector ETFs", _joined_moves(bundle.sector_context, 3), sector_asof, "connected" if bundle.sector_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
-        _evidence_card("News Sentiment", bundle.sentiment.status.name, f"{len(bundle.news_items)} headlines loaded; sentiment label: {bundle.sentiment.label}.", news_asof, "connected" if bundle.news_items else "watch"),
+        _evidence_card("Fresh Headlines", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded for catalyst context.", news_asof, "connected" if bundle.news_items else "watch"),
         _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
         _evidence_card("AI Synthesis", "OpenAI + verified JSON" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
@@ -3423,7 +3473,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
     else:
         rows.append(_source_row_html("OpenAI web citations", "unavailable", "No web citations were returned for this briefing run. The briefing is using the verified app data bundle only.", result.generated_at))
     upgrades = [
-        ("Economic calendar", "Add TRADING_ECONOMICS_CREDENTIAL or maintain data/economic_calendar.json for real CPI/FOMC/NFP times."),
+        ("Economic calendar", "Use data/economic_calendar.json, TRADING_ECONOMICS_CREDENTIAL, or ECONOMIC_CALENDAR_API_URL for real CPI/FOMC/NFP times."),
         ("Verified social/flow feed", "Add SOCIAL_SENTIMENT_API_URL only if you have a reliable endpoint; otherwise the app will not invent social sentiment."),
         ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current public pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
     ]

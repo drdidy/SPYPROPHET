@@ -15,6 +15,7 @@ from app import (
     classify_news_relevance,
     get_central_tz,
     get_upcoming_economic_events,
+    economic_event_from_provider_dict,
     is_fresh_for_0dte,
     is_market_news_relevant,
     load_economic_calendar,
@@ -159,6 +160,23 @@ def test_trading_economics_event_mapping() -> None:
     assert event.impact == "High"
     assert "ET" in event.time_label
     assert "Forecast 200K" in event.notes
+
+
+def test_generic_calendar_provider_mapping() -> None:
+    event = economic_event_from_provider_dict({
+        "datetime": "2026-05-01T12:30:00Z",
+        "event": "Core PCE Price Index",
+        "impact": "high",
+        "source": "MacroSignal",
+        "forecast": "0.3%",
+        "previous": "0.2%",
+    })
+
+    assert event is not None
+    assert event.event == "Core PCE Price Index"
+    assert event.impact == "High"
+    assert event.source == "MacroSignal"
+    assert "Forecast 0.3%" in event.notes
 
 
 def _journal_entry(signal_id: str, signal_type: str, line_name: str, outcome: str) -> JournalEntry:
