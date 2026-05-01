@@ -2181,6 +2181,22 @@ def inject_global_css() -> None:
     .morning-narrative-head{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:10px;margin-bottom:10px}
     .morning-narrative-title{font-size:1.05rem;font-weight:900;color:var(--text)}
     .morning-narrative-body{white-space:pre-wrap;color:#dbe8f5;font-size:.9rem;line-height:1.55}
+    .evidence-shell{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:linear-gradient(135deg,rgba(12,20,31,.96),rgba(8,13,18,.98));padding:14px;margin:12px 0}
+    .evidence-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .evidence-title{font-size:1.12rem;font-weight:950;color:var(--text);line-height:1.15}
+    .evidence-copy{color:var(--muted);font-size:.84rem;line-height:1.4;margin-top:4px}
+    .evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+    .evidence-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:10px;min-height:128px}
+    .evidence-card.connected{border-color:rgba(46,204,113,.3)}.evidence-card.watch{border-color:rgba(245,196,81,.34)}.evidence-card.internal{border-color:rgba(103,183,255,.32)}
+    .evidence-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
+    .evidence-value{font-size:.98rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:7px}
+    .evidence-detail{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:6px}
+    .evidence-asof{font-family:var(--mono-font);font-size:.72rem;color:var(--blue);margin-top:7px}
+    .evidence-flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
+    .evidence-step{border:1px solid rgba(141,160,184,.15);border-radius:8px;background:rgba(255,255,255,.03);padding:9px}
+    .evidence-step-num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;background:rgba(103,183,255,.14);color:var(--blue);font-family:var(--mono-font);font-weight:900;font-size:.72rem}
+    .evidence-step-title{font-weight:850;color:var(--text);font-size:.82rem;margin-top:7px}
+    .evidence-step-copy{font-size:.75rem;color:var(--muted);line-height:1.33;margin-top:4px}
     .scout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
     .scout-card,.citation-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
@@ -2191,7 +2207,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.evidence-grid,.evidence-flow{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -3160,6 +3176,80 @@ def render_morning_narrative(result: MorningBriefingResult) -> None:
     )
 
 
+def _evidence_time(value) -> str:
+    if value is None:
+        return "as-of: current session"
+    try:
+        return f"as-of: {fmt_time(value)}"
+    except Exception:
+        return f"as-of: {value}"
+
+
+def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str = "connected") -> str:
+    return (
+        f"<div class='evidence-card {state}'>"
+        f"<div class='evidence-label'>{escape(label)}</div>"
+        f"<div class='evidence-value'>{escape(value)}</div>"
+        f"<div class='evidence-detail'>{escape(detail)}</div>"
+        f"<div class='evidence-asof'>{escape(_evidence_time(as_of))}</div>"
+        "</div>"
+    )
+
+
+def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
+    event = _first_high_impact_event(bundle.economic_events)
+    event_source = event.source if event else "No calendar row"
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No economic event row was loaded into the bundle."
+    event_state = "watch" if event and event.source == "Macro watchlist" else "connected" if event else "watch"
+    quote_providers = sorted({str(q.get("provider") or "quote") for q in (bundle.options_intelligence.selected_quotes or [])})
+    quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
+    options_detail = f"{bundle.options_intelligence.status.detail} Selected quote source: {quote_detail}"
+    news_asof = bundle.news_items[0].published if bundle.news_items else None
+    global_asof = bundle.global_context[0].as_of if bundle.global_context else None
+    sector_asof = bundle.sector_context[0].as_of if bundle.sector_context else None
+    ai_detail = (
+        f"{result.provider}. Web search citations returned: {len(result.citations or [])}. "
+        f"Model: {result.model or 'rule-based engine'}."
+    )
+    cards = [
+        _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from your pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
+        _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
+        _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
+        _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
+        _evidence_card("Sector Context", f"{len(bundle.sector_context)} sector ETFs", _joined_moves(bundle.sector_context, 3), sector_asof, "connected" if bundle.sector_context else "watch"),
+        _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
+        _evidence_card("News Sentiment", bundle.sentiment.status.name, f"{len(bundle.news_items)} headlines loaded; sentiment label: {bundle.sentiment.label}.", news_asof, "connected" if bundle.news_items else "watch"),
+        _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
+        _evidence_card("AI Synthesis", "OpenAI + verified JSON" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
+    ]
+    steps = [
+        ("1", "Collect", "The app loads structure, options, technicals, news, macro, sectors, and learning stats."),
+        ("2", "Package", "Those fields become VERIFIED_DATA_JSON inside the Morning Briefing prompt."),
+        ("3", "Search", "If OpenAI web search is enabled, the model may add cited current public sources."),
+        ("4", "Merge", "The recommendation must tie external context back to the four SPY Prophet lines."),
+    ]
+    step_html = "".join(
+        f"<div class='evidence-step'><span class='evidence-step-num'>{num}</span><div class='evidence-step-title'>{escape(title)}</div><div class='evidence-step-copy'>{escape(copy)}</div></div>"
+        for num, title, copy in steps
+    )
+    st.markdown(
+        f"""
+        <div class='evidence-shell'>
+          <div class='evidence-head'>
+            <div>
+              <div class='evidence-title'>Evidence Trail</div>
+              <div class='evidence-copy'>This is the proof layer: what the briefing used, where it came from, and how it was merged before the decision.</div>
+            </div>
+            {ui_icon('shield', 'blue', 'md')}
+          </div>
+          <div class='evidence-grid'>{''.join(cards)}</div>
+          <div class='evidence-flow'>{step_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_scout_sources() -> None:
     cards = []
     for source in CURATED_MORNING_SOURCES:
@@ -3227,6 +3317,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_lines_deck(bundle)
     render_morning_action_panel(bundle, result)
     render_morning_context_deck(bundle)
+    render_briefing_evidence_trail(bundle, result)
     with st.expander("External scout list the AI will try to search"):
         render_scout_sources()
         st.caption("Some public social pages may block automated access or require login. When that happens, the AI must omit them from the briefing rather than guessing.")
