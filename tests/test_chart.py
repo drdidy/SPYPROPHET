@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import DynamicLine, Pivot, SecondaryPivot, TradeSignal, build_prophet_chart, build_structure_path_chart, get_central_tz, select_secondary_lines_for_chart
+from app import DynamicLine, Pivot, SecondaryPivot, TradeSignal, build_prophet_chart, build_structure_map_svg, build_structure_path_chart, get_central_tz, select_secondary_lines_for_chart
 
 
 def _ts(s: str):
@@ -61,3 +61,13 @@ def test_structure_path_chart_novice_view():
     assert "Upper trade zone" in names
     assert "Upper Put Trigger" in names
     assert fig.layout.height == 620
+
+
+def test_animated_structure_map_svg():
+    df=_candles(); lines=_lines()
+    html=build_structure_map_svg(df, lines, [], [], None, 101.2, _ts("2026-04-28T12:00:00"), title="Test Map")
+    assert "<svg" in html
+    assert "Animated structure map" in html
+    assert "Upper Put Trigger" in html
+    assert "SPY 101.20" in html
+    assert "Candlestick" not in html

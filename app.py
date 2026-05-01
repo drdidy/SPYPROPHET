@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
+from html import escape
 from typing import Optional
 
 import pandas as pd
@@ -1610,6 +1611,219 @@ def build_structure_path_chart(candles_df, primary_lines, secondary_lines, signa
     return fig
 
 
+def _svg_polyline_path(points: list[tuple[float, float]]) -> str:
+    if not points:
+        return ""
+    return " ".join(("M" if i == 0 else "L") + f"{x:.2f},{y:.2f}" for i, (x, y) in enumerate(points))
+
+
+def _svg_text(value: object) -> str:
+    return escape(str(value if value is not None else "-"))
+
+
+def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals, decision_state, current_price, current_dt, title="Structure Map", subtitle=None, secondary_mode="nearest 6") -> str:
+    width, height = 1180, 720
+    x0, x1, y0, y1 = 84, 1088, 72, 502
+    if candles_df is None or candles_df.empty:
+        return (
+            "<div class='svg-map-shell'><svg viewBox='0 0 1180 420' role='img'>"
+            "<rect width='1180' height='420' rx='24' fill='#0b1220'/>"
+            "<text x='590' y='210' text-anchor='middle' fill='#dbeafe' font-size='24' font-weight='800'>No price path available</text>"
+            "</svg></div>"
+        )
+
+    df = candles_df.sort_index()
+    _, _, _, close_col = safe_ohlc_columns(df)
+    times = list(df.index)
+    current_ts = pd.Timestamp(current_dt)
+    if current_dt is not None and current_ts > times[-1]:
+        times.append(current_ts)
+
+    close_values = [float(v) for v in df[close_col].dropna().tolist()]
+    level_values = []
+    relevant_lines = list(primary_lines or []) + select_secondary_lines_for_chart(secondary_lines or [], current_price if current_price is not None else float("nan"), current_ts, secondary_mode)
+    for line in relevant_lines:
+        for ts in times:
+            v = line.tradable_value_at(ts)
+            if not pd.isna(v):
+                level_values.append(float(v))
+    if current_price is not None and not pd.isna(current_price):
+        level_values.append(float(current_price))
+    for sg in signals or []:
+        for v in [sg.entry_price, sg.stop_price, sg.target_price, sg.line_value_at_rejection]:
+            if v is not None and not pd.isna(v):
+                level_values.append(float(v))
+
+    all_values = close_values + level_values
+    lo, hi = min(all_values), max(all_values)
+    span = max(hi - lo, 1.0)
+    pad = max(span * 0.18, 1.5)
+    lo -= pad
+    hi += pad
+
+    def x_for(ts):
+        if len(times) <= 1:
+            return (x0 + x1) / 2
+        idx = times.index(pd.Timestamp(ts)) if pd.Timestamp(ts) in times else len(times) - 1
+        return x0 + (idx / (len(times) - 1)) * (x1 - x0)
+
+    def y_for(value):
+        if value is None or pd.isna(value):
+            return (y0 + y1) / 2
+        return y1 - ((float(value) - lo) / (hi - lo)) * (y1 - y0)
+
+    spy_points = [(x_for(ts), y_for(float(df.loc[ts, close_col]))) for ts in df.index if ts in df.index and not pd.isna(df.loc[ts, close_col])]
+    spy_path = _svg_polyline_path(spy_points)
+    active_signal = get_latest_active_signal(signals or [], df)
+    closest = get_closest_primary_line(primary_lines or [], current_ts, current_price) if current_price is not None and not pd.isna(current_price) else None
+    current_y = y_for(current_price)
+    current_x = x_for(times[-1])
+
+    def line_points(line):
+        return [(x_for(ts), y_for(line.tradable_value_at(ts))) for ts in times if not pd.isna(line.tradable_value_at(ts))]
+
+    rail_items = []
+    for line in primary_lines or []:
+        path = _svg_polyline_path(line_points(line))
+        if not path:
+            continue
+        is_closest = closest is not None and closest.name == line.name
+        color = "#31d0aa" if line.zone_type == "CALL_ZONE" else "#ff6b8a"
+        rail_items.append((line, path, y_for(line.tradable_value_at(times[-1])) + 5, is_closest, color))
+
+    rails = []
+    last_label_y = -999.0
+    for line, path, label_y, is_closest, color in sorted(rail_items, key=lambda item: item[2]):
+        label_y = min(max(label_y, last_label_y + 22), y1 - 8)
+        last_label_y = label_y
+        rails.append(
+            f"<path d='{path}' class='rail {'rail-hot' if is_closest else ''}' stroke='{color}'/>"
+            f"<text x='{x0 + 14}' y='{label_y:.2f}' class='rail-label' fill='{color}'>{_svg_text(display_line_name(line.name))}</text>"
+        )
+
+    targets = []
+    for line in select_secondary_lines_for_chart(secondary_lines or [], current_price if current_price is not None else float("nan"), current_ts, secondary_mode):
+        path = _svg_polyline_path(line_points(line))
+        if path:
+            targets.append(f"<path d='{path}' class='target-rail'/>")
+
+    def channel_polygon(low_name, high_name):
+        low_line, high_line = get_line_by_name(primary_lines or [], low_name), get_line_by_name(primary_lines or [], high_name)
+        if not low_line or not high_line:
+            return ""
+        lows = line_points(low_line)
+        highs = line_points(high_line)
+        if not lows or not highs:
+            return ""
+        pts = lows + list(reversed(highs))
+        return " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
+
+    upper_poly = channel_polygon("UD", "UA")
+    lower_poly = channel_polygon("LD", "LA")
+    signal_marker = ""
+    signal_title = "No active setup"
+    signal_copy = "Waiting for a clean rejection"
+    if active_signal:
+        sig_color = "#31d0aa" if active_signal.signal_type == "CALL" else "#ff6b8a"
+        sig_y_value = active_signal.entry_price if active_signal.entry_price is not None and not pd.isna(active_signal.entry_price) else active_signal.line_value_at_rejection
+        sig_x = x_for(active_signal.entry_time or active_signal.rejection_time)
+        sig_y = y_for(sig_y_value)
+        signal_title = f"{active_signal.signal_type} {_humanize(active_signal.status)}"
+        signal_copy = display_line_name(active_signal.line_name)
+        signal_marker = (
+            f"<g class='signal-pulse' transform='translate({sig_x:.2f} {sig_y:.2f})'>"
+            f"<circle r='18' fill='{sig_color}' opacity='.16'/><circle r='8' fill='{sig_color}'/>"
+            f"<text x='18' y='5' class='marker-label' fill='{sig_color}'>{_svg_text(active_signal.signal_type)}</text></g>"
+        )
+
+    decision_title = _humanize(decision_state.final_decision) if decision_state else "Wait"
+    closest_label = display_line_name(closest.name) if closest else "No trigger"
+    closest_value = closest.tradable_value_at(current_ts) if closest else float("nan")
+    subtitle = subtitle or f"SPY {fmt_price(current_price)} near {closest_label} {fmt_price(closest_value)}"
+    grid = []
+    for i in range(5):
+        y = y0 + (i / 4) * (y1 - y0)
+        val = hi - (i / 4) * (hi - lo)
+        grid.append(f"<line x1='{x0}' y1='{y:.2f}' x2='{x1}' y2='{y:.2f}' class='grid-line'/><text x='32' y='{y + 4:.2f}' class='axis-label'>{val:.2f}</text>")
+
+    latest_label = fmt_time(times[-1]) if times else "-"
+    first_label = fmt_time(times[0]) if times else "-"
+    cards = [
+        ("Decision", decision_title, signal_copy),
+        ("Closest Trigger", closest_label, fmt_price(closest_value)),
+        ("Current SPY", fmt_price(current_price), latest_label),
+        ("Active Setup", signal_title, "Signal engine"),
+    ]
+    card_html = "".join(
+        f"<div class='svg-map-card'><div class='svg-card-label'>{_svg_text(k)}</div><div class='svg-card-value'>{_svg_text(v)}</div><div class='svg-card-copy'>{_svg_text(c)}</div></div>"
+        for k, v, c in cards
+    )
+
+    return f"""
+    <style>
+      .svg-map-shell{{background:linear-gradient(180deg,#101927 0%,#0b111d 100%);border:1px solid #274060;border-radius:18px;padding:18px 18px 14px;box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:Inter,Segoe UI,system-ui,sans-serif;color:#e7eefb}}
+      .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
+      .svg-map-title h3{{margin:0;font-size:22px;letter-spacing:0;font-weight:850;color:#f8fbff}}
+      .svg-map-title p{{margin:4px 0 0;color:#9cc7f5;font-size:13px}}
+      .svg-map-badge{{border:1px solid #2c79bd;border-radius:999px;padding:7px 11px;color:#9dd7ff;background:#0c2238;font-size:12px;font-weight:750;white-space:nowrap}}
+      .grid-line{{stroke:#263b56;stroke-width:1;opacity:.72}}
+      .axis-label{{fill:#7f9ab7;font-size:12px;font-weight:650}}
+      .zone-upper{{fill:#1c78b8;opacity:.14}}
+      .zone-lower{{fill:#e85b7b;opacity:.10}}
+      .rail{{fill:none;stroke-width:3;stroke-linecap:round;stroke-dasharray:10 10;animation:railFlow 9s linear infinite}}
+      .rail-hot{{stroke-width:5;filter:url(#softGlow)}}
+      .target-rail{{fill:none;stroke:#8fa4bd;stroke-width:1.5;stroke-dasharray:3 7;opacity:.55}}
+      .spy-path{{fill:none;stroke:url(#spyGradient);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:url(#softGlow);stroke-dasharray:1400;stroke-dashoffset:1400;animation:drawPath 2.4s ease-out forwards}}
+      .spy-shadow{{fill:none;stroke:#1c6eb8;stroke-width:16;stroke-linecap:round;stroke-linejoin:round;opacity:.18;filter:blur(5px)}}
+      .price-line{{stroke:#f8fbff;stroke-width:1.5;stroke-dasharray:7 9;opacity:.85}}
+      .price-dot{{fill:#f8fbff;stroke:#50b7ff;stroke-width:5;filter:url(#softGlow)}}
+      .rail-label,.marker-label{{font-size:12px;font-weight:850;letter-spacing:0}}
+      .map-label{{fill:#d9ecff;font-size:13px;font-weight:800}}
+      .map-muted{{fill:#8ba9c8;font-size:12px;font-weight:650}}
+      .signal-pulse circle:first-child{{animation:pulse 2.2s ease-in-out infinite;transform-origin:center}}
+      .svg-map-cards{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}}
+      .svg-map-card{{border:1px solid #263e5b;background:#0d1726;border-radius:8px;padding:11px 12px;min-height:72px}}
+      .svg-card-label{{font-size:11px;color:#7db9ef;text-transform:uppercase;letter-spacing:.08em}}
+      .svg-card-value{{font-size:19px;line-height:1.2;margin-top:5px;font-weight:850;color:#fbfdff}}
+      .svg-card-copy{{font-size:12px;color:#95acc6;margin-top:6px}}
+      @keyframes drawPath{{to{{stroke-dashoffset:0}}}}
+      @keyframes railFlow{{to{{stroke-dashoffset:-120}}}}
+      @keyframes pulse{{0%,100%{{transform:scale(.85);opacity:.16}}50%{{transform:scale(1.4);opacity:.32}}}}
+      @media (max-width:760px){{.svg-map-title{{display:block}}.svg-map-badge{{display:inline-block;margin-top:10px}}.svg-map-cards{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+    </style>
+    <div class='svg-map-shell'>
+      <div class='svg-map-title'><div><h3>{_svg_text(title)}</h3><p>{_svg_text(subtitle)}</p></div><div class='svg-map-badge'>Animated structure map</div></div>
+      <svg viewBox='0 0 {width} {height}' role='img' aria-label='{_svg_text(title)}'>
+        <defs>
+          <linearGradient id='spyGradient' x1='0' x2='1'><stop offset='0%' stop-color='#9bdcff'/><stop offset='48%' stop-color='#ffffff'/><stop offset='100%' stop-color='#f4c76b'/></linearGradient>
+          <filter id='softGlow'><feGaussianBlur stdDeviation='4' result='blur'/><feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge></filter>
+        </defs>
+        <rect x='0' y='0' width='{width}' height='{height - 96}' rx='18' fill='#0a1321'/>
+        <rect x='{x0}' y='{y0}' width='{x1 - x0}' height='{y1 - y0}' rx='14' fill='#0d1828' stroke='#203a58'/>
+        {''.join(grid)}
+        {"<polygon points='" + upper_poly + "' class='zone-upper'/>" if upper_poly else ""}
+        {"<polygon points='" + lower_poly + "' class='zone-lower'/>" if lower_poly else ""}
+        {''.join(targets)}
+        {''.join(rails)}
+        <path d='{spy_path}' class='spy-shadow'/>
+        <path id='spyPath' d='{spy_path}' class='spy-path'/>
+        <line x1='{x0}' y1='{current_y:.2f}' x2='{x1}' y2='{current_y:.2f}' class='price-line'/>
+        <circle class='price-dot' cx='{current_x:.2f}' cy='{current_y:.2f}' r='7'/>
+        <text x='{x1 - 4}' y='{current_y - 12:.2f}' text-anchor='end' class='map-label'>SPY {fmt_price(current_price)}</text>
+        {signal_marker}
+        <text x='{x0}' y='{height - 132}' class='map-muted'>{_svg_text(first_label)}</text>
+        <text x='{x1}' y='{height - 132}' text-anchor='end' class='map-muted'>{_svg_text(latest_label)}</text>
+        <circle r='5' fill='#f4c76b'><animateMotion dur='7s' repeatCount='indefinite' path='{spy_path}'/></circle>
+      </svg>
+      <div class='svg-map-cards'>{card_html}</div>
+    </div>
+    """
+
+
+def render_structure_map_svg(*args, height: int = 820, **kwargs) -> None:
+    components.html(build_structure_map_svg(*args, **kwargs), height=height, scrolling=False)
+
+
 def render_chart_brief(current_price, closest_line, active_signal, decision_state, current_dt):
     closest_value = closest_line.tradable_value_at(current_dt) if closest_line else None
     signal_text = f"{active_signal.signal_type} {_humanize(active_signal.status)}" if active_signal else "No active signal"
@@ -2008,22 +2222,20 @@ def main() -> None:
                 ])
 
     with tabs["Prophet Chart"]:
-        render_section_title("Prophet Chart", "Decision map, then advanced candle detail")
+        render_section_title("Prophet Chart", "Animated decision map")
         chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
-        cc1,cc2,cc3,cc4,cc5=st.columns([1.1,1,1,1,1])
-        chart_mode = cc1.selectbox("View", ["Structure Path", "Candlestick Advanced"], index=0, key="chart_view_mode")
-        show_secondary = cc2.checkbox("Targets", value=True, key="chart_show_targets")
-        show_signals = cc3.checkbox("Signals", value=True, key="chart_show_signals")
-        show_overlays = cc4.checkbox("Stops/Targets", value=True, key="chart_show_overlays")
-        secondary_mode = cc5.selectbox("Target Density", ["nearest 6","nearest 12","all"], index=0, key="chart_target_density")
+        cc1,cc2=st.columns([1.1,1])
+        chart_mode = cc1.selectbox("View", ["Animated Map", "Advanced Candles"], index=0, key="chart_view_mode")
+        secondary_mode = cc2.selectbox("Targets", ["nearest 6","nearest 12","all"], index=0, key="chart_target_density")
+        show_secondary = True
+        show_signals = True
+        show_overlays = True
         try:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
-            if chart_mode == "Structure Path":
-                fig = build_structure_path_chart(chart_df, primary_lines, secondary_lines if show_secondary else [], signals if show_signals else [], decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), secondary_mode=secondary_mode)
-                render_plotly_html(fig, height=660, display_mode_bar=False)
-                st.caption("Simple view: the white path is SPY, shaded areas are decision zones, dashed rails are nearby targets.")
+            if chart_mode == "Animated Map":
+                render_structure_map_svg(chart_df, primary_lines, secondary_lines, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), title="SPY Structure Map", subtitle=f"Prior session {prior_day}; signal day {signal_day}", secondary_mode=secondary_mode)
             else:
                 fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=True, secondary_mode=secondary_mode)
                 render_plotly_html(fig)
@@ -2041,7 +2253,7 @@ def main() -> None:
             rca,rcb,rcc=st.columns([1,1,1])
             rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
             mode = rcb.selectbox("Mode", ["Full Day Review","Step Replay"], key="replay_mode")
-            replay_view = rcc.selectbox("View", ["Structure Path", "Candlestick Advanced"], index=0, key="replay_view_mode")
+            replay_view = rcc.selectbox("View", ["Animated Map", "Advanced Candles"], index=0, key="replay_view_mode")
             day_df = filter_replay_day(df, rdate)
             rtime = None
             if mode=="Step Replay" and not day_df.empty:
@@ -2059,9 +2271,8 @@ def main() -> None:
                 st.info("Outcome review is visible for this replay.")
             else:
                 st.info("Future outcomes are hidden for this replay point.")
-            if replay_view == "Structure Path":
-                rfig = build_structure_path_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.signals, replay_decision, replay_price, replay_dt)
-                render_plotly_html(rfig, height=660, display_mode_bar=False)
+            if replay_view == "Animated Map":
+                render_structure_map_svg(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.signals, replay_decision, replay_price, replay_dt, title=f"Replay Map: {rdate}", subtitle=f"Structure from {rs.prior_trading_day}; mode {_humanize(mode)}")
             else:
                 rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, replay_decision, replay_price, replay_dt, show_secondary=show_sec_replay)
                 render_plotly_html(rfig)
