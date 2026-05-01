@@ -22,6 +22,8 @@ TARGET_OTM_STRIKE_DISTANCE = 2.0
 SPY_STRIKE_INCREMENT = 1
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
+RTH_SESSION_START = time(8, 30)
+RTH_SESSION_END = time(15, 0)
 
 
 @dataclass(frozen=True)
@@ -281,10 +283,10 @@ def filter_rth_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     session = df[df.index.date == trading_day].sort_index()
-    rth = session.between_time(time(8, 30), time(15, 0), inclusive="both")
+    rth = session.between_time(RTH_SESSION_START, RTH_SESSION_END, inclusive="both")
     diffs = session.index.to_series().diff().dropna()
     if not diffs.empty and diffs.median() >= pd.Timedelta(minutes=30):
-        rth = rth[rth.index.time < time(15, 0)]
+        rth = rth[rth.index.time < RTH_SESSION_END]
     return rth
 
 
@@ -1087,6 +1089,16 @@ def fmt_time(value):
     ts = ts.tz_localize(get_central_tz()) if ts.tzinfo is None else ts.tz_convert(get_central_tz())
     return ts.strftime("%Y-%m-%d %H:%M %Z")
 
+
+def rth_session_window_label() -> str:
+    def compact_session_time(value: time) -> str:
+        template = "%I:00" if value.minute == 0 else "%I:%M"
+        return value.strftime(template).lstrip("0")
+
+    start = compact_session_time(RTH_SESSION_START)
+    end = compact_session_time(RTH_SESSION_END)
+    return f"{start}-{end} CT"
+
 def safe_to_dict(obj):
     if obj is None: return {}
     d = obj if isinstance(obj,dict) else asdict(obj) if hasattr(obj,'__dataclass_fields__') else {"value":str(obj)}
@@ -1462,7 +1474,7 @@ def render_terminal_hero(
         _intel_tile("VIX Regime", f"{vix_value} {market_context.vix_label}", market_context.vix_copy, market_context.vix_tone),
         _intel_tile("SPY Pressure", market_context.spy_pressure, f"3-bar change {pressure_value}", market_context.spy_pressure_tone),
         _intel_tile("Trigger Gap", market_context.trigger_gap_label, f"Distance {trigger_gap}", market_context.trigger_gap_tone),
-        _intel_tile("Structure", str(prior_day or "-"), "Yahoo RTH anchor", "blue"),
+        _intel_tile("Pivot Window", rth_session_window_label(), "Prior-day RTH candles", "blue"),
     ])
     anchors = get_primary_anchor_summary(primary_lines)
     anchor_html = "".join([

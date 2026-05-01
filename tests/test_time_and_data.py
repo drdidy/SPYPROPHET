@@ -12,6 +12,7 @@ from app import (
     get_latest_available_trading_day,
     get_live_signal_day,
     get_prior_trading_day,
+    rth_session_window_label,
 )
 
 
@@ -52,6 +53,10 @@ def test_rth_filter_boundaries() -> None:
     assert datetime(2026, 4, 28, 15, 0, tzinfo=get_central_tz()) in rth.index
     assert datetime(2026, 4, 28, 8, 29, tzinfo=get_central_tz()) not in rth.index
     assert datetime(2026, 4, 28, 15, 1, tzinfo=get_central_tz()) not in rth.index
+
+
+def test_rth_session_window_label_matches_strategy_window() -> None:
+    assert rth_session_window_label() == "8:30-3:00 CT"
 
 
 def test_rth_filter_excludes_after_close_hourly_bar() -> None:
