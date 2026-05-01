@@ -1,4 +1,8 @@
 .streamlit/secrets.toml
 .venv/
+__pycache__/
+tests/__pycache__/
+.playwright-cli/
+output/
 data/signal_journal.json
 data/*.corrupt.*.json

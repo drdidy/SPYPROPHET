@@ -856,6 +856,8 @@ def inject_global_css() -> None:
     .prophet-root{background:var(--bg);color:var(--text)} .prophet-header{padding:12px 16px;border:1px solid var(--border);border-radius:14px;background:linear-gradient(135deg,#111a2c,#0b1220)}
     .metric-card{padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--panel)} .glow-card{box-shadow:0 0 20px rgba(101,184,255,.08)}
     .card-title{font-size:.78rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:monospace} .small-muted{color:var(--muted);font-size:.8rem}
+    .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
+    .status-strip b{color:var(--text);font-weight:600}
     .zone-call{border-color:var(--call)} .zone-put{border-color:var(--put)} .zone-neutral{border-color:var(--neutral)} .target-only{opacity:.85}
     .signal-badge{padding:2px 10px;border-radius:999px;font-size:.78rem;border:1px solid var(--border)} .signal-call{background:rgba(41,209,125,.15)} .signal-put{background:rgba(255,107,138,.15)}
     .signal-pending{border-color:var(--warning)} .signal-confirmed{border-color:var(--call)} .bias-card{padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft)}
@@ -939,6 +941,11 @@ def render_warning_panel(message): st.warning(message)
 
 def render_debug_json(label, obj):
     st.write(label); st.json(obj)
+
+
+def render_status_strip(items) -> None:
+    html = "".join(f"<span><b>{label}</b> {value if value is not None else '-'}</span>" for label, value in items)
+    st.markdown(f"<div class='status-strip'>{html}</div>", unsafe_allow_html=True)
 
 
 
@@ -1289,8 +1296,7 @@ def main() -> None:
     show_debug = st.sidebar.toggle("Show Debug Lab", value=False)
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
     provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=1 if not get_missing_tastytrade_secrets() else 0)
-    st.sidebar.write(f"Current CT: {now_ct.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    st.sidebar.caption("No order execution. Analysis and quote display only.")
+    st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
 
     render_section_title("SPY Prophet", "0DTE Structure Terminal", "🔮")
     st.caption("Where Structure Becomes Foresight")
@@ -1323,9 +1329,10 @@ def main() -> None:
                 decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
 
     render_header_ticker(latest_price, bias, closest, signals[-1] if signals else None, strikes, provider_status=provider)
-    st.sidebar.write(f"Data loaded: {not df.empty}")
-    st.sidebar.write(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
-    st.sidebar.write(f"Prior day: {prior_day}")
+    if show_debug:
+        st.sidebar.caption(f"Data loaded: {not df.empty}")
+        st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
+        st.sidebar.caption(f"Prior day: {prior_day}")
 
     tabs = st.tabs(["Live Terminal","Structure Map","Prophet Chart","Signal Engine","Replay Lab","Options Cockpit","Journal Analytics","Playbook","Debug Lab"])
     with tabs[0]:
@@ -1356,15 +1363,19 @@ def main() -> None:
                     render_distance_bar(name, line.distance_from_price(latest_price, now_ct) if latest_price is not None else float('nan'), zone_type=line.zone_type)
         if strikes:
             ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-            st.write(f"Options Preview (MOCK): CALL {strikes.call_strike} mark={ostate.call_quote.mark if ostate.call_quote else None} | PUT {strikes.put_strike} mark={ostate.put_quote.mark if ostate.put_quote else None}")
-            if ostate.entry_target_projection: st.write(f"Entry prem ~{ostate.entry_target_projection.estimated_entry_mark}, Target prem ~{ostate.entry_target_projection.estimated_target_mark}")
+            if ostate.entry_target_projection:
+                render_status_strip([
+                    ("Entry premium", fmt_price(ostate.entry_target_projection.estimated_entry_mark)),
+                    ("Target premium", fmt_price(ostate.entry_target_projection.estimated_target_mark)),
+                    ("Est. P/L", fmt_price(ostate.entry_target_projection.estimated_profit_per_contract)),
+                ])
 
     with tabs[1]:
         st.caption("Technical structure tables for primary and secondary levels.")
         render_section_title("Structure Map", "Primary and secondary projected structure")
         if not proj_df.empty:
-            st.dataframe(proj_df[proj_df['is_primary']==True][["name","tradable_value","raw_projected_value","distance","direction","zone_type","anchor_price","anchor_time","slope_per_hour"]])
-            st.dataframe(proj_df[proj_df['is_primary']==False][["name","tradable_value","raw_projected_value","distance","direction","zone_type","anchor_price","anchor_time"]])
+            st.dataframe(proj_df[proj_df['is_primary']==True][["name","tradable_value","distance","direction","zone_type","anchor_price","anchor_time"]])
+            st.dataframe(proj_df[proj_df['is_primary']==False][["name","tradable_value","distance","direction","zone_type","anchor_price","anchor_time"]])
             st.caption("Legend: Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary lines = target only")
 
     with tabs[2]:
@@ -1390,9 +1401,17 @@ def main() -> None:
         render_signal_card(signals[-1] if signals else None)
         if decision_state and decision_state.signal_quality:
             q = decision_state.signal_quality
-            st.write(f"Quality: {q.grade} | Score {q.score:.1f} | CloseDist {q.close_distance:.2f} | WickRatio {q.wick_rejection_ratio:.2f} | Target {q.target_quality} | Action {q.action_label}")
-            st.write(f"Warnings: {q.warnings}")
-            st.write(f"Strengths: {q.strengths}")
+            render_status_strip([
+                ("Quality", q.grade),
+                ("Score", f"{q.score:.1f}"),
+                ("Close dist", f"{q.close_distance:.2f}"),
+                ("Wick ratio", f"{q.wick_rejection_ratio:.2f}"),
+                ("Action", q.action_label),
+            ])
+            if q.warnings:
+                st.warning(", ".join(q.warnings).replace("_", " ").title())
+            if q.strengths:
+                st.success(", ".join(q.strengths).replace("_", " ").title())
         if signals:
             st.dataframe(pd.DataFrame([asdict(sg) for sg in signals[-5:]])[["signal_id","signal_type","status","line_name","rejection_time","entry_time","entry_price","stop_price","target_line_name","target_price","rr_ratio"]])
         st.caption("CALL rejection: red candle rejects descending line from above. PUT rejection: green candle rejects ascending line from below. Entry is next candle open.")
@@ -1415,10 +1434,17 @@ def main() -> None:
             st.info("Hindsight outcome overlay enabled." if include_out else "Future outcomes hidden.")
             show_sec_replay = st.toggle("Show secondary target lines", value=True)
             rs = build_replay_state(df, rdate, replay_time=rtime, slope_per_hour=slope, include_future_outcomes=include_out)
-            st.write(f"Prior trading day: {rs.prior_trading_day} | Signals: {len(rs.signals)}")
             conf = len([x for x in rs.signals if x.status=='CONFIRMED']); pend=len([x for x in rs.signals if x.status=='PENDING_CONFIRMATION'])
             out_target = len([o for o in rs.outcomes.values() if o.outcome=='TARGET_FIRST']); out_stop = len([o for o in rs.outcomes.values() if o.outcome=='STOP_FIRST']); out_no = len([o for o in rs.outcomes.values() if o.outcome=='NO_HIT'])
-            st.write(f"Confirmed: {conf} | Pending: {pend} | Target-first: {out_target} | Stop-first: {out_stop} | No-hit: {out_no}")
+            render_status_strip([
+                ("Prior day", rs.prior_trading_day),
+                ("Signals", len(rs.signals)),
+                ("Confirmed", conf),
+                ("Pending", pend),
+                ("Target first", out_target),
+                ("Stop first", out_stop),
+                ("No hit", out_no),
+            ])
             replay_candles = day_df if mode=="Full Day Review" or rtime is None else day_df[day_df.index<=rtime]
             rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, build_decision_state(rs.signals[-1] if rs.signals else None, rs.primary_lines+rs.secondary_lines, float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals), float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), show_secondary=show_sec_replay)
             render_plotly_html(rfig)
@@ -1427,11 +1453,10 @@ def main() -> None:
                 q=rs.signal_qualities.get(sg.signal_id); o=rs.outcomes.get(sg.signal_id)
                 table.append({"signal_id":sg.signal_id,"signal_type":sg.signal_type,"status":sg.status,"line_name":sg.line_name,"rejection_time":sg.rejection_time,"entry_time":sg.entry_time,"entry_price":sg.entry_price,"stop_price":sg.stop_price,"target_line_name":sg.target_line_name,"target_price":sg.target_price,"quality_grade":q.grade if q else None,"quality_score":q.score if q else None,"outcome":o.outcome if o else None,"outcome_time":o.outcome_time if o else None,"max_favorable_move":o.max_favorable_move if o else None,"max_adverse_move":o.max_adverse_move if o else None,"bars_to_outcome":o.bars_to_outcome if o else None})
             st.dataframe(pd.DataFrame(table))
-            st.write("Replay Narrative:")
             if table:
-                st.write((f"As of {rtime}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
+                st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
             if rs.outcomes:
-                vals=list(rs.outcomes.values()); st.write(f"First signal outcome: {vals[0].outcome}. Hourly data cannot determine intrabar sequence when both levels hit in same candle.")
+                vals=list(rs.outcomes.values()); st.caption(f"First signal outcome: {vals[0].outcome}.")
 
     with tabs[5]:
         st.caption("Live and fallback option quotes for the selected 0DTE strikes.")
@@ -1455,7 +1480,11 @@ def main() -> None:
                     except Exception as e:
                         provider_obj = MockOptionProvider(); provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":[],"last_error":type(e).__name__}
             state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=provider_obj, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-            st.write(f"Provider requested: {requested_provider} | Provider used: {provider_status.get('provider', state.provider)} | Connected: {provider_status.get('connected')} | Warning: {state.warning}")
+            render_status_strip([
+                ("Provider", provider_status.get('provider', state.provider)),
+                ("Connection", "Live" if provider_status.get("connected") and not provider_status.get("fallback_used") else "Fallback"),
+                ("Mode", requested_provider),
+            ])
             if provider_status.get("missing_secrets"): st.warning(f"Missing secrets: {provider_status.get('missing_secrets')}")
             if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
             c1,c2=st.columns(2)
@@ -1466,17 +1495,26 @@ def main() -> None:
                 pq=state.put_quote
                 render_glass_card("PUT Quote", f"<div class='card-value'>Strike {pq.strike if pq else '-'} | Mark {fmt_price(pq.mark if pq else None)}</div><div class='small-muted'>Bid {fmt_price(pq.bid if pq else None)} Ask {fmt_price(pq.ask if pq else None)} Spread {fmt_price(pq.spread if pq else None)} Delta {fmt_float(pq.delta if pq else None)}</div>")
             if state.selected_trade_quote:
-                st.write(f"Active Trade Quote: {state.selected_trade_quote.option_type} {state.selected_trade_quote.strike} mark={state.selected_trade_quote.mark}")
+                render_status_strip([
+                    ("Active contract", f"{state.selected_trade_quote.option_type} {state.selected_trade_quote.strike}"),
+                    ("Mark", fmt_price(state.selected_trade_quote.mark)),
+                ])
             else:
                 st.info("No active options setup. Waiting for confirmed or pending SPY rejection signal.")
             if state.entry_target_projection:
                 p = state.entry_target_projection
-                st.write(f"Estimated entry premium: {p.estimated_entry_mark} | target premium: {p.estimated_target_mark} | est profit/contract: {p.estimated_profit_per_contract} | return%: {p.estimated_return_pct}")
+                render_status_strip([
+                    ("Entry premium", fmt_price(p.estimated_entry_mark)),
+                    ("Target premium", fmt_price(p.estimated_target_mark)),
+                    ("Est. P/L", fmt_price(p.estimated_profit_per_contract)),
+                    ("Return", f"{p.estimated_return_pct}%"),
+                ])
                 if p.option_type=='CALL' and p.entry_line_value < state.underlying_price: st.caption("CALL premium expected to depreciate into entry.")
                 if p.option_type=='PUT' and p.entry_line_value > state.underlying_price: st.caption("PUT premium expected to depreciate into entry.")
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
-        st.info("Tastytrade mode uses live quotes when authentication and quote lookup succeed; otherwise the cockpit falls back to mock quotes and shows the provider error above.")
+        if provider != "TASTYTRADE":
+            st.caption("Switch provider to TASTYTRADE for live quote lookup.")
 
     with tabs[7]:
         st.caption("Concise command brief from current state.")
@@ -1484,9 +1522,9 @@ def main() -> None:
         if not bias:
             st.write("Prophet Read: Waiting for structure.")
         else:
-            st.write(f"Prophet Read: {bias.bias} posture. Primary watch: {bias.primary_line}.")
+            render_status_strip([("Bias", bias.bias), ("Primary watch", bias.primary_line)])
             if decision_state and decision_state.signal_quality:
-                st.write(f"Final Decision: {decision_state.final_decision} | Signal Quality: {decision_state.signal_quality.grade} ({decision_state.signal_quality.score:.1f})")
+                render_status_strip([("Decision", decision_state.final_decision), ("Quality", f"{decision_state.signal_quality.grade} ({decision_state.signal_quality.score:.1f})")])
                 if decision_state.guardrail_state.chase_warning: st.warning(decision_state.guardrail_state.chase_warning)
                 if decision_state.guardrail_state.retest_status != "NONE": st.info(f"Retest: {decision_state.guardrail_state.retest_status}")
                 if decision_state.guardrail_state.structure_warning: st.error(decision_state.guardrail_state.structure_warning)
@@ -1498,11 +1536,17 @@ def main() -> None:
                     st.write(f"Trigger Needed: Pending {ls.signal_type} confirmation on next candle open.")
                 else:
                     st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {ls.target_price}.")
-                st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {ls.stop_price}. {ls.breakeven_rule}")
+                st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
                 if strikes:
                     ps = build_options_cockpit_state(strikes, latest_signal=ls, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-                    if ps.selected_trade_quote: st.write(f"Options: {ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike} ({ps.warning})")
-                    if ps.entry_target_projection: st.write(f"Estimated entry premium {ps.entry_target_projection.estimated_entry_mark}, target premium {ps.entry_target_projection.estimated_target_mark}, est profit/contract {ps.entry_target_projection.estimated_profit_per_contract}")
+                    if ps.selected_trade_quote:
+                        render_status_strip([("Options", f"{ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike}")])
+                    if ps.entry_target_projection:
+                        render_status_strip([
+                            ("Entry premium", fmt_price(ps.entry_target_projection.estimated_entry_mark)),
+                            ("Target premium", fmt_price(ps.entry_target_projection.estimated_target_mark)),
+                            ("Est. P/L", fmt_price(ps.entry_target_projection.estimated_profit_per_contract)),
+                        ])
 
     with tabs[6]:
         st.caption("Signal memory, outcomes, and expectancy analytics.")
@@ -1515,7 +1559,12 @@ def main() -> None:
         else:
             opt_state = None
         entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on)
-        st.write(f"Auto-journal: {auto_status.enabled} | saved={auto_status.saved_count} updated={auto_status.updated_count} skipped={auto_status.skipped_duplicate_count}")
+        render_status_strip([
+            ("Auto journal", "On" if auto_status.enabled else "Off"),
+            ("Saved", auto_status.saved_count),
+            ("Updated", auto_status.updated_count),
+            ("Skipped", auto_status.skipped_duplicate_count),
+        ])
         notes = st.text_area("Notes for latest live signal", "")
         tags_text = st.text_input("Tags (comma-separated)", "")
         cja,cjb,cjc,cjd=st.columns(4)
@@ -1529,9 +1578,16 @@ def main() -> None:
         cjd.download_button("Export journal JSON", data=json.dumps([journal_entry_to_dict(x) for x in entries], indent=2), file_name="signal_journal.json")
         st.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
         a=compute_journal_analytics(entries)
-        st.write(f"Entries={a.total_entries} Confirmed={a.total_confirmed} WinRate={a.win_rate} AvgRR={a.average_rr} Expectancy/contract={a.expectancy_per_contract}")
+        render_status_strip([
+            ("Entries", a.total_entries),
+            ("Confirmed", a.total_confirmed),
+            ("Win rate", a.win_rate),
+            ("Avg RR", a.average_rr),
+            ("Expectancy", fmt_price(a.expectancy_per_contract)),
+        ])
         st.dataframe(pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50))
-        st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
+        if show_debug:
+            st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         for ins in generate_journal_insights(a): st.info(ins)
 
     with tabs[8]:
