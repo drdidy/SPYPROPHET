@@ -4,7 +4,15 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import math
 import requests
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+def _central_now():
+    try:
+        tz = ZoneInfo("America/Chicago")
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz=tz)
 
 
 @dataclass
@@ -27,6 +35,8 @@ class TastytradeProviderStatus:
 
 
 class TastytradeProvider:
+    provider_name = "TASTYTRADE"
+
     def __init__(self, client_id: str, client_secret: str, refresh_token: str, environment: str = "production"):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -109,7 +119,7 @@ class TastytradeProvider:
         ask = float(contract.get("ask", math.nan)) if contract.get("ask") is not None else math.nan
         mark = float(contract.get("mark", math.nan)) if contract.get("mark") is not None else ((bid + ask) / 2 if not math.isnan(bid) and not math.isnan(ask) else math.nan)
         spread = ask - bid if not math.isnan(ask) and not math.isnan(bid) else math.nan
-        now = datetime.now(tz=ZoneInfo("US/Central"))
+        now = _central_now()
         return {
             "symbol": contract.get("symbol", f"SPY-{strike}-{option_type[0]}"),
             "underlying": "SPY",
@@ -139,7 +149,7 @@ class TastytradeProvider:
         self.status.quotes_ok = True
         self.status.using_live_quotes = True
         self.status.connected = True
-        self.status.last_update = datetime.now(tz=ZoneInfo("US/Central"))
+        self.status.last_update = _central_now()
         return {"CALL": self._to_quote_dict(c, "CALL", underlying_price), "PUT": self._to_quote_dict(p, "PUT", underlying_price), "status": asdict(self.status), "warning": w}
 
     def get_status(self):

@@ -17,6 +17,7 @@ CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,13 @@ def get_central_tz():
 
     import pytz
     return pytz.timezone(CENTRAL_TZ_NAME)
+
+
+def get_missing_tastytrade_secrets() -> list[str]:
+    try:
+        return [k for k in TASTYTRADE_SECRET_KEYS if not str(st.secrets.get(k, "")).strip()]
+    except Exception:
+        return list(TASTYTRADE_SECRET_KEYS)
 
 
 def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -1095,24 +1103,27 @@ def project_option_entry_to_target(quote, current_underlying_price, entry_line, 
 
 def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_state=None, provider=None, current_dt=None, all_lines=None, entry_line_name=None, target_line_name=None, projection_time=None, option_type_override=None):
     provider = provider or MockOptionProvider(); now=pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())
+    provider_name = getattr(provider, "provider_name", provider.__class__.__name__)
     if selected_strikes is None or pd.isna(selected_strikes.underlying_price):
-        return OptionsCockpitState('MOCK',float('nan'),None,None,None,None,[],None,'Invalid/missing strikes or underlying.', 'No options cockpit available.')
+        return OptionsCockpitState(provider_name,float('nan'),None,None,None,None,[],None,'Invalid/missing strikes or underlying.', 'No options cockpit available.')
     q = provider.get_selected_quotes(selected_strikes.underlying_price, selected_strikes.expiration_date, selected_strikes.call_strike, selected_strikes.put_strike)
     call_q = q.get('call') or q.get('CALL')
     put_q = q.get('put') or q.get('PUT')
     if isinstance(call_q, dict): call_q = OptionQuote(**call_q)
     if isinstance(put_q, dict): put_q = OptionQuote(**put_q)
+    if call_q and getattr(call_q, "provider", None):
+        provider_name = call_q.provider
     opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
     sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
     scenarios = simulate_option_scenarios(sel) if sel else []
-    proj=None; warning='Mock quote — not live market data.'
+    proj=None; warning=q.get("warning") or ("Mock quote - not live market data." if provider_name == "MOCK" else None)
     if sel and all_lines:
         entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
         if entry:
             proj = project_option_entry_to_target(sel, selected_strikes.underlying_price, entry, target, entry_projection_time=projection_time or get_default_projection_time(now), target_projection_time=projection_time or get_default_projection_time(now))
         else:
             warning = 'Could not resolve entry line; projection unavailable.'
-    return OptionsCockpitState('MOCK', selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, 'Mock provider options cockpit state.')
+    return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, f'{provider_name} options cockpit state.')
 
 
 
@@ -1262,7 +1273,7 @@ def main() -> None:
     st.sidebar.selectbox("Auto-refresh", ["Off","30 sec","60 sec","5 min"])
     show_debug = st.sidebar.toggle("Show Debug Lab", value=False)
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
-    provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=0)
+    provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=1 if not get_missing_tastytrade_secrets() else 0)
     st.sidebar.write(f"Current CT: {now_ct.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     st.sidebar.caption("No order execution. Analysis and quote display only.")
 
@@ -1296,7 +1307,7 @@ def main() -> None:
                 closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
                 decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
 
-    render_header_ticker(latest_price, bias, closest, signals[-1] if signals else None, strikes, provider_status="MOCK")
+    render_header_ticker(latest_price, bias, closest, signals[-1] if signals else None, strikes, provider_status=provider)
     st.sidebar.write(f"Data loaded: {not df.empty}")
     st.sidebar.write(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
     st.sidebar.write(f"Prior day: {prior_day}")
@@ -1407,16 +1418,15 @@ def main() -> None:
             if rs.outcomes:
                 vals=list(rs.outcomes.values()); st.write(f"First signal outcome: {vals[0].outcome}. Hourly data cannot determine intrabar sequence when both levels hit in same candle.")
 
-    with tabs[4]:
-        st.caption("Historical replay and outcome review console.")
-        render_section_title("Options Cockpit", "MOCK preview")
+    with tabs[5]:
+        st.caption("Live and fallback option quotes for the selected 0DTE strikes.")
+        render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
             requested_provider = provider
             provider_obj = MockOptionProvider()
             provider_status = {"provider":"MOCK","connected":True,"fallback_used":False,"missing_secrets":[]}
             if requested_provider == "TASTYTRADE":
-                need=["TASTYTRADE_CLIENT_ID","TASTYTRADE_CLIENT_SECRET","TASTYTRADE_REFRESH_TOKEN"]
-                missing=[k for k in need if k not in st.secrets]
+                missing=get_missing_tastytrade_secrets()
                 if missing:
                     provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":missing,"last_error":"Missing secrets"}
                 else:
@@ -1451,10 +1461,10 @@ def main() -> None:
                 if p.option_type=='PUT' and p.entry_line_value > state.underlying_price: st.caption("PUT premium expected to depreciate into entry.")
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
-        st.info("These are mock quotes for interface testing only. Live Tastytrade quotes will be added in a later phase.")
+        st.info("Tastytrade mode uses live quotes when authentication and quote lookup succeed; otherwise the cockpit falls back to mock quotes and shows the provider error above.")
 
-    with tabs[8]:
-        st.caption("Technical debug and raw object inspection (secrets redacted).")
+    with tabs[7]:
+        st.caption("Concise command brief from current state.")
         render_section_title("Playbook", "Plain-English read from calculated structure")
         if not bias:
             st.write("Prophet Read: Waiting for structure.")
@@ -1509,8 +1519,8 @@ def main() -> None:
         st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         for ins in generate_journal_insights(a): st.info(ins)
 
-    with tabs[7]:
-        st.caption("Concise command brief from current state.")
+    with tabs[8]:
+        st.caption("Technical debug and raw object inspection (secrets redacted).")
         if not show_debug:
             st.info("Enable Debug Lab in sidebar.")
         else:

@@ -32,6 +32,40 @@ def test_state_selection_signal_types_and_no_signal():
     assert build_options_cockpit_state(st, latest_signal=ps).selected_trade_quote.option_type=='PUT'
 
 
+def test_live_provider_state_label_and_warning():
+    class LiveProvider:
+        provider_name = "TASTYTRADE"
+
+        def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+            base = {
+                "underlying": "SPY",
+                "expiration": expiration_date,
+                "bid": 1.0,
+                "ask": 1.2,
+                "mark": 1.1,
+                "spread": 0.2,
+                "gamma": 0.05,
+                "theta": -0.1,
+                "vega": 0.03,
+                "iv": 0.25,
+                "provider": "TASTYTRADE_LIVE",
+                "timestamp": _ts("2026-04-29T10:00:00"),
+                "warning": None,
+            }
+            return {
+                "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", "delta": 0.5, **base},
+                "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", "delta": -0.5, **base},
+                "warning": None,
+            }
+
+    st=Strikes(712.61,709,716,_ts("2026-04-29").date())
+    sig=TradeSignal('1','CALL','CONFIRMED','UD',0,_ts("2026-04-29T10:00:00"),0,0,0,0,_ts("2026-04-29T11:00:00"),0,0,None,float('nan'),0,0,0,'','')
+    state=build_options_cockpit_state(st, latest_signal=sig, provider=LiveProvider())
+    assert state.provider == "TASTYTRADE_LIVE"
+    assert state.selected_trade_quote.provider == "TASTYTRADE_LIVE"
+    assert state.warning is None
+
+
 def test_scenarios_and_projection_behaviors():
     q=MockOptionProvider().get_selected_quotes(712.61,_ts("2026-04-29").date(),709,716)['call']
     sc=simulate_option_scenarios(q)
