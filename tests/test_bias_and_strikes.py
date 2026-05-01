@@ -45,7 +45,7 @@ def test_bullish_preopen() -> None:
     assert b.watched_put_lines == []
     assert b.primary_line == "UD"
     s = select_0dte_strikes(101.0, _ts("2026-04-29T08:30:00"))
-    assert format_watch_contract(s, bias_state=b) == "WATCH CALL 105"
+    assert format_watch_contract(s, bias_state=b) == "WATCH CALL 103"
 
 
 def test_neutral_preopen() -> None:
@@ -55,7 +55,7 @@ def test_neutral_preopen() -> None:
     assert "UA" in b.watched_put_lines
     assert b.final_take_profit_line in {"UA", "UD"}
     s = select_0dte_strikes(100.0, _ts("2026-04-29T08:30:00"))
-    assert format_watch_contract(s, bias_state=b) == "CALL 104 / PUT 96"
+    assert format_watch_contract(s, bias_state=b) == "CALL 102 / PUT 98"
 
 
 def test_bearish_preopen() -> None:
@@ -90,18 +90,24 @@ def test_bias_strength_bounds() -> None:
 
 def test_strike_selection() -> None:
     s = select_0dte_strikes(712.61, _ts("2026-04-29T08:30:00"))
-    assert s.call_strike == 717
+    assert s.call_strike == 715
     assert s.call_strike > s.underlying_price
-    assert s.put_strike == 708
+    assert s.put_strike == 711
     assert s.put_strike < s.underlying_price
 
 
 def test_strike_selection_whole_number() -> None:
     s = select_0dte_strikes(713.00, _ts("2026-04-29T08:30:00"))
-    assert s.call_strike == 717
+    assert s.call_strike == 715
     assert s.call_strike > s.underlying_price
-    assert s.put_strike == 709
+    assert s.put_strike == 711
     assert s.put_strike < s.underlying_price
+
+
+def test_strike_selection_stays_near_two_points_otm() -> None:
+    s = select_0dte_strikes(717.85, _ts("2026-04-29T08:30:00"))
+    assert s.call_strike == 720
+    assert s.put_strike == 716
 
 
 def test_invalid_price() -> None:
@@ -114,8 +120,8 @@ def test_watch_contracts_use_pending_signal_trigger_price() -> None:
     sig = TradeSignal("p","PUT","PENDING_CONFIRMATION","UA",100,_ts("2026-04-29T10:00:00"),0,0,0,0,None,float("nan"),0,None,float("nan"),0,0,0,"","")
     s = select_watch_contracts(96.0, _ts("2026-04-29T10:00:00"), sig, lines)
     assert get_contract_watch_price(96.0, _ts("2026-04-29T10:00:00"), sig, lines) == 100.0
-    assert s.put_strike == 96
-    assert format_watch_contract(s, sig) == "WATCH PUT 96"
+    assert s.put_strike == 98
+    assert format_watch_contract(s, sig) == "WATCH PUT 98"
 
 
 def test_watch_contracts_use_confirmed_signal_entry_price() -> None:
@@ -123,5 +129,5 @@ def test_watch_contracts_use_confirmed_signal_entry_price() -> None:
     sig = TradeSignal("c","CALL","CONFIRMED","UD",100,_ts("2026-04-29T10:00:00"),0,0,0,0,_ts("2026-04-29T11:00:00"),101.2,0,None,float("nan"),0,0,0,"","")
     s = select_watch_contracts(96.0, _ts("2026-04-29T11:00:00"), sig, lines)
     assert s.underlying_price == 101.2
-    assert s.call_strike == 106
-    assert format_watch_contract(s, sig) == "WATCH CALL 106"
+    assert s.call_strike == 103
+    assert format_watch_contract(s, sig) == "WATCH CALL 103"

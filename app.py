@@ -16,7 +16,8 @@ SYMBOL = "SPY"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
-DEFAULT_OTM_STRIKE_OFFSET = 4
+TARGET_OTM_STRIKE_DISTANCE = 2.0
+SPY_STRIKE_INCREMENT = 1
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 
@@ -514,8 +515,18 @@ def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedS
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if current_price is None or pd.isna(current_price):
         return SelectedStrikes(float("nan"), 0, 0, now.date(), "0DTE", "Invalid underlying price.")
-    call_strike = int(math.ceil(current_price) + DEFAULT_OTM_STRIKE_OFFSET)
-    put_strike = int(math.floor(current_price) - DEFAULT_OTM_STRIKE_OFFSET)
+    target_call = current_price + TARGET_OTM_STRIKE_DISTANCE
+    target_put = current_price - TARGET_OTM_STRIKE_DISTANCE
+    call_strike = int(math.floor(target_call / SPY_STRIKE_INCREMENT + 0.5) * SPY_STRIKE_INCREMENT)
+    put_strike = int(math.floor(target_put / SPY_STRIKE_INCREMENT + 0.5) * SPY_STRIKE_INCREMENT)
+    if call_strike <= current_price:
+        call_strike = int(math.ceil(current_price / SPY_STRIKE_INCREMENT) * SPY_STRIKE_INCREMENT)
+        if call_strike <= current_price:
+            call_strike += SPY_STRIKE_INCREMENT
+    if put_strike >= current_price:
+        put_strike = int(math.floor(current_price / SPY_STRIKE_INCREMENT) * SPY_STRIKE_INCREMENT)
+        if put_strike >= current_price:
+            put_strike -= SPY_STRIKE_INCREMENT
     return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "0DTE", None)
 
 
