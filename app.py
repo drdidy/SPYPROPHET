@@ -1013,11 +1013,11 @@ def render_signal_card(signal):
         return
     kind = "call" if signal.signal_type=="CALL" else "put"
     render_signal_badge(f"{signal.signal_type} {signal.status}", kind)
-    render_metric_card("Signal", f"{signal.line_name} @ {_fmt_num(signal.line_value_at_rejection)}", f"entry {_fmt_num(signal.entry_price)} | stop {_fmt_num(signal.stop_price)} | target {signal.target_line_name}:{_fmt_num(signal.target_price)} | RR {_fmt_num(signal.rr_ratio)}")
+    render_metric_card("Signal", f"{display_line_name(signal.line_name)} @ {_fmt_num(signal.line_value_at_rejection)}", f"entry {_fmt_num(signal.entry_price)} | stop {_fmt_num(signal.stop_price)} | target {display_line_name(signal.target_line_name)} {_fmt_num(signal.target_price)} | RR {_fmt_num(signal.rr_ratio)}")
 
 
 def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="TASTYTRADE"):
-    txt = f"SPY {_fmt_num(current_price)} • BIAS {bias_state.bias if bias_state else 'N/A'} • CLOSEST {closest_line.name if closest_line else 'N/A'} • SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} • C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} • PROVIDER {provider_status}"
+    txt = f"SPY {_fmt_num(current_price)} • BIAS {bias_state.bias if bias_state else 'N/A'} • CLOSEST {display_line_name(closest_line.name) if closest_line else 'N/A'} • SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} • C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} • PROVIDER {provider_status}"
     st.markdown(f"<div class='metric-card ticker-scroll'><div class='ticker-track'>{txt} &nbsp;&nbsp;&nbsp; {txt}</div></div>", unsafe_allow_html=True)
 
 
@@ -1052,17 +1052,18 @@ def _humanize(value: str | None) -> str:
 def display_line_name(name: str | None) -> str:
     if not name:
         return "-"
+    normalized = str(name).strip().upper().replace(" ", "_")
     primary = {
         "UA": "Upper Put Trigger",
         "UD": "Upper Call Trigger",
         "LA": "Lower Put Trigger",
         "LD": "Lower Call Trigger",
     }
-    if name in primary:
-        return primary[name]
-    if str(name).startswith("S_ASC"):
+    if normalized in primary:
+        return primary[normalized]
+    if normalized.startswith("S_ASC"):
         return "Lower Target"
-    if str(name).startswith("S_DESC"):
+    if normalized.startswith("S_DESC"):
         return "Upper Target"
     return _humanize(name)
 
@@ -1076,9 +1077,10 @@ def display_line_description(name: str | None) -> str:
     }
     if not name:
         return "-"
-    if name in descriptions:
-        return descriptions[name]
-    if str(name).startswith("S_ASC") or str(name).startswith("S_DESC"):
+    normalized = str(name).strip().upper().replace(" ", "_")
+    if normalized in descriptions:
+        return descriptions[normalized]
+    if normalized.startswith("S_ASC") or normalized.startswith("S_DESC"):
         return "Target-only structure"
     return _humanize(name)
 
@@ -1484,6 +1486,15 @@ class OptionsCockpitState:
     provider: str; underlying_price: float; expiration: object; call_quote: OptionQuote | None; put_quote: OptionQuote | None; selected_trade_quote: OptionQuote | None
     scenarios: list[OptionsScenario]; entry_target_projection: EntryTargetOptionProjection | None; warning: str | None; explanation: str
 
+def is_mock_option_provider_name(name: str | None) -> bool:
+    return "MOCK" in str(name or "").upper()
+
+
+def provider_is_live_tastytrade(name: str | None) -> bool:
+    text = str(name or "").upper()
+    return "TASTYTRADE" in text and not is_mock_option_provider_name(text)
+
+
 def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
     moves = moves or [0.5,-0.5]; out=[]
     for mv in moves:
@@ -1542,6 +1553,11 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     if isinstance(put_q, dict): put_q = OptionQuote(**put_q)
     if call_q and getattr(call_q, "provider", None):
         provider_name = call_q.provider
+    provider_names = [provider_name, getattr(call_q, "provider", None), getattr(put_q, "provider", None)]
+    if any(is_mock_option_provider_name(name) for name in provider_names):
+        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Mock option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
+    if (call_q or put_q) and not any(provider_is_live_tastytrade(name) for name in provider_names):
+        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Non-Tastytrade option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
     opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
     sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
     scenarios = simulate_option_scenarios(sel) if sel else []
@@ -1569,6 +1585,8 @@ def get_tastytrade_option_provider():
 
 def option_provider_label(state: OptionsCockpitState | None, provider_status: dict | None = None) -> str:
     provider_status = provider_status or {}
+    if state and is_mock_option_provider_name(state.provider):
+        return "TASTYTRADE unavailable"
     if state and (state.call_quote or state.put_quote):
         return state.provider
     if provider_status.get("missing_secrets"):

@@ -49,6 +49,21 @@ def test_provider_and_quote_math():
     assert q["CALL"]["mark"]>0 and q["PUT"]["mark"]>0
 
 
+def test_mock_provider_quotes_are_rejected():
+    class MockProvider(FakeOptionProvider):
+        provider_name = "MOCK"
+
+        def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+            q = super().get_selected_quotes(underlying_price, expiration_date, call_strike, put_strike)
+            q["CALL"]["provider"] = "MOCK"
+            q["PUT"]["provider"] = "MOCK"
+            return q
+
+    state=build_options_cockpit_state(Strikes(712.61,717,708,_ts("2026-04-29").date()), provider=MockProvider())
+    assert state.call_quote is None and state.put_quote is None
+    assert "Mock option quotes are disabled" in state.warning
+
+
 def test_state_selection_signal_types_and_no_signal():
     st=Strikes(712.61,717,708,_ts("2026-04-29").date())
     s=build_options_cockpit_state(st)
