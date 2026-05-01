@@ -1193,10 +1193,19 @@ def inject_global_css() -> None:
     .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
     .pill{border:1px solid var(--border);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.78rem;background:rgba(255,255,255,.03)}
     .pill.green{border-color:rgba(33,208,122,.55);color:var(--green)} .pill.red{border-color:rgba(255,95,124,.55);color:var(--red)} .pill.amber{border-color:rgba(244,199,107,.55);color:var(--amber)} .pill.blue{border-color:rgba(103,183,255,.55);color:var(--blue)}
-    .quote-stack{display:grid;grid-template-columns:1fr;gap:8px}
-    .quote-mini{border:1px solid var(--border);border-radius:8px;padding:10px;background:rgba(255,255,255,.035)}
-    .quote-value{font-family:Consolas,monospace;font-size:1.35rem;font-weight:800;color:var(--text)}
-    .quote-level{display:block;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:1rem;line-height:1.2;white-space:normal}
+    .quote-stack{display:grid;grid-template-columns:1fr;gap:10px}
+    .quote-mini{border:1px solid var(--border);border-radius:8px;padding:12px;background:rgba(255,255,255,.035);display:flex;flex-direction:column;gap:10px}
+    .quote-body{display:grid;gap:6px}
+    .quote-eyebrow{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .quote-trigger-name{font-size:.98rem;font-weight:800;color:var(--text);line-height:1.2}
+    .quote-trigger-price{font-family:Consolas,monospace;font-size:1.75rem;font-weight:850;color:var(--blue);line-height:1}
+    .quote-meta-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid rgba(141,160,184,.16);padding-top:8px;color:var(--muted);font-size:.78rem}
+    .quote-meta-row strong{color:var(--text);font-weight:750;text-align:right}
+    .strike-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .strike-cell{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(7,10,15,.35);padding:9px}
+    .strike-cell.call{border-left:3px solid var(--green)} .strike-cell.put{border-left:3px solid var(--red)}
+    .strike-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .strike-value{font-family:Consolas,monospace;font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
     .terminal-section{margin-top:14px}
     .command-grid{display:grid;grid-template-columns:1.15fr .95fr .9fr;gap:14px}
     .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.18)}
@@ -1593,8 +1602,10 @@ def render_terminal_hero(
     action = _humanize(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
     signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
     closest_value = closest_line.tradable_value_at(projection_time) if closest_line else None
-    closest_text = f"<span class='quote-level'>{display_line_name(closest_line.name)}</span>{fmt_price(closest_value)}" if closest_line else "-"
-    contract_text = format_watch_contract_short(selected_strikes, latest_signal, bias_state)
+    closest_name = display_line_name(closest_line.name) if closest_line else "-"
+    closest_price = fmt_price(closest_value)
+    call_strike = selected_strikes.call_strike if selected_strikes else "-"
+    put_strike = selected_strikes.put_strike if selected_strikes else "-"
     if market_context is None:
         market_context = build_market_context(df, latest_price, closest_line, now_ct, float("nan"))
     pressure_value = fmt_price(market_context.spy_pressure_value) if not pd.isna(market_context.spy_pressure_value) else "-"
@@ -1660,19 +1671,37 @@ def render_terminal_hero(
             <div class='quote-stack'>
               <div class='quote-mini'>
                 <div class='quote-head'>
-                  <div class='hero-label'>Closest</div>
+                  <div>
+                    <div class='hero-label'>Nearest Trigger</div>
+                    <div class='quote-eyebrow'>Structure watch</div>
+                  </div>
                   {ui_icon('target', 'amber', 'sm')}
                 </div>
-                <div class='quote-value'>{closest_text}</div>
-                <div class='hero-sub'>Projected for {fmt_clock_time(projection_time)}</div>
+                <div class='quote-body'>
+                  <div class='quote-trigger-name'>{closest_name}</div>
+                  <div class='quote-trigger-price'>{closest_price}</div>
+                </div>
+                <div class='quote-meta-row'><span>Projected</span><strong>{fmt_clock_time(projection_time)}</strong></div>
               </div>
               <div class='quote-mini'>
                 <div class='quote-head'>
-                  <div class='hero-label'>0DTE</div>
+                  <div>
+                    <div class='hero-label'>0DTE Watchlist</div>
+                    <div class='quote-eyebrow'>OTM contracts</div>
+                  </div>
                   {ui_icon('contract', 'green', 'sm')}
                 </div>
-                <div class='quote-value'>{contract_text}</div>
-                <div class='hero-sub'>{provider_status}</div>
+                <div class='strike-grid'>
+                  <div class='strike-cell call'>
+                    <div class='strike-label'>Call</div>
+                    <div class='strike-value'>{call_strike}</div>
+                  </div>
+                  <div class='strike-cell put'>
+                    <div class='strike-label'>Put</div>
+                    <div class='strike-value'>{put_strike}</div>
+                  </div>
+                </div>
+                <div class='quote-meta-row'><span>Source</span><strong>{provider_status}</strong></div>
               </div>
             </div>
           </div>
