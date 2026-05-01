@@ -17,6 +17,7 @@ from app import (
     get_central_tz,
     get_closest_primary_line,
     get_primary_anchor_summary,
+    get_structure_calibration,
     project_lines,
 )
 
@@ -27,6 +28,11 @@ def _ts(s: str) -> pd.Timestamp:
 
 def test_default_slope_constant() -> None:
     assert DEFAULT_SLOPE_PER_HOUR == 0.103
+
+
+def test_structure_calibration_reads_env_without_ui(monkeypatch) -> None:
+    monkeypatch.setenv("SPYPROPHET_STRUCTURE_CALIBRATION", "0.111")
+    assert get_structure_calibration() == 0.111
 
 
 def test_hours_since_and_default_projection_examples() -> None:
@@ -129,7 +135,9 @@ def test_structure_tables_explain_source_and_projection() -> None:
 
     assert "UA" not in set(projection["Trigger"])
     assert "Upper Put Trigger" in set(projection["Trigger"])
-    assert "Formula" in projection.columns
+    assert "Formula" not in projection.columns
+    assert "Slope / Hour" not in projection.columns
+    assert "Projection Method" in projection.columns
     assert projection[projection["Trigger"] == "Upper Call Trigger"].iloc[0]["Based On"] == "High Pivot"
 
 

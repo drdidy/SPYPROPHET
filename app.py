@@ -26,6 +26,7 @@ VIX_SYMBOL = "^VIX"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
+STRUCTURE_CALIBRATION_KEYS = ("SPYPROPHET_STRUCTURE_CALIBRATION", "SPYPROPHET_SLOPE_PER_HOUR")
 TARGET_OTM_STRIKE_DISTANCE = 2.0
 FLOW_STRIKE_MAX_OTM_DISTANCE = 3.0
 SPY_STRIKE_INCREMENT = 1
@@ -776,6 +777,24 @@ def get_secret_or_env(name: str, default: str = "") -> str:
     except Exception:
         pass
     return os.getenv(name, default).strip()
+
+
+def get_structure_calibration(default: float = DEFAULT_SLOPE_PER_HOUR) -> float:
+    for key in STRUCTURE_CALIBRATION_KEYS:
+        raw = get_secret_or_env(key)
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except Exception:
+            continue
+        if 0.001 <= value <= 1.0:
+            return value
+    return float(default)
+
+
+def is_admin_diagnostics_enabled() -> bool:
+    return get_secret_or_env("SPYPROPHET_ADMIN_MODE", "").lower() in {"1", "true", "yes", "on"}
 
 
 def source_status(name: str, ok: bool, detail: str, as_of=None, url: str | None = None) -> SourceStatus:
@@ -2194,10 +2213,8 @@ def build_structure_projection_table(primary_lines: list[DynamicLine], current_d
     rows = []
     for line in primary_lines or []:
         pivot_name = "High Pivot" if line.source == "PRIMARY_HIGH" else "Low Pivot" if line.source == "PRIMARY_LOW" else _humanize(line.source)
-        raw = line.raw_value_at(current_dt)
         tradable = line.tradable_value_at(current_dt)
         distance = line.distance_from_price(current_price, current_dt) if current_price is not None else float("nan")
-        sign = "+" if line.direction == "ascending" else "-"
         hours = line.hours_since(current_dt)
         rows.append({
             "Trigger": display_line_name(line.name),
@@ -2208,11 +2225,8 @@ def build_structure_projection_table(primary_lines: list[DynamicLine], current_d
             "Pivot Price": line.anchor_price,
             "Pivot Candle Closes": line.anchor_time,
             "Projection Time": pd.Timestamp(current_dt),
-            "Hours From Pivot": hours,
-            "Slope / Hour": line.slope_per_hour,
-            "Formula": f"{line.anchor_price:.2f} {sign} ({line.slope_per_hour:.3f} x {hours:.2f}h)" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
+            "Projection Method": "Protected structure calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
             "Projected SPY Level": tradable,
-            "Raw Projection": raw,
             "Current SPY": current_price,
             "Distance From SPY": distance,
         })
@@ -3383,6 +3397,24 @@ def render_data_notice(message: str, tone: str = "info") -> None:
 
 def render_debug_json(label, obj):
     st.write(label); st.json(obj)
+
+
+def redact_structure_calibration(value):
+    if isinstance(value, list):
+        return [redact_structure_calibration(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: ("protected" if key in {"slope_per_hour", "Formula", "Slope / Hour"} else redact_structure_calibration(item))
+            for key, item in value.items()
+        }
+    return value
+
+
+def hide_structure_calibration_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    hidden = {"slope_per_hour", "Slope / Hour", "Formula", "raw_projected_value"}
+    return df.drop(columns=[col for col in df.columns if col in hidden], errors="ignore")
 
 
 def render_status_strip(items) -> None:
@@ -5636,13 +5668,13 @@ def main() -> None:
 
     st.sidebar.header("SPY Prophet Controls")
     st.sidebar.button("Refresh data")
-    show_debug = st.sidebar.toggle("Advanced diagnostics", value=False)
+    admin_mode = is_admin_diagnostics_enabled()
+    show_debug = st.sidebar.toggle("Advanced diagnostics", value=False) if admin_mode else False
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
-    slope = DEFAULT_SLOPE_PER_HOUR
-    if show_debug:
-        slope = st.sidebar.number_input("Slope per hour", min_value=0.050, max_value=0.200, value=DEFAULT_SLOPE_PER_HOUR, step=0.001, format="%.3f")
+    slope = get_structure_calibration()
     provider = "TASTYTRADE"
     st.sidebar.caption("Provider: TASTYTRADE")
+    st.sidebar.caption("Structure calibration: Protected")
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
     st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
 
@@ -5984,13 +6016,13 @@ def main() -> None:
 
         with tabs["Diagnostics"]:
             st.caption("Raw object inspection for development and support.")
-            render_debug_json("Primary lines", [asdict(x) for x in primary_lines])
+            render_debug_json("Primary lines", redact_structure_calibration([asdict(x) for x in primary_lines]))
             st.dataframe(df.tail(20) if not df.empty else pd.DataFrame())
             st.dataframe(rth_df.tail(20) if not rth_df.empty else pd.DataFrame())
             st.dataframe(signal_rth_df.tail(20) if not signal_rth_df.empty else pd.DataFrame())
             st.dataframe(ext_df.tail(20) if not ext_df.empty else pd.DataFrame())
             render_debug_json("Secondary pivots", [asdict(x) for x in secondary_pivots])
-            st.dataframe(proj_df)
+            st.dataframe(hide_structure_calibration_columns(proj_df))
             render_debug_json("Bias", asdict(bias) if bias else {})
             render_debug_json("Strikes", asdict(strikes) if strikes else {})
             render_debug_json("Signals", [asdict(x) for x in signals])
