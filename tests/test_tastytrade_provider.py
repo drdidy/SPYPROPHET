@@ -19,12 +19,32 @@ def test_auth_failure(monkeypatch):
 
 def test_chain_selection_exact_and_nearest(monkeypatch):
     p = TastytradeProvider("id","secret","refresh")
-    monkeypatch.setattr(p, "get_nested_option_chain", lambda *a, **k: {"data":{"items":[{"expiration-date":"2026-04-29","calls":[{"strike-price":709,"symbol":"C709"}],"puts":[{"strike-price":716,"symbol":"P716"}]}]}})
+    monkeypatch.setattr(p, "get_nested_option_chain", lambda *a, **k: {"data":{"items":[{"underlying-symbol":"SPY","expirations":[{"expiration-date":"2026-04-29","strikes":[{"strike-price":"709.0","call":"C709","put":"P709"},{"strike-price":"716.0","call":"C716","put":"P716"}]}]}]}})
     c,pu,w = p.select_contracts("SPY","2026-04-29",709,716)
     assert c["symbol"]=="C709" and pu["symbol"]=="P716" and w is None
 
     c2,pu2,w2 = p.select_contracts("SPY","2026-04-29",710,715)
     assert w2 is not None and c2 and pu2
+
+
+def test_chain_selection_legacy_shape(monkeypatch):
+    p = TastytradeProvider("id","secret","refresh")
+    monkeypatch.setattr(p, "get_nested_option_chain", lambda *a, **k: {"data":{"items":[{"expiration-date":"2026-04-29","calls":[{"strike-price":709,"symbol":"C709"}],"puts":[{"strike-price":716,"symbol":"P716"}]}]}})
+    c,pu,w = p.select_contracts("SPY","2026-04-29",709,716)
+    assert c["symbol"]=="C709" and pu["symbol"]=="P716" and w is None
+
+
+def test_chain_endpoint(monkeypatch):
+    p = TastytradeProvider("id","secret","refresh")
+    p.access_token = "token"
+    class R:
+        status_code = 200
+        def json(self):
+            return {"data":{"items":[]}}
+    calls = []
+    monkeypatch.setattr("requests.get", lambda url, **kwargs: calls.append((url, kwargs)) or R())
+    assert p.get_nested_option_chain("SPY","2026-04-29") == {"data":{"items":[]}}
+    assert calls[0][0].endswith("/option-chains/SPY/nested")
 
 
 def test_expiration_unavailable(monkeypatch):

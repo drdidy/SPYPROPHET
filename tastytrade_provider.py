@@ -73,7 +73,7 @@ class TastytradeProvider:
         if not token:
             return None
         try:
-            r = requests.get(f"{self.base}/instruments/equities/{symbol}/nested-option-chain", headers={"Authorization":f"Bearer {token}"}, timeout=10)
+            r = requests.get(f"{self.base}/option-chains/{symbol}/nested", headers={"Authorization":f"Bearer {token}"}, timeout=10)
             if r.status_code >= 400:
                 self.status.last_error = f"Chain failed: {r.status_code}"
                 return None
@@ -94,22 +94,42 @@ class TastytradeProvider:
             if str(it.get("expiration-date")) == str(expiration_date):
                 exp = it
                 break
+            for candidate in it.get("expirations", []) or []:
+                if str(candidate.get("expiration-date")) == str(expiration_date):
+                    exp = candidate
+                    break
+            if exp is not None:
+                break
         if exp is None:
             self.status.chain_ok = False
             return None, None, "Expiration unavailable"
 
-        def choose(side, strike):
-            arr = exp.get(side, [])
+        def choose(option_type, strike):
+            side = "calls" if option_type == "CALL" else "puts"
+            symbol_key = "call" if option_type == "CALL" else "put"
+            arr = exp.get(side)
+            if arr is None:
+                arr = [
+                    {**x, "symbol": x.get(symbol_key)}
+                    for x in exp.get("strikes", []) or []
+                    if x.get(symbol_key)
+                ]
             if not arr:
                 return None, False
             exact = [x for x in arr if int(float(x.get("strike-price", 0))) == int(strike)]
             if exact:
-                return exact[0], True
+                contract = dict(exact[0])
+                contract.setdefault("symbol", contract.get(symbol_key))
+                contract.setdefault("expiration-date", exp.get("expiration-date"))
+                return contract, True
             nearest = min(arr, key=lambda x: abs(float(x.get("strike-price", 0)) - strike))
-            return nearest, False
+            contract = dict(nearest)
+            contract.setdefault("symbol", contract.get(symbol_key))
+            contract.setdefault("expiration-date", exp.get("expiration-date"))
+            return contract, False
 
-        c, ce = choose("calls", call_strike)
-        p, pe = choose("puts", put_strike)
+        c, ce = choose("CALL", call_strike)
+        p, pe = choose("PUT", put_strike)
         warn = None if (ce and pe) else "Exact strike unavailable; nearest strike selected."
         return c, p, warn
 
