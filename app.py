@@ -1,0 +1,1524 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, time
+from typing import Optional
+
+import pandas as pd
+import streamlit as st
+import yfinance as yf
+import plotly.graph_objects as go
+from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
+from zoneinfo import ZoneInfo
+
+SYMBOL = "SPY"
+CENTRAL_TZ_NAME = "US/Central"
+DEFAULT_SLOPE_PER_HOUR = 0.103
+EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+
+
+@dataclass(frozen=True)
+class Pivot:
+    name: str
+    price: float
+    timestamp: pd.Timestamp | None
+    source: str
+    candle_color: str
+    fallback_used: bool
+
+
+@dataclass(frozen=True)
+class SecondaryPivot:
+    name: str
+    price: float
+    timestamp: pd.Timestamp | None
+    direction: str
+    source: str
+
+
+@dataclass(frozen=True)
+class DynamicLine:
+    name: str
+    anchor_price: float
+    anchor_time: pd.Timestamp | None
+    slope_per_hour: float
+    direction: str
+    zone_type: str
+    source: str
+    is_primary: bool
+    description: str
+
+    def hours_since(self, dt: datetime | pd.Timestamp) -> float:
+        if self.anchor_time is None or pd.isna(self.anchor_price):
+            return float("nan")
+        ct = get_central_tz()
+        cur = pd.Timestamp(dt)
+        anc = pd.Timestamp(self.anchor_time)
+        cur = cur.tz_localize(ct) if cur.tzinfo is None else cur.tz_convert(ct)
+        anc = anc.tz_localize(ct) if anc.tzinfo is None else anc.tz_convert(ct)
+        return (cur - anc).total_seconds() / 3600.0
+
+    def raw_value_at(self, dt: datetime | pd.Timestamp) -> float:
+        hours = self.hours_since(dt)
+        if pd.isna(hours) or pd.isna(self.anchor_price):
+            return float("nan")
+        if self.direction == "ascending":
+            return float(self.anchor_price + (self.slope_per_hour * hours))
+        if self.direction == "descending":
+            return float(self.anchor_price - (self.slope_per_hour * hours))
+        return float("nan")
+
+    def value_at(self, dt: datetime | pd.Timestamp) -> float:
+        return self.raw_value_at(dt)
+
+    def tradable_value_at(self, dt: datetime | pd.Timestamp) -> float:
+        raw = self.raw_value_at(dt)
+        if pd.isna(raw):
+            return float("nan")
+        return round(raw, 2)
+
+    def distance_from_price(self, price: float, dt: datetime | pd.Timestamp, use_tradable_value: bool = True) -> float:
+        if price is None or pd.isna(price):
+            return float("nan")
+        line_val = self.tradable_value_at(dt) if use_tradable_value else self.raw_value_at(dt)
+        if pd.isna(line_val):
+            return float("nan")
+        return float(price - line_val)
+
+    def abs_distance_from_price(self, price: float, dt: datetime | pd.Timestamp, use_tradable_value: bool = True) -> float:
+        dist = self.distance_from_price(price, dt, use_tradable_value)
+        return float(abs(dist)) if not pd.isna(dist) else float("nan")
+
+    def percent_distance_from_price(self, price: float, dt: datetime | pd.Timestamp, use_tradable_value: bool = True) -> float:
+        if price is None or pd.isna(price) or price == 0:
+            return float("nan")
+        abs_dist = self.abs_distance_from_price(price, dt, use_tradable_value)
+        return float((abs_dist / price) * 100) if not pd.isna(abs_dist) else float("nan")
+
+
+def get_central_tz() -> ZoneInfo:
+    return ZoneInfo(CENTRAL_TZ_NAME)
+
+
+def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    normalized = df.copy()
+    if isinstance(normalized.columns, pd.MultiIndex):
+        normalized.columns = normalized.columns.get_level_values(0)
+    normalized.columns = [str(c).strip() for c in normalized.columns]
+    lower_map = {c.lower(): c for c in normalized.columns}
+    for expected in EXPECTED_OHLCV_COLUMNS:
+        match = lower_map.get(expected.lower())
+        if match and match != expected:
+            normalized = normalized.rename(columns={match: expected})
+    return normalized.sort_index()
+
+
+def ensure_central_index(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if not isinstance(out.index, pd.DatetimeIndex):
+        out.index = pd.to_datetime(out.index, errors="coerce")
+    out = out[~out.index.isna()]
+    if out.empty:
+        return pd.DataFrame()
+    idx = out.index
+    out.index = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+    out.index = out.index.tz_convert(get_central_tz())
+    return out.sort_index()
+
+
+def fetch_spy_hourly(period: str = "10d") -> pd.DataFrame:
+    raw = yf.download(tickers=SYMBOL, period=period, interval="60m", prepost=True, progress=False, auto_adjust=False, actions=False)
+    return ensure_central_index(normalize_yfinance_frame(raw))
+
+
+def get_available_trading_days(df: pd.DataFrame) -> list[date]:
+    if df is None or df.empty:
+        return []
+    return sorted(set(df.index.date))
+
+
+def get_prior_trading_day(df: pd.DataFrame, current_dt: datetime) -> Optional[date]:
+    if df is None or df.empty:
+        return None
+    cur = current_dt.replace(tzinfo=get_central_tz()) if current_dt.tzinfo is None else current_dt.astimezone(get_central_tz())
+    for day in reversed(get_available_trading_days(df)):
+        if day < cur.date():
+            return day
+    return None
+
+
+def filter_rth_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df[df.index.date == trading_day].between_time(time(8, 30), time(15, 0), inclusive="both")
+
+
+def filter_extended_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df[df.index.date == trading_day].between_time(time(3, 0), time(19, 0), inclusive="both")
+
+
+def candle_color(row: pd.Series) -> str:
+    open_key = next((k for k in row.index if str(k).lower() == "open"), None)
+    close_key = next((k for k in row.index if str(k).lower() == "close"), None)
+    if open_key is None or close_key is None:
+        return "doji"
+    o, c = float(row[open_key]), float(row[close_key])
+    return "green" if c > o else "red" if c < o else "doji"
+
+
+def _empty_pivot(name: str) -> Pivot:
+    return Pivot(name=name, price=float("nan"), timestamp=None, source="empty_rth", candle_color="none", fallback_used=True)
+
+
+def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
+    if rth_df is None or rth_df.empty:
+        return _empty_pivot("HIGH_PIVOT")
+    df = rth_df.sort_index()
+    for i in range(len(df) - 2, -1, -1):
+        if candle_color(df.iloc[i]) == "green" and candle_color(df.iloc[i + 1]) == "red":
+            return Pivot("HIGH_PIVOT", float(df.iloc[i]["High"]), df.index[i], "primary_transition", "green", False)
+    high_ts = df["High"].idxmax()
+    return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), high_ts, "session_high_fallback", "green", True)
+
+
+def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
+    if rth_df is None or rth_df.empty:
+        return _empty_pivot("LOW_PIVOT")
+    df = rth_df.sort_index()
+    for i in range(len(df) - 2, -1, -1):
+        if candle_color(df.iloc[i]) == "red" and candle_color(df.iloc[i + 1]) == "green":
+            return Pivot("LOW_PIVOT", float(df.iloc[i]["Low"]), df.index[i], "primary_transition", "red", False)
+    low_ts = df["Low"].idxmin()
+    return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), low_ts, "session_low_fallback", "red", True)
+
+
+def find_primary_pivots(rth_df: pd.DataFrame) -> dict:
+    return {"high": find_high_pivot(rth_df), "low": find_low_pivot(rth_df)}
+
+
+def find_secondary_pivots(rth_df: pd.DataFrame) -> list[SecondaryPivot]:
+    if rth_df is None or rth_df.empty:
+        return []
+    df = rth_df.sort_index()
+    out: list[SecondaryPivot] = []
+    for i in range(len(df) - 1):
+        cur_color, nxt_color = candle_color(df.iloc[i]), candle_color(df.iloc[i + 1])
+        if cur_color == "red" and nxt_color == "green":
+            out.append(SecondaryPivot("SECONDARY_DESCENDING", float(df.iloc[i]["Low"]), df.index[i], "descending", "secondary_transition"))
+        elif cur_color == "green" and nxt_color == "red":
+            out.append(SecondaryPivot("SECONDARY_ASCENDING", float(df.iloc[i]["High"]), df.index[i], "ascending", "secondary_transition"))
+    return out
+
+
+def calculate_slope_from_observed(anchor_price: float, observed_value: float, elapsed_hours: float, direction: str) -> float:
+    if any(pd.isna(v) for v in [anchor_price, observed_value, elapsed_hours]) or elapsed_hours <= 0:
+        return float("nan")
+    if direction == "descending":
+        return float((anchor_price - observed_value) / elapsed_hours)
+    if direction == "ascending":
+        return float((observed_value - anchor_price) / elapsed_hours)
+    return float("nan")
+
+
+def build_primary_lines(high_pivot: Pivot, low_pivot: Pivot, slope_per_hour: float = DEFAULT_SLOPE_PER_HOUR) -> list[DynamicLine]:
+    return [
+        DynamicLine("UA", high_pivot.price, high_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "Upper ascending from high pivot"),
+        DynamicLine("UD", high_pivot.price, high_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "Upper descending from high pivot"),
+        DynamicLine("LA", low_pivot.price, low_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_LOW", True, "Lower ascending from low pivot"),
+        DynamicLine("LD", low_pivot.price, low_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_LOW", True, "Lower descending from low pivot"),
+    ]
+
+
+def build_secondary_lines(secondary_pivots: list[SecondaryPivot], slope_per_hour: float = DEFAULT_SLOPE_PER_HOUR) -> list[DynamicLine]:
+    lines: list[DynamicLine] = []
+    asc_i, desc_i = 1, 1
+    for p in secondary_pivots:
+        if p.direction == "ascending":
+            name = f"S_ASC_{asc_i:03d}"
+            asc_i += 1
+        else:
+            name = f"S_DESC_{desc_i:03d}"
+            desc_i += 1
+        lines.append(DynamicLine(name, p.price, p.timestamp, slope_per_hour, p.direction, "TARGET_ONLY", "SECONDARY", False, "Secondary target/reference line"))
+    return lines
+
+
+def project_lines(lines: list[DynamicLine], current_dt: datetime, current_price: float | None) -> pd.DataFrame:
+    records = []
+    for line in lines:
+        raw = line.raw_value_at(current_dt)
+        tradable = line.tradable_value_at(current_dt)
+        dist = line.distance_from_price(current_price, current_dt, use_tradable_value=True) if current_price is not None else float("nan")
+        records.append({
+            "name": line.name,
+            "raw_projected_value": raw,
+            "tradable_value": tradable,
+            "distance": dist,
+            "abs_distance": abs(dist) if not pd.isna(dist) else float("nan"),
+            "percent_distance": (abs(dist) / current_price * 100) if (current_price not in [None, 0] and not pd.isna(dist)) else float("nan"),
+            "direction": line.direction,
+            "zone_type": line.zone_type,
+            "source": line.source,
+            "is_primary": line.is_primary,
+            "anchor_price": line.anchor_price,
+            "anchor_time": line.anchor_time,
+            "slope_per_hour": line.slope_per_hour,
+            "description": line.description,
+        })
+    return pd.DataFrame(records)
+
+
+def get_closest_primary_line(lines: list[DynamicLine], current_dt: datetime, current_price: float) -> DynamicLine | None:
+    candidates: list[tuple[float, DynamicLine]] = []
+    for line in lines:
+        if not line.is_primary:
+            continue
+        v = line.tradable_value_at(current_dt)
+        if pd.isna(v):
+            continue
+        candidates.append((abs(current_price - v), line))
+    return min(candidates, key=lambda x: x[0])[1] if candidates else None
+
+
+def get_lines_by_zone(lines: list[DynamicLine], zone_type: str) -> list[DynamicLine]:
+    return [line for line in lines if line.zone_type == zone_type]
+
+
+
+
+@dataclass(frozen=True)
+class BiasState:
+    bias: str
+    current_price: float
+    current_time: pd.Timestamp
+    watched_call_lines: list[str]
+    watched_put_lines: list[str]
+    primary_line: str | None
+    final_take_profit_line: str | None
+    strength_score: float
+    explanation: str
+    ua_value: float
+    ud_value: float
+    la_value: float
+    ld_value: float
+
+
+@dataclass(frozen=True)
+class SelectedStrikes:
+    underlying_price: float
+    call_strike: int
+    put_strike: int
+    expiration_date: object
+    dte_label: str
+    warning: str | None
+
+
+def get_line_by_name(lines: list[DynamicLine], name: str) -> DynamicLine | None:
+    for line in lines:
+        if line.name == name:
+            return line
+    return None
+
+
+def calculate_bias_strength(current_price: float, ua_value: float, ud_value: float, bias: str) -> float:
+    vals = [current_price, ua_value, ud_value]
+    if any(v is None or pd.isna(v) for v in vals):
+        return 0.0
+    top, bot = max(ua_value, ud_value), min(ua_value, ud_value)
+    width = max(top - bot, 0.01)
+    if bias == "BULLISH":
+        score = min(100.0, ((current_price - top) / width) * 100)
+    elif bias == "BEARISH":
+        score = min(100.0, ((bot - current_price) / width) * 100)
+    elif bias in {"NEUTRAL", "REGULAR_SESSION"}:
+        center = (top + bot) / 2
+        dist = abs(current_price - center)
+        score = max(0.0, 100.0 - (dist / (width / 2)) * 100)
+        if bias == "REGULAR_SESSION":
+            score = min(score, 70.0)
+    else:
+        score = 0.0
+    return float(max(0.0, min(100.0, score)))
+
+
+def determine_preopen_bias(lines: list[DynamicLine], current_price: float, current_dt: datetime) -> BiasState:
+    ct = get_central_tz()
+    now = pd.Timestamp(current_dt)
+    now = now.tz_localize(ct) if now.tzinfo is None else now.tz_convert(ct)
+    ua = get_line_by_name(lines, "UA")
+    ud = get_line_by_name(lines, "UD")
+    la = get_line_by_name(lines, "LA")
+    ld = get_line_by_name(lines, "LD")
+    ua_v = ua.tradable_value_at(now) if ua else float("nan")
+    ud_v = ud.tradable_value_at(now) if ud else float("nan")
+    la_v = la.tradable_value_at(now) if la else float("nan")
+    ld_v = ld.tradable_value_at(now) if ld else float("nan")
+
+    if ua is None or ud is None or pd.isna(ua_v) or pd.isna(ud_v):
+        return BiasState("UNKNOWN", current_price, now, [], [], None, None, 0.0, "Missing UA/UD structure; cannot determine bias safely.", ua_v, ud_v, la_v, ld_v)
+
+    preopen = now.time() < time(9, 0)
+    top, bot = max(ua_v, ud_v), min(ua_v, ud_v)
+
+    if current_price > top:
+        bias = "BULLISH" if preopen else "REGULAR_SESSION"
+        watched_call, watched_put = ["UA", "UD"], []
+        primary, tp = "UD", None
+        expl = "Price is above the upper structure; primary CALL watch is UD descending support." if preopen else "Regular session posture: above upper structure; pre-open mode no longer active."
+    elif bot <= current_price <= top:
+        bias = "NEUTRAL" if preopen else "REGULAR_SESSION"
+        watched_call, watched_put = ["UD"], ["UA"]
+        primary, tp = "UD", "UA"
+        expl = "Price is inside the upper channel; both sides are active between UD and UA." if preopen else "Regular session posture: price remains in upper channel; pre-open mode no longer active."
+    else:
+        bias = "BEARISH" if preopen else "REGULAR_SESSION"
+        watched_call, watched_put = ["LD"], ["LA"]
+        primary, tp = "LD", "LA"
+        expl = "Price is below the upper channel; lower structure LA/LD is more important." if preopen else "Regular session posture: below upper channel, monitoring lower structure; pre-open mode no longer active."
+
+    score = calculate_bias_strength(current_price, ua_v, ud_v, bias)
+    return BiasState(bias, current_price, now, watched_call, watched_put, primary, tp, score, expl, ua_v, ud_v, la_v, ld_v)
+
+
+def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedStrikes:
+    import math
+    now = pd.Timestamp(current_dt)
+    now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
+    if current_price is None or pd.isna(current_price):
+        return SelectedStrikes(float("nan"), 0, 0, now.date(), "0DTE", "Invalid underlying price.")
+    call_strike = int(math.ceil(current_price) - 4)
+    put_strike = int(math.floor(current_price) + 4)
+    return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "0DTE", None)
+
+
+
+
+@dataclass(frozen=True)
+class TradeSignal:
+    signal_id: str
+    signal_type: str
+    status: str
+    line_name: str
+    line_value_at_rejection: float
+    rejection_time: pd.Timestamp
+    rejection_open: float
+    rejection_high: float
+    rejection_low: float
+    rejection_close: float
+    entry_time: pd.Timestamp | None
+    entry_price: float
+    stop_price: float
+    target_line_name: str | None
+    target_price: float
+    risk: float
+    reward: float
+    rr_ratio: float
+    breakeven_rule: str
+    explanation: str
+
+
+def is_call_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.Timestamp) -> bool:
+    lv = line.tradable_value_at(candle_time)
+    if pd.isna(lv):
+        return False
+    o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
+    return (c < o) and (o > lv) and (l <= lv) and (c > lv)
+
+
+def is_put_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.Timestamp) -> bool:
+    lv = line.tradable_value_at(candle_time)
+    if pd.isna(lv):
+        return False
+    o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
+    return (c > o) and (o < lv) and (h >= lv) and (c < lv)
+
+
+def find_target_for_signal(signal_type: str, rejected_line_name: str, reference_price: float, reference_time: pd.Timestamp, all_lines: list[DynamicLine]) -> tuple[str | None, float]:
+    candidates = []
+    for line in all_lines:
+        if line.name == rejected_line_name:
+            continue
+        v = line.tradable_value_at(reference_time)
+        if pd.isna(v):
+            continue
+        if signal_type == "CALL" and v > reference_price:
+            candidates.append((v-reference_price, line.name, v))
+        if signal_type == "PUT" and v < reference_price:
+            candidates.append((reference_price-v, line.name, v))
+    if not candidates:
+        return None, float("nan")
+    _, n, v = min(candidates, key=lambda x:x[0])
+    return n, float(v)
+
+
+def calculate_signal_risk_reward(signal_type: str, entry_price: float, stop_price: float, target_price: float) -> tuple[float, float, float]:
+    if any(pd.isna(v) for v in [entry_price, stop_price, target_price]):
+        return float("nan"), float("nan"), float("nan")
+    if signal_type == "CALL":
+        risk, reward = entry_price-stop_price, target_price-entry_price
+    else:
+        risk, reward = stop_price-entry_price, entry_price-target_price
+    rr = reward/risk if risk > 0 and not pd.isna(reward) else float("nan")
+    return float(risk), float(reward), float(rr)
+
+
+def build_trade_signal_from_rejection(signal_type: str, line: DynamicLine, rejection_row: pd.Series, rejection_time: pd.Timestamp, next_row: pd.Series | None, next_time: pd.Timestamp | None, all_lines: list[DynamicLine]) -> TradeSignal:
+    confirmed = next_row is not None and next_time is not None
+    status = "CONFIRMED" if confirmed else "PENDING_CONFIRMATION"
+    entry_time = next_time if confirmed else None
+    entry_price = float(next_row["Open"]) if confirmed else float("nan")
+    stop_price = float(rejection_row["Low"] - 0.50) if signal_type == "CALL" else float(rejection_row["High"] + 0.50)
+    ref_time = entry_time if confirmed else rejection_time
+    ref_price = entry_price if confirmed else float(rejection_row["Close"])
+    target_name, target_price = find_target_for_signal(signal_type, line.name, ref_price, ref_time, all_lines)
+    risk, reward, rr = calculate_signal_risk_reward(signal_type, entry_price, stop_price, target_price)
+    lv = line.tradable_value_at(rejection_time)
+    sid = f"{signal_type}_{line.name}_{rejection_time.isoformat()}"
+    expl = f"{signal_type} rejection at {line.name}; candle rejected tradable line and {'confirmed by next open' if confirmed else 'awaiting next candle confirmation'}"
+    if target_name is None:
+        expl += "; no structural target found in trade direction"
+    return TradeSignal(sid, signal_type, status, line.name, float(lv), rejection_time, float(rejection_row['Open']), float(rejection_row['High']), float(rejection_row['Low']), float(rejection_row['Close']), entry_time, entry_price, stop_price, target_name, target_price, risk, reward, rr, "Move to breakeven after +$0.50 favorable SPY move.", expl)
+
+
+def detect_rejection_signals(candles_df: pd.DataFrame, primary_lines: list[DynamicLine], secondary_lines: list[DynamicLine]) -> list[TradeSignal]:
+    if candles_df is None or candles_df.empty:
+        return []
+    df = candles_df.sort_index()
+    all_lines = primary_lines + secondary_lines
+    out: list[TradeSignal] = []
+    seen = set()
+    for i in range(len(df)):
+        row = df.iloc[i]
+        ts = df.index[i]
+        next_row = df.iloc[i+1] if i+1 < len(df) else None
+        next_ts = df.index[i+1] if i+1 < len(df) else None
+        for line in primary_lines:
+            if not line.is_primary:
+                continue
+            sig = None
+            if line.zone_type == "CALL_ZONE" and line.direction == "descending" and is_call_rejection(row, line, ts):
+                sig = build_trade_signal_from_rejection("CALL", line, row, ts, next_row, next_ts, all_lines)
+            elif line.zone_type == "PUT_ZONE" and line.direction == "ascending" and is_put_rejection(row, line, ts):
+                sig = build_trade_signal_from_rejection("PUT", line, row, ts, next_row, next_ts, all_lines)
+            if sig and sig.signal_id not in seen:
+                seen.add(sig.signal_id)
+                out.append(sig)
+    return out
+
+
+def _candle_triplet(df: pd.DataFrame, ts: pd.Timestamp | None) -> dict:
+    if ts is None or df.empty or ts not in df.index:
+        return {}
+    pos = df.index.get_loc(ts)
+    return {"before": df.iloc[pos - 1] if pos > 0 else None, "pivot": df.iloc[pos], "after": df.iloc[pos + 1] if pos + 1 < len(df) else None}
+
+
+
+
+@dataclass(frozen=True)
+class SignalQuality:
+    signal_id: str
+    grade: str
+    score: float
+    close_distance: float
+    close_distance_pct_of_candle: float
+    wick_penetration: float
+    wick_rejection_ratio: float
+    body_position_score: float
+    risk_reward_score: float
+    target_quality: str
+    warnings: list[str]
+    strengths: list[str]
+    action_label: str
+    explanation: str
+
+@dataclass(frozen=True)
+class RiskGuardrailState:
+    signal_id: str | None
+    chase_status: str
+    chase_distance: float
+    chase_warning: str | None
+    retest_status: str
+    retest_line_name: str | None
+    structure_status: str
+    structure_warning: str | None
+    daily_action: str
+    explanation: str
+
+@dataclass(frozen=True)
+class DecisionState:
+    latest_signal: TradeSignal | None
+    signal_quality: SignalQuality | None
+    guardrail_state: RiskGuardrailState
+    final_decision: str
+    final_explanation: str
+
+# decision-quality helpers ...
+def calculate_close_distance(signal: TradeSignal) -> float:
+    return abs(signal.rejection_close - signal.line_value_at_rejection) if signal else float("nan")
+
+def calculate_wick_rejection_metrics(signal: TradeSignal) -> dict:
+    rng = signal.rejection_high - signal.rejection_low
+    if rng <= 0:
+        return {"candle_range": rng, "wick_penetration": 0.0, "wick_rejection_ratio": 0.0, "body_position_score": 0.0}
+    if signal.signal_type == "CALL":
+        wick_pen = max(0.0, signal.line_value_at_rejection - signal.rejection_low)
+        rej_dist = signal.rejection_close - signal.rejection_low
+    else:
+        wick_pen = max(0.0, signal.rejection_high - signal.line_value_at_rejection)
+        rej_dist = signal.rejection_high - signal.rejection_close
+    ratio = rej_dist / rng
+    return {"candle_range": rng, "wick_penetration": wick_pen, "wick_rejection_ratio": ratio, "body_position_score": ratio}
+
+def score_signal_quality(signal: TradeSignal) -> SignalQuality:
+    score=100.0; warnings=[]; strengths=[]; target_quality="VALID_TARGET"
+    close_distance = calculate_close_distance(signal)
+    candle_range = signal.rejection_high - signal.rejection_low
+    close_pct = (close_distance/candle_range*100) if candle_range>0 else float("nan")
+    if close_distance > 1.0:
+        score -= 45; warnings.append("CLOSE_TOO_FAR_FROM_LINE")
+    elif close_distance > 0.5: score -= 30
+    elif close_distance > 0.25: score -= 15
+    elif close_distance > 0.1: score -= 5
+    m = calculate_wick_rejection_metrics(signal); ratio = m["wick_rejection_ratio"]
+    if m["candle_range"] <= 0:
+        score -= 20; warnings.append("INVALID_CANDLE_RANGE")
+    elif ratio >= 0.60: strengths.append("STRONG_WICK_REJECTION")
+    elif ratio >= 0.40: score -= 5
+    elif ratio >= 0.20: score -= 15; warnings.append("WEAK_REJECTION")
+    else: score -= 30; warnings.append("VERY_WEAK_REJECTION")
+    if pd.isna(signal.rr_ratio): score -= 15; warnings.append("NO_RR_AVAILABLE")
+    elif signal.rr_ratio < 1.0: score -= 30; warnings.append("POOR_RISK_REWARD")
+    elif signal.rr_ratio < 1.5: score -= 15
+    elif signal.rr_ratio < 2.0: score -= 5
+    else: strengths.append("GOOD_RISK_REWARD")
+    if signal.target_line_name is None or pd.isna(signal.target_price):
+        target_quality = "NO_TARGET"; score -= 25; warnings.append("NO_STRUCTURAL_TARGET")
+    else:
+        gap = (signal.target_price-signal.entry_price) if signal.signal_type=="CALL" else (signal.entry_price-signal.target_price)
+        if not pd.isna(gap) and gap < 0.50: score -= 20; warnings.append("TARGET_TOO_CLOSE")
+    if signal.status == "PENDING_CONFIRMATION": score -= 10; warnings.append("WAIT_FOR_NEXT_CANDLE_OPEN")
+    score = max(0.0, min(100.0, score))
+    grade = "A+" if score>=90 else "A" if score>=80 else "B" if score>=70 else "C" if score>=60 else "D" if score>=40 else "NO_TRADE"
+    if signal.status == "PENDING_CONFIRMATION": action = "WAIT_FOR_CONFIRMATION"
+    elif grade in {"A+", "A"}: action = "TRADE_ALLOWED"
+    elif grade == "B": action = "SELECTIVE_TRADE"
+    elif grade == "C": action = "WAIT_FOR_RETEST"
+    elif grade == "D": action = "AVOID"
+    else: action = "NO_TRADE"
+    explanation = f"Grade {grade}, score {score:.1f}. Warnings: {', '.join(warnings) if warnings else 'none'}. Strengths: {', '.join(strengths) if strengths else 'none'}."
+    return SignalQuality(signal.signal_id, grade, score, close_distance, close_pct, m['wick_penetration'], ratio, m['body_position_score'], signal.rr_ratio if not pd.isna(signal.rr_ratio) else float('nan'), target_quality, warnings, strengths, action, explanation)
+
+
+def evaluate_chase_status(signal, current_price, max_chase_distance=0.30):
+    if signal is None: return {"chase_status":"NO_SIGNAL","chase_distance":float("nan"),"chase_warning":None,"explanation":"No signal"}
+    if signal.status=="PENDING_CONFIRMATION": return {"chase_status":"OK","chase_distance":float("nan"),"chase_warning":None,"explanation":"Waiting for confirmation"}
+    d=(current_price-signal.entry_price) if signal.signal_type=="CALL" else (signal.entry_price-current_price)
+    if d>max_chase_distance: return {"chase_status":"MISSED_ENTRY","chase_distance":d,"chase_warning":"MISSED ENTRY. Do not chase. Wait for retest.","explanation":"Moved too far"}
+    return {"chase_status":"OK","chase_distance":d,"chase_warning":None,"explanation":"Within chase limits"}
+
+def evaluate_retest_status(signal, current_price, current_dt, rejected_line, tolerance=0.10):
+    if signal is None or signal.status != "CONFIRMED" or rejected_line is None:
+        return {"retest_status":"NONE","retest_line_name":None,"explanation":"Retest requires confirmed signal and rejected line."}
+    lv = rejected_line.tradable_value_at(current_dt)
+    if pd.isna(lv):
+        return {"retest_status":"NONE","retest_line_name":rejected_line.name,"explanation":"Line value unavailable."}
+    if abs(current_price-lv) <= tolerance:
+        return {"retest_status":"WATCHING_RETEST","retest_line_name":rejected_line.name,"explanation":"Price is near rejected line; monitoring retest."}
+    if signal.signal_type=="CALL":
+        status = "RETEST_CONFIRMED" if current_price > lv else "RETEST_FAILED"
+    else:
+        status = "RETEST_CONFIRMED" if current_price < lv else "RETEST_FAILED"
+    return {"retest_status":status,"retest_line_name":rejected_line.name,"explanation":"Current-price retest heuristic (close confirmation to be added later)."}
+
+
+def evaluate_structure_status(signal, latest_candle_row, rejected_line, latest_time):
+    if signal is None or latest_candle_row is None or rejected_line is None: return {"structure_status":"UNKNOWN","structure_warning":None}
+    lv=rejected_line.tradable_value_at(latest_time)
+    if pd.isna(lv): return {"structure_status":"UNKNOWN","structure_warning":None}
+    c=latest_candle_row['Close']
+    if signal.signal_type=="CALL": return {"structure_status":"INTACT" if c>=lv else "BROKEN","structure_warning":None if c>=lv else "CALL structure failed. Price closed below rejected support."}
+    return {"structure_status":"INTACT" if c<=lv else "BROKEN","structure_warning":None if c<=lv else "PUT structure failed. Price closed above rejected resistance."}
+
+def evaluate_daily_risk(signals_today, qualities_today=None, max_signals_per_day=3, min_grade_to_trade="B"):
+    confirmed = [s for s in signals_today if s.status=="CONFIRMED"]
+    if len(confirmed) >= max_signals_per_day:
+        return {"daily_action":"STOP_TRADING","explanation":"Maximum daily signal count reached."}
+    if qualities_today:
+        g = qualities_today[-1].grade
+        if g in {"C","D","NO_TRADE"}:
+            return {"daily_action":"NO_TRADE","explanation":"Latest signal quality is below trade threshold."}
+        if g in {"A+","A","B"}:
+            return {"daily_action":"TRADE_ALLOWED" if g in {"A+","A"} else "SELECTIVE_TRADE","explanation":"Daily risk allows qualified setup."}
+    return {"daily_action":"WAIT","explanation":"No qualifying quality context yet."}
+
+
+def build_decision_state(latest_signal, all_lines, current_price, current_dt, latest_candle_row, signals_today=None):
+    if latest_signal is None:
+        guard = RiskGuardrailState(None,"NO_SIGNAL",float("nan"),None,"NONE",None,"UNKNOWN",None,"WAIT","No confirmed/pending rejection yet.")
+        return DecisionState(None,None,guard,"WAIT","No confirmed/pending rejection yet.")
+    quality = score_signal_quality(latest_signal)
+    line = get_line_by_name(all_lines, latest_signal.line_name)
+    chase = evaluate_chase_status(latest_signal,current_price)
+    ret = evaluate_retest_status(latest_signal,current_price,current_dt,line)
+    struct = evaluate_structure_status(latest_signal,latest_candle_row,line,current_dt)
+    daily = evaluate_daily_risk(signals_today or [latest_signal],[quality])
+    guard = RiskGuardrailState(latest_signal.signal_id,chase["chase_status"],chase["chase_distance"],chase["chase_warning"],ret["retest_status"],ret["retest_line_name"],struct["structure_status"],struct["structure_warning"],daily["daily_action"],f"{chase['explanation']} | {ret.get('explanation','')} | {daily['explanation']}")
+    if latest_signal.status == "PENDING_CONFIRMATION": final = "WAIT_FOR_CONFIRMATION"
+    elif struct["structure_status"] == "BROKEN": final = "NO_TRADE"
+    elif chase["chase_status"] == "MISSED_ENTRY": final = "WAIT_FOR_RETEST"
+    elif daily["daily_action"] == "STOP_TRADING": final = "STOP_TRADING"
+    elif quality.grade in {"A+","A"}: final = "TRADE_ALLOWED"
+    elif quality.grade == "B": final = "SELECTIVE_TRADE"
+    elif quality.grade == "C": final = "WAIT_FOR_RETEST"
+    else: final = "NO_TRADE"
+    return DecisionState(latest_signal,quality,guard,final,f"{quality.explanation} Final decision: {final}.")
+
+
+
+@dataclass(frozen=True)
+class ReplaySignalOutcome:
+    signal_id: str
+    signal_type: str
+    entry_time: pd.Timestamp | None
+    entry_price: float
+    stop_price: float
+    target_price: float
+    target_line_name: str | None
+    outcome: str
+    outcome_time: pd.Timestamp | None
+    max_favorable_move: float
+    max_adverse_move: float
+    bars_to_outcome: int | None
+    explanation: str
+
+@dataclass(frozen=True)
+class ReplayState:
+    replay_date: object
+    replay_time: pd.Timestamp | None
+    prior_trading_day: object | None
+    high_pivot: Pivot | None
+    low_pivot: Pivot | None
+    primary_lines: list[DynamicLine]
+    secondary_lines: list[DynamicLine]
+    bias_state: BiasState | None
+    signals: list[TradeSignal]
+    signal_qualities: dict[str, SignalQuality]
+    outcomes: dict[str, ReplaySignalOutcome]
+    selected_signal_id: str | None
+    explanation: str
+    warnings: list[str]
+
+
+def filter_replay_day(df: pd.DataFrame, replay_date) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    return df[df.index.date == replay_date].sort_index()
+
+
+def get_available_replay_dates(df: pd.DataFrame) -> list:
+    return get_available_trading_days(df)
+
+
+def evaluate_signal_outcome(signal: TradeSignal, future_candles_df: pd.DataFrame) -> ReplaySignalOutcome:
+    if signal.status == "PENDING_CONFIRMATION":
+        return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, "PENDING", None, float('nan'), float('nan'), None, "Pending next candle open.")
+    if signal.entry_time is None or pd.isna(signal.entry_price):
+        return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, "UNKNOWN", None, float('nan'), float('nan'), None, "Invalid entry context.")
+    fut = future_candles_df[future_candles_df.index > signal.entry_time].sort_index()
+    if fut.empty:
+        return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, "NO_HIT", None, float('nan'), float('nan'), None, "No future candles.")
+    outcome="NO_HIT"; out_time=None; bars=None
+    for i,(ts,row) in enumerate(fut.iterrows(),start=1):
+        if signal.signal_type=="CALL":
+            t = (not pd.isna(signal.target_price)) and row['High']>=signal.target_price
+            st = row['Low']<=signal.stop_price
+        else:
+            t = (not pd.isna(signal.target_price)) and row['Low']<=signal.target_price
+            st = row['High']>=signal.stop_price
+        if t and st: outcome="AMBIGUOUS_SAME_CANDLE"; out_time=ts; bars=i; break
+        if t: outcome="TARGET_FIRST"; out_time=ts; bars=i; break
+        if st: outcome="STOP_FIRST"; out_time=ts; bars=i; break
+    if signal.signal_type=="CALL":
+        max_fav = (fut['High']-signal.entry_price).max(); max_adv = (fut['Low']-signal.entry_price).min()
+    else:
+        max_fav = (signal.entry_price-fut['Low']).max(); max_adv = (signal.entry_price-fut['High']).min()
+    return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, outcome, out_time, float(max_fav), float(max_adv), bars, "Hourly replay outcome.")
+
+
+def build_replay_state(full_df: pd.DataFrame, replay_date, replay_time=None, slope_per_hour=DEFAULT_SLOPE_PER_HOUR, include_future_outcomes=True) -> ReplayState:
+    warns=[]
+    if full_df is None or full_df.empty:
+        return ReplayState(replay_date, replay_time, None, None, None, [], [], None, [], {}, {}, None, "No data.", ["NO_DATA"])
+    day_df = filter_replay_day(full_df, replay_date)
+    if replay_time is not None:
+        day_visible = day_df[day_df.index <= replay_time]
+    else:
+        day_visible = day_df
+    prior = get_prior_trading_day(full_df, pd.Timestamp(replay_date).to_pydatetime())
+    if prior is None:
+        return ReplayState(replay_date, replay_time, None, None, None, [], [], None, [], {}, {}, None, "No prior trading day.", ["NO_PRIOR_TRADING_DAY"])
+    prior_rth = filter_rth_session(full_df, prior)
+    piv = find_primary_pivots(prior_rth) if not prior_rth.empty else {"high": None, "low": None}
+    secs = find_secondary_pivots(prior_rth) if not prior_rth.empty else []
+    primary_lines = build_primary_lines(piv['high'], piv['low'], slope_per_hour) if piv['high'] and piv['low'] else []
+    secondary_lines = build_secondary_lines(secs, slope_per_hour)
+    latest_price = float(day_visible['Close'].iloc[-1]) if not day_visible.empty else float('nan')
+    bias = determine_preopen_bias(primary_lines, latest_price, day_visible.index[-1]) if primary_lines and not day_visible.empty else None
+    sigs = detect_rejection_signals(day_visible, primary_lines, secondary_lines) if not day_visible.empty else []
+    quals = {sg.signal_id: score_signal_quality(sg) for sg in sigs}
+    outcomes = {}
+    if include_future_outcomes:
+        for sg in sigs:
+            outcomes[sg.signal_id] = evaluate_signal_outcome(sg, day_df)
+    return ReplayState(replay_date, replay_time, prior, piv['high'] if piv else None, piv['low'] if piv else None, primary_lines, secondary_lines, bias, sigs, quals, outcomes, sigs[-1].signal_id if sigs else None, "Replay built.", warns)
+
+
+
+
+def fmt_nan(value, fallback="-"):
+    return fallback if value is None or (isinstance(value,float) and pd.isna(value)) else value
+
+def fmt_price(value, digits=2):
+    v=fmt_nan(value,None)
+    return "-" if v is None else f"{float(v):.{digits}f}"
+
+def fmt_float(value, digits=2):
+    v=fmt_nan(value,None)
+    return "-" if v is None else f"{float(v):.{digits}f}"
+
+def fmt_pct(value, digits=1):
+    v=fmt_nan(value,None)
+    return "-" if v is None else f"{float(v):.{digits}f}%"
+
+def fmt_time(value):
+    if value is None: return "-"
+    ts=pd.Timestamp(value)
+    ts = ts.tz_localize(get_central_tz()) if ts.tzinfo is None else ts.tz_convert(get_central_tz())
+    return ts.strftime("%Y-%m-%d %H:%M %Z")
+
+def safe_to_dict(obj):
+    if obj is None: return {}
+    d = obj if isinstance(obj,dict) else asdict(obj) if hasattr(obj,'__dataclass_fields__') else {"value":str(obj)}
+    for k in list(d.keys()):
+        if any(x in str(k).lower() for x in ["client_secret","refresh_token","access_token","account"]):
+            d[k] = "[REDACTED]"
+    return d
+
+def safe_json(obj):
+    return json.dumps(safe_to_dict(obj), default=str)
+
+def _fmt_num(v: float | None, nd: int = 2) -> str:
+    return "N/A" if v is None or pd.isna(v) else f"{v:.{nd}f}"
+
+
+def inject_global_css() -> None:
+    st.markdown("""
+    <style>
+    :root {--bg:#070b14;--panel:#101826cc;--panel-soft:#151f32aa;--border:#2a3b5f;--text:#e8f0ff;--muted:#8ea3c7;--call:#29d17d;--put:#ff6b8a;--neutral:#65b8ff;--warning:#ffcb6b;--danger:#ff5f6d;--glow-call:rgba(41,209,125,.35);--glow-put:rgba(255,107,138,.35);} 
+    .prophet-root{background:var(--bg);color:var(--text)} .prophet-header{padding:12px 16px;border:1px solid var(--border);border-radius:14px;background:linear-gradient(135deg,#111a2c,#0b1220)}
+    .metric-card{padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--panel)} .glow-card{box-shadow:0 0 20px rgba(101,184,255,.08)}
+    .card-title{font-size:.78rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:monospace} .small-muted{color:var(--muted);font-size:.8rem}
+    .zone-call{border-color:var(--call)} .zone-put{border-color:var(--put)} .zone-neutral{border-color:var(--neutral)} .target-only{opacity:.85}
+    .signal-badge{padding:2px 10px;border-radius:999px;font-size:.78rem;border:1px solid var(--border)} .signal-call{background:rgba(41,209,125,.15)} .signal-put{background:rgba(255,107,138,.15)}
+    .signal-pending{border-color:var(--warning)} .signal-confirmed{border-color:var(--call)} .bias-card{padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft)}
+    .distance-wrap{height:8px;border-radius:99px;background:#1b2943}.distance-fill{height:8px;border-radius:99px;background:linear-gradient(90deg,#65b8ff,#29d17d)}
+    .price-pulse{animation:pulse 1.8s infinite}.ticker-scroll{white-space:nowrap;overflow:hidden}.ticker-track{display:inline-block;animation:tick 18s linear infinite}
+    @keyframes pulse{0%{opacity:1}50%{opacity:.7}100%{opacity:1}} @keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-40%)}}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+
+
+def render_badge(text, kind="neutral"):
+    return f"<span class='prophet-badge badge-{kind}'>{text}</span>"
+
+def render_kpi_card(title, value, subtitle=None, kind="neutral", badge=None):
+    b = render_badge(badge, kind) if badge else ""
+    st.markdown(f"<div class='prophet-card prophet-kpi'><div class='prophet-kpi-label'>{title} {b}</div><div class='prophet-kpi-value'>{value}</div><div class='small-muted'>{subtitle or ''}</div></div>", unsafe_allow_html=True)
+
+def render_glass_card(title, body_html, kind="neutral", footer=None):
+    foot = f"<div class='small-muted'>{footer}</div>" if footer else ""
+    st.markdown(f"<div class='prophet-card prophet-card-glass'><div class='card-title'>{title}</div>{body_html}{foot}</div>", unsafe_allow_html=True)
+
+def render_empty_state(title, message, next_action=None, kind="neutral"):
+    st.markdown(f"<div class='empty-state'><b>{title}</b><br>{message}<br><span class='small-muted'>{next_action or ''}</span></div>", unsafe_allow_html=True)
+
+def render_warning_panel(title, message, kind="warning"):
+    st.markdown(f"<div class='warning-panel'><b>{title}</b><br>{message}</div>", unsafe_allow_html=True)
+
+def render_decision_panel(decision_state):
+    if not decision_state or not decision_state.signal_quality:
+        render_empty_state("Decision", "No decision state available yet.", "Wait for data/signal.")
+        return
+    q=decision_state.signal_quality; g=decision_state.guardrail_state
+    body=f"<div class='card-value'>{decision_state.final_decision}</div><div class='small-muted'>Grade {q.grade} | Score {fmt_float(q.score)} | Action {q.action_label}</div><div class='small-muted'>Warning: {(q.warnings[0] if q.warnings else '-') }</div><div class='small-muted'>Chase {g.chase_status} | Structure {g.structure_status} | Retest {g.retest_status}</div>"
+    render_glass_card("Decision State", body)
+
+def render_section_title(title, subtitle=None, icon=None):
+    st.markdown(f"<div class='prophet-header'><h3>{icon or ''} {title}</h3><div class='small-muted'>{subtitle or ''}</div></div>", unsafe_allow_html=True)
+
+
+def render_metric_card(title, value, subtitle=None, accent="neutral", extra_html=None):
+    z = "zone-call" if accent=="call" else "zone-put" if accent=="put" else "zone-neutral"
+    st.markdown(f"<div class='metric-card glow-card {z}'><div class='card-title'>{title}</div><div class='card-value'>{value}</div><div class='small-muted'>{subtitle or ''}</div>{extra_html or ''}</div>", unsafe_allow_html=True)
+
+
+def render_line_card(line_name, tradable_value, raw_value, distance, zone_type, direction, is_closest=False):
+    accent = "call" if zone_type=="CALL_ZONE" else "put" if zone_type=="PUT_ZONE" else "neutral"
+    render_metric_card(f"{line_name}{' ★' if is_closest else ''}", _fmt_num(tradable_value), f"raw {_fmt_num(raw_value,3)} | {direction} | dist {_fmt_num(distance)}", accent=accent)
+
+
+def render_bias_card(bias_state):
+    render_metric_card("Bias", f"{bias_state.bias} ({_fmt_num(bias_state.strength_score)})", bias_state.explanation, accent="neutral")
+
+
+def render_distance_bar(label, distance, max_distance=5.0, zone_type="neutral"):
+    pct = 0 if distance is None or pd.isna(distance) else min(100, abs(distance)/max_distance*100)
+    st.markdown(f"<div class='small-muted'>{label}: {_fmt_num(distance)}</div><div class='distance-wrap'><div class='distance-fill' style='width:{pct:.1f}%'></div></div>", unsafe_allow_html=True)
+
+
+def render_signal_badge(text, kind="neutral"):
+    cls = "signal-call" if kind=="call" else "signal-put" if kind=="put" else ""
+    st.markdown(f"<span class='signal-badge {cls}'>{text}</span>", unsafe_allow_html=True)
+
+
+def render_signal_card(signal):
+    if signal is None:
+        st.info("No confirmed rejection yet. Waiting for hourly candle rejection at primary structure.")
+        return
+    kind = "call" if signal.signal_type=="CALL" else "put"
+    render_signal_badge(f"{signal.signal_type} {signal.status}", kind)
+    render_metric_card("Signal", f"{signal.line_name} @ {_fmt_num(signal.line_value_at_rejection)}", f"entry {_fmt_num(signal.entry_price)} | stop {_fmt_num(signal.stop_price)} | target {signal.target_line_name}:{_fmt_num(signal.target_price)} | RR {_fmt_num(signal.rr_ratio)}")
+
+
+def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="MOCK"):
+    txt = f"SPY {_fmt_num(current_price)} • BIAS {bias_state.bias if bias_state else 'N/A'} • CLOSEST {closest_line.name if closest_line else 'N/A'} • SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} • C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} • PROVIDER {provider_status}"
+    st.markdown(f"<div class='metric-card ticker-scroll'><div class='ticker-track'>{txt} &nbsp;&nbsp;&nbsp; {txt}</div></div>", unsafe_allow_html=True)
+
+
+def render_warning_panel(message): st.warning(message)
+
+def render_debug_json(label, obj):
+    st.write(label); st.json(obj)
+
+
+
+
+def safe_ohlc_columns(df: pd.DataFrame) -> tuple[str,str,str,str]:
+    cols = {c.lower(): c for c in df.columns}
+    return cols.get('open','Open'), cols.get('high','High'), cols.get('low','Low'), cols.get('close','Close')
+
+
+def select_secondary_lines_for_chart(secondary_lines: list[DynamicLine], current_price: float, current_dt: pd.Timestamp, mode: str):
+    valid = [(line, line.tradable_value_at(current_dt)) for line in secondary_lines if not pd.isna(line.tradable_value_at(current_dt))]
+    if mode == 'all':
+        return [v[0] for v in valid]
+    n = 6 if mode == 'nearest 6' else 12
+    return [x[0] for x in sorted(valid, key=lambda z: abs(z[1]-current_price))[:n]]
+
+
+def make_line_trace(line: DynamicLine, xvals, name: str, current_dt: pd.Timestamp, width=2, dash='solid', opacity=0.9):
+    ys=[line.tradable_value_at(x) for x in xvals]
+    raw=[line.raw_value_at(x) for x in xvals]
+    color = '#2dd4bf' if line.zone_type=='CALL_ZONE' else '#fb7185' if line.zone_type=='PUT_ZONE' else '#94a3b8'
+    return go.Scatter(x=xvals,y=ys,mode='lines',name=name,line=dict(color=color,width=width,dash=dash),opacity=opacity,customdata=raw,hovertemplate=f"{name}<br>Tradable=%{{y:.2f}}<br>Raw=%{{customdata:.3f}}<extra></extra>")
+
+
+def make_glow_line_trace(line: DynamicLine, xvals, name: str):
+    ys=[line.tradable_value_at(x) for x in xvals]
+    color = 'rgba(45,212,191,0.25)' if line.zone_type=='CALL_ZONE' else 'rgba(251,113,133,0.25)'
+    return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{name}_glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
+
+
+def add_trade_overlay_for_signal(fig, signal: TradeSignal):
+    if signal.entry_time is None or pd.isna(signal.entry_price):
+        return
+    fig.add_trace(go.Scatter(x=[signal.entry_time], y=[signal.entry_price], mode='markers+text', text=['ENTRY'], textposition='top center', marker=dict(symbol='diamond',color='#f8fafc',size=9), name='ENTRY'))
+    if not pd.isna(signal.stop_price):
+        fig.add_trace(go.Scatter(x=[signal.entry_time-pd.Timedelta(hours=0.5), signal.entry_time+pd.Timedelta(hours=0.5)], y=[signal.stop_price, signal.stop_price], mode='lines+text', text=['STOP',''], line=dict(color='#ef4444',dash='dash'), name='STOP'))
+    if signal.target_line_name and not pd.isna(signal.target_price):
+        fig.add_trace(go.Scatter(x=[signal.entry_time-pd.Timedelta(hours=0.5), signal.entry_time+pd.Timedelta(hours=0.5)], y=[signal.target_price, signal.target_price], mode='lines+text', text=['TARGET',''], line=dict(color='#f59e0b',dash='dash'), name='TARGET'))
+
+
+def add_decision_overlay(fig, decision_state):
+    txt = 'WAIT | No active rejection.'
+    if decision_state and decision_state.signal_quality:
+        w = decision_state.signal_quality.warnings[0] if decision_state.signal_quality.warnings else 'Clean rejection'
+        txt = f"{decision_state.final_decision} | {decision_state.signal_quality.grade} | {decision_state.signal_quality.action_label} | {w}"
+    fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.99, text=txt, showarrow=False, align='left', bgcolor='rgba(8,13,22,0.75)', bordercolor='#334155', font=dict(color='#e2e8f0',size=11))
+
+
+def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, low_pivot, secondary_pivots, signals, decision_state, current_price, current_dt, show_secondary=True, show_signals=True, show_trade_overlays=True, show_pivots=True, secondary_mode='nearest 12'):
+    fig = go.Figure()
+    if candles_df is None or candles_df.empty:
+        fig.add_annotation(text='No candle data available.', x=0.5, y=0.5, xref='paper', yref='paper', showarrow=False)
+        return fig
+    df = candles_df.sort_index(); o,h,l,c = safe_ohlc_columns(df)
+    xvals = list(df.index)
+    if current_dt > xvals[-1]: xvals.append(pd.Timestamp(current_dt))
+    fig.add_trace(go.Candlestick(x=df.index, open=df[o], high=df[h], low=df[l], close=df[c], name='SPY', increasing_line_color='#22c55e', decreasing_line_color='#f43f5e'))
+    closest = get_closest_primary_line(primary_lines, current_dt, current_price) if current_price is not None and not pd.isna(current_price) else None
+    for line in primary_lines:
+        if closest and line.name==closest.name: fig.add_trace(make_glow_line_trace(line,xvals,line.name))
+        fig.add_trace(make_line_trace(line,xvals,line.name,current_dt,width=4 if closest and line.name==closest.name else 2))
+    plotted_secondary=[]
+    if show_secondary:
+        s_lines = select_secondary_lines_for_chart(secondary_lines, current_price if current_price is not None else float('nan'), pd.Timestamp(current_dt), secondary_mode)
+        plotted_secondary=s_lines
+        for line in s_lines:
+            fig.add_trace(make_line_trace(line,xvals,f"{line.name} TARGET ONLY",current_dt,width=1,dash='dash',opacity=0.55))
+    if show_pivots:
+        if high_pivot and high_pivot.timestamp is not None and not pd.isna(high_pivot.price): fig.add_trace(go.Scatter(x=[high_pivot.timestamp],y=[high_pivot.price],mode='markers+text',text=['High Pivot'],textposition='top center',marker=dict(color='#f97316',size=9),name='High Pivot'))
+        if low_pivot and low_pivot.timestamp is not None and not pd.isna(low_pivot.price): fig.add_trace(go.Scatter(x=[low_pivot.timestamp],y=[low_pivot.price],mode='markers+text',text=['Low Pivot'],textposition='bottom center',marker=dict(color='#38bdf8',size=9),name='Low Pivot'))
+    if show_signals:
+        for sg in signals:
+            color = '#22c55e' if sg.signal_type=='CALL' else '#f43f5e'; sym='triangle-up' if sg.signal_type=='CALL' else 'triangle-down'
+            if sg.status=='PENDING_CONFIRMATION':
+                fig.add_trace(go.Scatter(x=[sg.rejection_time],y=[sg.rejection_low if sg.signal_type=='CALL' else sg.rejection_high],mode='markers+text',text=['PENDING'],marker=dict(symbol=sym,size=11,color='rgba(0,0,0,0)',line=dict(color=color,width=2)),name=f"{sg.signal_type} pending"))
+            else:
+                fig.add_trace(go.Scatter(x=[sg.rejection_time],y=[sg.rejection_low if sg.signal_type=='CALL' else sg.rejection_high],mode='markers+text',text=[sg.signal_type],marker=dict(symbol=sym,size=12,color=color),name=f"{sg.signal_type} signal"))
+        if show_trade_overlays and signals:
+            add_trade_overlay_for_signal(fig, signals[-1])
+    if current_price is not None and not pd.isna(current_price):
+        fig.add_hline(y=current_price,line_dash='dot',line_color='#cbd5e1',annotation_text=f"SPY {current_price:.2f}")
+    if closest:
+        cv = closest.tradable_value_at(current_dt); d = current_price-cv if current_price is not None and not pd.isna(cv) else float('nan')
+        fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {closest.name} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(color='#e2e8f0',size=11),align='right')
+    add_decision_overlay(fig, decision_state)
+    fig.update_layout(height=780, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=20), legend=dict(orientation='h'))
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)'); fig.update_yaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)')
+    if show_secondary and secondary_mode!='all' and len(secondary_lines)>len(plotted_secondary):
+        fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.02,text='Showing nearest secondary target lines.',showarrow=False,font=dict(size=10,color='#94a3b8'))
+    return fig
+
+
+
+@dataclass(frozen=True)
+class OptionQuote:
+    symbol: str; underlying: str; expiration: object; strike: int; option_type: str
+    bid: float; ask: float; mark: float; spread: float; delta: float; gamma: float; theta: float; vega: float; iv: float
+    provider: str; timestamp: pd.Timestamp | None; warning: str | None
+
+@dataclass(frozen=True)
+class OptionsScenario:
+    option_type: str; strike: int; current_mark: float; underlying_move: float; estimated_mark: float; estimated_pnl_per_contract: float; explanation: str
+
+@dataclass(frozen=True)
+class EntryTargetOptionProjection:
+    option_type: str; strike: int; option_symbol: str; current_underlying_price: float; current_option_mark: float; option_delta: float
+    entry_line_name: str; entry_line_value: float; entry_projection_time: pd.Timestamp; underlying_move_to_entry: float; estimated_entry_mark: float
+    target_line_name: str | None; target_line_value: float; target_projection_time: pd.Timestamp | None; underlying_move_entry_to_target: float; estimated_target_mark: float
+    estimated_profit_per_contract: float; estimated_return_pct: float; warning: str | None; explanation: str
+
+@dataclass(frozen=True)
+class OptionsCockpitState:
+    provider: str; underlying_price: float; expiration: object; call_quote: OptionQuote | None; put_quote: OptionQuote | None; selected_trade_quote: OptionQuote | None
+    scenarios: list[OptionsScenario]; entry_target_projection: EntryTargetOptionProjection | None; warning: str | None; explanation: str
+
+class MockOptionProvider:
+    provider_name='MOCK'
+    def _quote(self, underlying_price, expiration_date, strike, option_type, ts):
+        intrinsic = max(0.0, underlying_price-strike) if option_type=='CALL' else max(0.0, strike-underlying_price)
+        tv = max(0.15, min(3.00, underlying_price*0.0025)); mark=round(intrinsic+tv,2); bid=max(0.01,round(mark-0.05,2)); ask=round(mark+0.05,2)
+        m = min(1.0, abs(underlying_price-strike)/10)
+        delta = round((0.70-0.30*m) * (1 if option_type=='CALL' else -1),2)
+        return OptionQuote(f"SPY-{expiration_date}-{strike}-{option_type[0]}","SPY",expiration_date,int(strike),option_type,bid,ask,mark,round(ask-bid,2),delta,0.05,-0.10,0.03,0.25,'MOCK',ts,"Mock quote — not live market data.")
+    def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+        ts=pd.Timestamp.now(tz=get_central_tz())
+        return {'call':self._quote(underlying_price,expiration_date,call_strike,'CALL',ts),'put':self._quote(underlying_price,expiration_date,put_strike,'PUT',ts)}
+
+def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
+    moves = moves or [0.5,-0.5]; out=[]
+    for mv in moves:
+        em=max(0.01, round(quote.mark + (quote.delta*mv),2)); pnl=round((em-quote.mark)*100,2)
+        out.append(OptionsScenario(quote.option_type, quote.strike, quote.mark, mv, em, pnl, 'Delta-only estimate; ignores gamma, IV, spread changes, and decay.'))
+    return out
+
+def get_default_projection_time(current_dt, hour=9, minute=0) -> pd.Timestamp:
+    dt=pd.Timestamp(current_dt); ct=get_central_tz(); dt=dt.tz_localize(ct) if dt.tzinfo is None else dt.tz_convert(ct)
+    return pd.Timestamp(dt.date(), tz=ct)+pd.Timedelta(hours=hour, minutes=minute)
+
+def resolve_entry_target_lines(all_lines, latest_signal=None, bias_state=None, option_type=None, entry_line_name=None, target_line_name=None, current_price=None, current_dt=None):
+    dt = pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())
+    entry = get_line_by_name(all_lines, entry_line_name) if entry_line_name else None
+    target = get_line_by_name(all_lines, target_line_name) if target_line_name else None
+    if entry is None and latest_signal is not None: entry = get_line_by_name(all_lines, latest_signal.line_name)
+    if target is None and latest_signal is not None and latest_signal.target_line_name: target = get_line_by_name(all_lines, latest_signal.target_line_name)
+    if entry is None and bias_state is not None:
+        watch = bias_state.watched_call_lines if option_type=='CALL' else bias_state.watched_put_lines
+        if watch: entry = get_line_by_name(all_lines, watch[0])
+    if entry and target is None:
+        ev=entry.tradable_value_at(dt); cand=[]
+        for l in all_lines:
+            if l.name==entry.name: continue
+            v=l.tradable_value_at(dt)
+            if pd.isna(v): continue
+            if option_type=='CALL' and v>ev: cand.append((v-ev,l))
+            if option_type=='PUT' and v<ev: cand.append((ev-v,l))
+        if cand: target=min(cand,key=lambda x:x[0])[1]
+    return entry,target
+
+def project_option_entry_to_target(quote, current_underlying_price, entry_line, target_line=None, entry_projection_time=None, target_projection_time=None):
+    ept = pd.Timestamp(entry_projection_time) if entry_projection_time is not None else pd.Timestamp.now(tz=get_central_tz())
+    etv = entry_line.tradable_value_at(ept); move_e = etv-current_underlying_price; est_entry=max(0.01, round(quote.mark + quote.delta*move_e,2))
+    warn=None
+    if target_line is None:
+        return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,None,float('nan'),None,float('nan'),float('nan'),float('nan'),float('nan'),'No target line selected.','Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Actual 0DTE prices may change faster than this estimate.')
+    tpt = pd.Timestamp(target_projection_time) if target_projection_time is not None else ept
+    ttv = target_line.tradable_value_at(tpt); move_t = ttv-etv; est_target=max(0.01, round(est_entry + quote.delta*move_t,2)); prof=round((est_target-est_entry)*100,2); ret=round(((est_target-est_entry)/est_entry)*100,2) if est_entry>0 else float('nan')
+    return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,target_line.name,ttv,tpt,move_t,est_target,prof,ret,warn,'Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Actual 0DTE prices may change faster than this estimate.')
+
+def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_state=None, provider=None, current_dt=None, all_lines=None, entry_line_name=None, target_line_name=None, projection_time=None, option_type_override=None):
+    provider = provider or MockOptionProvider(); now=pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())
+    if selected_strikes is None or pd.isna(selected_strikes.underlying_price):
+        return OptionsCockpitState('MOCK',float('nan'),None,None,None,None,[],None,'Invalid/missing strikes or underlying.', 'No options cockpit available.')
+    q = provider.get_selected_quotes(selected_strikes.underlying_price, selected_strikes.expiration_date, selected_strikes.call_strike, selected_strikes.put_strike)
+    call_q = q.get('call') or q.get('CALL')
+    put_q = q.get('put') or q.get('PUT')
+    if isinstance(call_q, dict): call_q = OptionQuote(**call_q)
+    if isinstance(put_q, dict): put_q = OptionQuote(**put_q)
+    opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
+    sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
+    scenarios = simulate_option_scenarios(sel) if sel else []
+    proj=None; warning='Mock quote — not live market data.'
+    if sel and all_lines:
+        entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
+        if entry:
+            proj = project_option_entry_to_target(sel, selected_strikes.underlying_price, entry, target, entry_projection_time=projection_time or get_default_projection_time(now), target_projection_time=projection_time or get_default_projection_time(now))
+        else:
+            warning = 'Could not resolve entry line; projection unavailable.'
+    return OptionsCockpitState('MOCK', selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, 'Mock provider options cockpit state.')
+
+
+
+import os, json, hashlib
+from pathlib import Path
+
+@dataclass(frozen=True)
+class JournalEntry:
+    journal_id: str; created_at: pd.Timestamp; updated_at: pd.Timestamp | None; trade_date: object; source: str
+    signal_id: str | None; signal_type: str | None; signal_status: str | None; line_name: str | None; line_zone_type: str | None; bias: str | None
+    quality_grade: str | None; quality_score: float; final_decision: str | None; action_label: str | None
+    rejection_time: pd.Timestamp | None; entry_time: pd.Timestamp | None; entry_price: float; stop_price: float; target_line_name: str | None; target_price: float; rr_ratio: float
+    outcome: str | None; outcome_time: pd.Timestamp | None; max_favorable_move: float; max_adverse_move: float; bars_to_outcome: int | None
+    selected_option_type: str | None; selected_option_strike: int | None; estimated_entry_mark: float; estimated_target_mark: float; estimated_profit_per_contract: float
+    provider_used: str | None; notes: str | None; tags: list[str]
+
+@dataclass(frozen=True)
+class JournalAnalytics:
+    total_entries: int; total_confirmed: int; target_first_count: int; stop_first_count: int; no_hit_count: int; ambiguous_count: int; pending_count: int; unknown_count: int
+    win_rate: float; average_rr: float; average_max_favorable_move: float; average_max_adverse_move: float; average_estimated_profit_per_contract: float; expectancy_per_contract: float
+    by_line: dict; by_signal_type: dict; by_quality_grade: dict; by_bias: dict; by_hour: dict; by_source: dict; warnings: list[str]
+
+@dataclass(frozen=True)
+class AutoJournalStatus:
+    enabled: bool; saved_count: int; updated_count: int; skipped_duplicate_count: int; latest_saved_signal_id: str | None; warnings: list[str]; explanation: str
+
+def ensure_data_dir(path='data'):
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def journal_entry_to_dict(entry: JournalEntry) -> dict:
+    d=asdict(entry)
+    for k,v in list(d.items()):
+        if isinstance(v,pd.Timestamp): d[k]=v.isoformat()
+    return d
+
+def journal_entry_from_dict(d: dict) -> JournalEntry:
+    dd=d.copy()
+    for k in ['created_at','updated_at','rejection_time','entry_time','outcome_time']:
+        if dd.get(k): dd[k]=pd.Timestamp(dd[k])
+    return JournalEntry(**dd)
+
+def load_signal_journal(path='data/signal_journal.json'):
+    ensure_data_dir(Path(path).parent)
+    p=Path(path)
+    if not p.exists(): return []
+    try:
+        arr=json.loads(p.read_text())
+        return [journal_entry_from_dict(x) for x in arr]
+    except Exception:
+        backup=Path(path).with_name(f"signal_journal.corrupt.{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json")
+        p.replace(backup)
+        return []
+
+def save_signal_journal(entries, path='data/signal_journal.json'):
+    ensure_data_dir(Path(path).parent)
+    temp=Path(str(path)+'.tmp')
+    temp.write_text(json.dumps([journal_entry_to_dict(e) for e in entries], indent=2, default=str))
+    temp.replace(path)
+
+def make_journal_id(entry: JournalEntry) -> str:
+    key=f"{entry.trade_date}|{entry.signal_id}|{entry.source}|{entry.line_name}|{entry.entry_time}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+def get_journal_signal_key(entry: JournalEntry) -> str:
+    if entry.signal_id: return f"sig:{entry.signal_id}"
+    return f"{entry.trade_date}|{entry.signal_type}|{entry.line_name}|{entry.rejection_time}|{entry.entry_time}"
+
+def entry_is_more_complete(new_entry, old_entry):
+    checks=[(new_entry.outcome, old_entry.outcome),(new_entry.estimated_entry_mark, old_entry.estimated_entry_mark),(new_entry.quality_grade, old_entry.quality_grade),(new_entry.notes, old_entry.notes),(new_entry.tags, old_entry.tags),(new_entry.final_decision, old_entry.final_decision)]
+    for n,o in checks:
+        if (o in [None,[],float('nan')] or (isinstance(o,float) and pd.isna(o))) and (n not in [None,[],float('nan')] and not (isinstance(n,float) and pd.isna(n))):
+            return True
+    return False
+
+def upsert_journal_entry(entries, new_entry):
+    nk=get_journal_signal_key(new_entry)
+    for i,e in enumerate(entries):
+        if get_journal_signal_key(e)==nk:
+            if entry_is_more_complete(new_entry,e):
+                entries[i]=new_entry; return entries,'updated'
+            return entries,'skipped'
+    entries.append(new_entry); return entries,'inserted'
+
+def build_journal_entry_from_live_state(latest_signal, decision_state, bias_state, options_cockpit_state, outcome=None, source='LIVE_MANUAL', notes=None, tags=None):
+    if latest_signal is None: return None
+    q=decision_state.signal_quality if decision_state and decision_state.signal_quality else None
+    proj=options_cockpit_state.entry_target_projection if options_cockpit_state and options_cockpit_state.entry_target_projection else None
+    e=JournalEntry('',pd.Timestamp.now(tz=get_central_tz()),None,latest_signal.rejection_time.date(),source,latest_signal.signal_id,latest_signal.signal_type,latest_signal.status,latest_signal.line_name,None,bias_state.bias if bias_state else None,q.grade if q else None,q.score if q else float('nan'),decision_state.final_decision if decision_state else None,q.action_label if q else None,latest_signal.rejection_time,latest_signal.entry_time,latest_signal.entry_price,latest_signal.stop_price,latest_signal.target_line_name,latest_signal.target_price,latest_signal.rr_ratio,outcome.outcome if outcome else None,outcome.outcome_time if outcome else None,outcome.max_favorable_move if outcome else float('nan'),outcome.max_adverse_move if outcome else float('nan'),outcome.bars_to_outcome if outcome else None,proj.option_type if proj else None,proj.strike if proj else None,proj.estimated_entry_mark if proj else float('nan'),proj.estimated_target_mark if proj else float('nan'),proj.estimated_profit_per_contract if proj else float('nan'),options_cockpit_state.provider if options_cockpit_state else None,notes,tags or [])
+    return e.__class__(make_journal_id(e), *list(asdict(e).values())[1:])
+
+def build_journal_entries_from_replay_state(replay_state):
+    out=[]
+    for sg in replay_state.signals:
+        o = replay_state.outcomes.get(sg.signal_id) if replay_state.outcomes else None
+        q = replay_state.signal_qualities.get(sg.signal_id) if replay_state.signal_qualities else None
+        e=JournalEntry('',pd.Timestamp.now(tz=get_central_tz()),None,replay_state.replay_date,'REPLAY',sg.signal_id,sg.signal_type,sg.status,sg.line_name,None,replay_state.bias_state.bias if replay_state.bias_state else None,q.grade if q else None,q.score if q else float('nan'),None,q.action_label if q else None,sg.rejection_time,sg.entry_time,sg.entry_price,sg.stop_price,sg.target_line_name,sg.target_price,sg.rr_ratio,o.outcome if o else None,o.outcome_time if o else None,o.max_favorable_move if o else float('nan'),o.max_adverse_move if o else float('nan'),o.bars_to_outcome if o else None,None,None,float('nan'),float('nan'),float('nan'),None,None,[])
+        out.append(e.__class__(make_journal_id(e), *list(asdict(e).values())[1:]))
+    return out
+
+def compute_journal_analytics(entries):
+    n=len(entries); conf=[e for e in entries if e.signal_status=='CONFIRMED']; wins=[e for e in entries if e.outcome=='TARGET_FIRST']; losses=[e for e in entries if e.outcome=='STOP_FIRST']
+    wr=(len(wins)/(len(wins)+len(losses))) if (len(wins)+len(losses))>0 else float('nan')
+    def grp(key):
+        d={}
+        for e in entries:
+            k=getattr(e,key) if key!='hour' else (e.entry_time.hour if e.entry_time else None)
+            d.setdefault(k,[]).append(e)
+        out={}
+        for k,v in d.items():
+            w=len([x for x in v if x.outcome=='TARGET_FIRST']); l=len([x for x in v if x.outcome=='STOP_FIRST'])
+            out[str(k)]={"count":len(v),"wins":w,"losses":l,"win_rate":(w/(w+l) if (w+l)>0 else float('nan')),"average_rr":float(pd.Series([x.rr_ratio for x in v]).mean()),"average_estimated_profit_per_contract":float(pd.Series([x.estimated_profit_per_contract for x in v]).mean()),"small_sample":len(v)<5}
+        return out
+    return JournalAnalytics(n,len(conf),len([e for e in entries if e.outcome=='TARGET_FIRST']),len([e for e in entries if e.outcome=='STOP_FIRST']),len([e for e in entries if e.outcome=='NO_HIT']),len([e for e in entries if e.outcome=='AMBIGUOUS_SAME_CANDLE']),len([e for e in entries if e.outcome in ['PENDING','PENDING_OUTCOME']]),len([e for e in entries if e.outcome in [None,'UNKNOWN']]),wr,float(pd.Series([e.rr_ratio for e in entries]).mean()),float(pd.Series([e.max_favorable_move for e in entries]).mean()),float(pd.Series([e.max_adverse_move for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in wins+losses]).mean()) if wins or losses else float('nan'),grp('line_name'),grp('signal_type'),grp('quality_grade'),grp('bias'),grp('hour'),grp('source'),[])
+
+def generate_journal_insights(a):
+    out=[]
+    if a.total_entries==0: return ["No journal history yet."]
+    for name,grp in [('line',a.by_line),('quality',a.by_quality_grade),('hour',a.by_hour)]:
+        if grp:
+            best=max(grp.items(), key=lambda kv: kv[1]['win_rate'] if kv[1]['win_rate']==kv[1]['win_rate'] else -1)
+            note='small sample' if best[1]['small_sample'] else 'sample adequate'
+            out.append(f"Best {name} so far: {best[0]} (win_rate={best[1]['win_rate']:.2f}, {note}).")
+    return out
+
+def auto_journal_live_signals(signals, decision_state, bias_state, options_cockpit_state, existing_entries, path='data/signal_journal.json', enabled=False):
+    if not enabled: return existing_entries, AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
+    saved=updated=skipped=0; latest=None
+    entries=list(existing_entries)
+    for sg in signals or []:
+        entry=build_journal_entry_from_live_state(sg,decision_state,bias_state,options_cockpit_state,source='LIVE_AUTO')
+        entries,act=upsert_journal_entry(entries,entry)
+        if act=='inserted': saved+=1; latest=sg.signal_id
+        elif act=='updated': updated+=1; latest=sg.signal_id
+        else: skipped+=1
+    save_signal_journal(entries,path)
+    return entries, AutoJournalStatus(True,saved,updated,skipped,latest,[],"Auto-journal processed live signals.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="SPY Prophet", page_icon="🔮", layout="wide", initial_sidebar_state="expanded")
+    inject_global_css()
+    now_ct = datetime.now(tz=get_central_tz())
+
+    st.sidebar.header("SPY Prophet Controls")
+    refresh = st.sidebar.button("Refresh data")
+    slope = st.sidebar.number_input("Slope per hour", min_value=0.050, max_value=0.200, value=DEFAULT_SLOPE_PER_HOUR, step=0.001, format="%.3f")
+    st.sidebar.selectbox("Auto-refresh", ["Off","30 sec","60 sec","5 min"])
+    show_debug = st.sidebar.toggle("Show Debug Lab", value=False)
+    auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
+    provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=0)
+    st.sidebar.write(f"Current CT: {now_ct.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    st.sidebar.caption("No order execution. Analysis and quote display only.")
+
+    render_section_title("SPY Prophet", "0DTE Structure Terminal", "🔮")
+    st.caption("Where Structure Becomes Foresight")
+    st.caption("Analysis only. No order execution.")
+
+    df = fetch_spy_hourly(period="10d") if (refresh or True) else pd.DataFrame()
+    latest_price = None
+    prior_day = None
+    rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
+    bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None
+    if df.empty:
+        st.warning("No SPY data loaded. Click refresh or check yfinance availability.")
+    if not df.empty:
+        close_series = df.get("Close", pd.Series(dtype="float64")).dropna()
+        latest_price = float(close_series.iloc[-1]) if not close_series.empty else None
+        prior_day = get_prior_trading_day(df, now_ct)
+        if prior_day is not None:
+            rth_df = filter_rth_session(df, prior_day)
+            ext_df = filter_extended_session(df, prior_day)
+            if not rth_df.empty:
+                pivots = find_primary_pivots(rth_df)
+                secondary_pivots = find_secondary_pivots(rth_df)
+                primary_lines = build_primary_lines(pivots["high"], pivots["low"], slope)
+                secondary_lines = build_secondary_lines(secondary_pivots, slope)
+                proj_df = project_lines(primary_lines + secondary_lines, now_ct, latest_price)
+                bias = determine_preopen_bias(primary_lines, latest_price if latest_price is not None else float("nan"), now_ct)
+                strikes = select_0dte_strikes(latest_price if latest_price is not None else float("nan"), now_ct)
+                signals = detect_rejection_signals(rth_df, primary_lines, secondary_lines)
+                closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
+                decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
+
+    render_header_ticker(latest_price, bias, closest, signals[-1] if signals else None, strikes, provider_status="MOCK")
+    st.sidebar.write(f"Data loaded: {not df.empty}")
+    st.sidebar.write(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
+    st.sidebar.write(f"Prior day: {prior_day}")
+
+    tabs = st.tabs(["Live Terminal","Structure Map","Prophet Chart","Signal Engine","Replay Lab","Options Cockpit","Journal Analytics","Playbook","Debug Lab"])
+    with tabs[0]:
+        st.caption("Command center for live structure, decision, and options context.")
+        c1,c2,c3,c4=st.columns(4)
+        with c1: render_kpi_card("SPY Price", fmt_price(latest_price), f"Latest candle: {fmt_time(df.index[-1]) if not df.empty else '-'}", kind="neutral", badge="LIVE")
+        with c2: render_kpi_card("Bias", bias.bias if bias else "-", f"Strength {fmt_float(bias.strength_score) if bias else '-'}", kind="neutral")
+        with c3: render_kpi_card("Final Decision", decision_state.final_decision if decision_state else "WAIT", f"Grade {decision_state.signal_quality.grade if decision_state and decision_state.signal_quality else '-'}", kind="warning")
+        with c4: render_kpi_card("Closest Structure", closest.name if closest else "-", f"Dist {fmt_float((closest.distance_from_price(latest_price, now_ct) if closest and latest_price is not None else float('nan')))}", kind="neutral")
+        st.markdown("---")
+        p1,p2,p3=st.columns([1.1,1,1])
+        with p1: render_decision_panel(decision_state)
+        with p2: render_signal_card(signals[-1] if signals else None)
+        with p3:
+            if strikes:
+                ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                body=f"<div class='card-value'>CALL {strikes.call_strike}: {fmt_price(ostate.call_quote.mark if ostate.call_quote else None)}</div><div class='card-value'>PUT {strikes.put_strike}: {fmt_price(ostate.put_quote.mark if ostate.put_quote else None)}</div><div class='small-muted'>Provider MOCK/Fallback aware</div>"
+                render_glass_card("Options Preview", body)
+            else:
+                render_empty_state("Options Preview", "No option quote.")
+        st.markdown("---")
+        cols=st.columns(4)
+        for i,name in enumerate(["UA","UD","LA","LD"]):
+            line=get_line_by_name(primary_lines,name)
+            with cols[i]:
+                if line:
+                    render_line_card(name,line.tradable_value_at(now_ct),line.raw_value_at(now_ct),line.distance_from_price(latest_price,now_ct) if latest_price is not None else float('nan'),line.zone_type,line.direction,closest is not None and closest.name==name)
+                    render_distance_bar(name, line.distance_from_price(latest_price, now_ct) if latest_price is not None else float('nan'), zone_type=line.zone_type)
+        if strikes:
+            ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+            st.write(f"Options Preview (MOCK): CALL {strikes.call_strike} mark={ostate.call_quote.mark if ostate.call_quote else None} | PUT {strikes.put_strike} mark={ostate.put_quote.mark if ostate.put_quote else None}")
+            if ostate.entry_target_projection: st.write(f"Entry prem ~{ostate.entry_target_projection.estimated_entry_mark}, Target prem ~{ostate.entry_target_projection.estimated_target_mark}")
+
+    with tabs[1]:
+        st.caption("Technical structure tables for primary and secondary levels.")
+        render_section_title("Structure Map", "Primary and secondary projected structure")
+        if not proj_df.empty:
+            st.dataframe(proj_df[proj_df['is_primary']==True][["name","tradable_value","raw_projected_value","distance","direction","zone_type","anchor_price","anchor_time","slope_per_hour"]])
+            st.dataframe(proj_df[proj_df['is_primary']==False][["name","tradable_value","raw_projected_value","distance","direction","zone_type","anchor_price","anchor_time"]])
+            st.caption("Legend: Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary lines = target only")
+
+    with tabs[2]:
+        render_section_title("Prophet Chart", "Structure, signals, and decision overlay")
+        cc1,cc2,cc3,cc4,cc5=st.columns(5)
+        show_secondary = cc1.checkbox("Show Secondary", value=True)
+        show_signals = cc2.checkbox("Show Signals", value=True)
+        show_overlays = cc3.checkbox("Show Stops/Targets", value=True)
+        show_pivots = cc4.checkbox("Show Pivots", value=True)
+        secondary_mode = cc5.selectbox("Secondary Mode", ["nearest 6","nearest 12","all"], index=1)
+        try:
+            hp = pivots["high"] if 'pivots' in locals() else None
+            lp = pivots["low"] if 'pivots' in locals() else None
+            fig = build_prophet_chart(rth_df if not rth_df.empty else df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=show_pivots, secondary_mode=secondary_mode)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary dashed lines = target-only structure | Markers show rejections and entries")
+        except Exception as e:
+            render_warning_panel(f"Chart build failed: {e}")
+
+    with tabs[3]:
+        st.caption("Latest rejection signals, quality, and guardrails.")
+        render_section_title("Signal Engine", "Hourly rejection rules")
+        render_signal_card(signals[-1] if signals else None)
+        if decision_state and decision_state.signal_quality:
+            q = decision_state.signal_quality
+            st.write(f"Quality: {q.grade} | Score {q.score:.1f} | CloseDist {q.close_distance:.2f} | WickRatio {q.wick_rejection_ratio:.2f} | Target {q.target_quality} | Action {q.action_label}")
+            st.write(f"Warnings: {q.warnings}")
+            st.write(f"Strengths: {q.strengths}")
+        if signals:
+            st.dataframe(pd.DataFrame([asdict(sg) for sg in signals[-5:]])[["signal_id","signal_type","status","line_name","rejection_time","entry_time","entry_price","stop_price","target_line_name","target_price","rr_ratio"]])
+        st.caption("CALL rejection: red candle rejects descending line from above. PUT rejection: green candle rejects ascending line from below. Entry is next candle open.")
+
+    with tabs[4]:
+        st.caption("Historical replay and outcome review console.")
+        render_section_title("Replay Lab", "Historical Replay and Outcome Review")
+        dates = get_available_replay_dates(df)
+        if not dates:
+            st.info("No replay dates available.")
+        else:
+            rdate = st.selectbox("Replay date", dates, index=max(0,len(dates)-1))
+            mode = st.selectbox("Mode", ["Full Day Review","Step Replay"])
+            day_df = filter_replay_day(df, rdate)
+            rtime = None
+            if mode=="Step Replay" and not day_df.empty:
+                rtime = st.selectbox("Replay time", list(day_df.index), index=len(day_df)-1)
+                st.caption("Step Replay hides future candles and signals by default to avoid look-ahead bias.")
+            include_out = st.toggle("Show future outcome overlays", value=(mode=="Full Day Review"))
+            st.info("Hindsight outcome overlay enabled." if include_out else "Future outcomes hidden.")
+            show_sec_replay = st.toggle("Show secondary target lines", value=True)
+            rs = build_replay_state(df, rdate, replay_time=rtime, slope_per_hour=slope, include_future_outcomes=include_out)
+            st.write(f"Prior trading day: {rs.prior_trading_day} | Signals: {len(rs.signals)}")
+            conf = len([x for x in rs.signals if x.status=='CONFIRMED']); pend=len([x for x in rs.signals if x.status=='PENDING_CONFIRMATION'])
+            out_target = len([o for o in rs.outcomes.values() if o.outcome=='TARGET_FIRST']); out_stop = len([o for o in rs.outcomes.values() if o.outcome=='STOP_FIRST']); out_no = len([o for o in rs.outcomes.values() if o.outcome=='NO_HIT'])
+            st.write(f"Confirmed: {conf} | Pending: {pend} | Target-first: {out_target} | Stop-first: {out_stop} | No-hit: {out_no}")
+            replay_candles = day_df if mode=="Full Day Review" or rtime is None else day_df[day_df.index<=rtime]
+            rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, build_decision_state(rs.signals[-1] if rs.signals else None, rs.primary_lines+rs.secondary_lines, float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals), float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), show_secondary=show_sec_replay)
+            st.plotly_chart(rfig, use_container_width=True)
+            table=[]
+            for sg in rs.signals:
+                q=rs.signal_qualities.get(sg.signal_id); o=rs.outcomes.get(sg.signal_id)
+                table.append({"signal_id":sg.signal_id,"signal_type":sg.signal_type,"status":sg.status,"line_name":sg.line_name,"rejection_time":sg.rejection_time,"entry_time":sg.entry_time,"entry_price":sg.entry_price,"stop_price":sg.stop_price,"target_line_name":sg.target_line_name,"target_price":sg.target_price,"quality_grade":q.grade if q else None,"quality_score":q.score if q else None,"outcome":o.outcome if o else None,"outcome_time":o.outcome_time if o else None,"max_favorable_move":o.max_favorable_move if o else None,"max_adverse_move":o.max_adverse_move if o else None,"bars_to_outcome":o.bars_to_outcome if o else None})
+            st.dataframe(pd.DataFrame(table))
+            st.write("Replay Narrative:")
+            if table:
+                st.write((f"As of {rtime}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
+            if rs.outcomes:
+                vals=list(rs.outcomes.values()); st.write(f"First signal outcome: {vals[0].outcome}. Hourly data cannot determine intrabar sequence when both levels hit in same candle.")
+
+    with tabs[4]:
+        st.caption("Historical replay and outcome review console.")
+        render_section_title("Options Cockpit", "MOCK preview")
+        if strikes:
+            requested_provider = provider
+            provider_obj = MockOptionProvider()
+            provider_status = {"provider":"MOCK","connected":True,"fallback_used":False,"missing_secrets":[]}
+            if requested_provider == "TASTYTRADE":
+                need=["TASTYTRADE_CLIENT_ID","TASTYTRADE_CLIENT_SECRET","TASTYTRADE_REFRESH_TOKEN"]
+                missing=[k for k in need if k not in st.secrets]
+                if missing:
+                    provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":missing,"last_error":"Missing secrets"}
+                else:
+                    try:
+                        env=st.secrets.get("TASTYTRADE_ENVIRONMENT","production")
+                        provider_obj = TastytradeProvider(st.secrets["TASTYTRADE_CLIENT_ID"], st.secrets["TASTYTRADE_CLIENT_SECRET"], st.secrets["TASTYTRADE_REFRESH_TOKEN"], env)
+                        _ = provider_obj.get_selected_quotes(strikes.underlying_price, strikes.expiration_date, strikes.call_strike, strikes.put_strike)
+                        provider_status = provider_obj.get_status()
+                        if not provider_status.get("quotes_ok"):
+                            provider_obj = MockOptionProvider(); provider_status["provider"]="MOCK_FALLBACK"; provider_status["fallback_used"]=True
+                    except Exception as e:
+                        provider_obj = MockOptionProvider(); provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":[],"last_error":type(e).__name__}
+            state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=provider_obj, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+            st.write(f"Provider requested: {requested_provider} | Provider used: {provider_status.get('provider', state.provider)} | Connected: {provider_status.get('connected')} | Warning: {state.warning}")
+            if provider_status.get("missing_secrets"): st.warning(f"Missing secrets: {provider_status.get('missing_secrets')}")
+            if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
+            c1,c2=st.columns(2)
+            with c1:
+                cq=state.call_quote
+                render_glass_card("CALL Quote", f"<div class='card-value'>Strike {cq.strike if cq else '-'} | Mark {fmt_price(cq.mark if cq else None)}</div><div class='small-muted'>Bid {fmt_price(cq.bid if cq else None)} Ask {fmt_price(cq.ask if cq else None)} Spread {fmt_price(cq.spread if cq else None)} Delta {fmt_float(cq.delta if cq else None)}</div>")
+            with c2:
+                pq=state.put_quote
+                render_glass_card("PUT Quote", f"<div class='card-value'>Strike {pq.strike if pq else '-'} | Mark {fmt_price(pq.mark if pq else None)}</div><div class='small-muted'>Bid {fmt_price(pq.bid if pq else None)} Ask {fmt_price(pq.ask if pq else None)} Spread {fmt_price(pq.spread if pq else None)} Delta {fmt_float(pq.delta if pq else None)}</div>")
+            if state.selected_trade_quote:
+                st.write(f"Active Trade Quote: {state.selected_trade_quote.option_type} {state.selected_trade_quote.strike} mark={state.selected_trade_quote.mark}")
+            else:
+                st.info("No active options setup. Waiting for confirmed or pending SPY rejection signal.")
+            if state.entry_target_projection:
+                p = state.entry_target_projection
+                st.write(f"Estimated entry premium: {p.estimated_entry_mark} | target premium: {p.estimated_target_mark} | est profit/contract: {p.estimated_profit_per_contract} | return%: {p.estimated_return_pct}")
+                if p.option_type=='CALL' and p.entry_line_value < state.underlying_price: st.caption("CALL premium expected to depreciate into entry.")
+                if p.option_type=='PUT' and p.entry_line_value > state.underlying_price: st.caption("PUT premium expected to depreciate into entry.")
+            if state.scenarios:
+                st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
+        st.info("These are mock quotes for interface testing only. Live Tastytrade quotes will be added in a later phase.")
+
+    with tabs[8]:
+        st.caption("Technical debug and raw object inspection (secrets redacted).")
+        render_section_title("Playbook", "Plain-English read from calculated structure")
+        if not bias:
+            st.write("Prophet Read: Waiting for structure.")
+        else:
+            st.write(f"Prophet Read: {bias.bias} posture. Primary watch: {bias.primary_line}.")
+            if decision_state and decision_state.signal_quality:
+                st.write(f"Final Decision: {decision_state.final_decision} | Signal Quality: {decision_state.signal_quality.grade} ({decision_state.signal_quality.score:.1f})")
+                if decision_state.guardrail_state.chase_warning: st.warning(decision_state.guardrail_state.chase_warning)
+                if decision_state.guardrail_state.retest_status != "NONE": st.info(f"Retest: {decision_state.guardrail_state.retest_status}")
+                if decision_state.guardrail_state.structure_warning: st.error(decision_state.guardrail_state.structure_warning)
+            if not signals:
+                st.write(f"Trigger Needed: Waiting for hourly rejection at {', '.join(bias.watched_call_lines + bias.watched_put_lines)}.")
+            else:
+                ls=signals[-1]
+                if ls.status=="PENDING_CONFIRMATION":
+                    st.write(f"Trigger Needed: Pending {ls.signal_type} confirmation on next candle open.")
+                else:
+                    st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {ls.target_price}.")
+                st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {ls.stop_price}. {ls.breakeven_rule}")
+                if strikes:
+                    ps = build_options_cockpit_state(strikes, latest_signal=ls, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                    if ps.selected_trade_quote: st.write(f"Options: {ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike} ({ps.warning})")
+                    if ps.entry_target_projection: st.write(f"Estimated entry premium {ps.entry_target_projection.estimated_entry_mark}, target premium {ps.entry_target_projection.estimated_target_mark}, est profit/contract {ps.entry_target_projection.estimated_profit_per_contract}")
+
+    with tabs[6]:
+        st.caption("Signal memory, outcomes, and expectancy analytics.")
+        render_section_title("Journal Analytics", "Self-learning signal memory")
+        journal_path='data/signal_journal.json'
+        entries = load_signal_journal(journal_path)
+        auto_status = AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
+        if strikes:
+            opt_state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+        else:
+            opt_state = None
+        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on)
+        st.write(f"Auto-journal: {auto_status.enabled} | saved={auto_status.saved_count} updated={auto_status.updated_count} skipped={auto_status.skipped_duplicate_count}")
+        notes = st.text_area("Notes for latest live signal", "")
+        tags_text = st.text_input("Tags (comma-separated)", "")
+        cja,cjb,cjc,cjd=st.columns(4)
+        if cja.button("Save latest live signal to journal") and signals:
+            e=build_journal_entry_from_live_state(signals[-1], decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=[t.strip() for t in tags_text.split(',') if t.strip()])
+            entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
+        if cjb.button("Save replay signals to journal") and 'rs' in locals():
+            for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
+            save_signal_journal(entries,journal_path)
+        if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
+        cjd.download_button("Export journal JSON", data=json.dumps([journal_entry_to_dict(x) for x in entries], indent=2), file_name="signal_journal.json")
+        st.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
+        a=compute_journal_analytics(entries)
+        st.write(f"Entries={a.total_entries} Confirmed={a.total_confirmed} WinRate={a.win_rate} AvgRR={a.average_rr} Expectancy/contract={a.expectancy_per_contract}")
+        st.dataframe(pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50))
+        st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
+        for ins in generate_journal_insights(a): st.info(ins)
+
+    with tabs[7]:
+        st.caption("Concise command brief from current state.")
+        if not show_debug:
+            st.info("Enable Debug Lab in sidebar.")
+        else:
+            render_debug_json("Primary lines", [asdict(x) for x in primary_lines])
+            st.dataframe(df.tail(20) if not df.empty else pd.DataFrame())
+            st.dataframe(rth_df.tail(20) if not rth_df.empty else pd.DataFrame())
+            st.dataframe(ext_df.tail(20) if not ext_df.empty else pd.DataFrame())
+            render_debug_json("Secondary pivots", [asdict(x) for x in secondary_pivots])
+            st.dataframe(proj_df)
+            render_debug_json("Bias", asdict(bias) if bias else {})
+            render_debug_json("Strikes", asdict(strikes) if strikes else {})
+            render_debug_json("Signals", [asdict(x) for x in signals])
+            if strikes:
+                dbg_opt = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                render_debug_json("OptionsCockpitState", asdict(dbg_opt))
+                render_debug_json("ProviderStatus", provider_status if "provider_status" in locals() else {})
+                render_debug_json("OptionsScenario", [asdict(x) for x in dbg_opt.scenarios])
+                render_debug_json("EntryTargetOptionProjection", asdict(dbg_opt.entry_target_projection) if dbg_opt.entry_target_projection else {})
+            render_debug_json("SignalQuality", asdict(decision_state.signal_quality) if decision_state and decision_state.signal_quality else {})
+            render_debug_json("RiskGuardrailState", asdict(decision_state.guardrail_state) if decision_state else {})
+            render_debug_json("DecisionState", asdict(decision_state) if decision_state else {})
+            st.write({"current_ts": str(now_ct), "latest_price": latest_price, "candles_plotted": len(rth_df if not rth_df.empty else df), "num_primary_lines": len(primary_lines), "num_secondary_lines_available": len(secondary_lines), "num_signals": len(signals)})
+            j_entries = load_signal_journal("data/signal_journal.json")
+            render_debug_json("Journal path", {"path":"data/signal_journal.json","count":len(j_entries),"auto_journal":auto_journal_on})
+            render_debug_json("Last 3 journal entries", [journal_entry_to_dict(x) for x in j_entries[-3:]])
+
+
+if __name__ == "__main__":
+    main()
