@@ -42,6 +42,15 @@ TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/coun
 MORNING_BRIEFING_PATH = "data/morning_briefings.json"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
+OPENAI_WEB_SEARCH_DEFAULT = "true"
+CURATED_MORNING_SOURCES = [
+    {"name": "Tradytics", "url": "https://x.com/Tradytics", "role": "Options flow videos and trader context"},
+    {"name": "Unusual Whales", "url": "https://unusualwhales.com", "role": "Options flow and market dashboard"},
+    {"name": "Investing.com Calendar", "url": "https://www.investing.com/economic-calendar/", "role": "Macro event timing"},
+    {"name": "ForexFactory Calendar", "url": "https://www.forexfactory.com/calendar", "role": "Macro event risk flags"},
+    {"name": "CNBC Markets", "url": "https://www.cnbc.com/markets/", "role": "Market-moving headlines"},
+    {"name": "Reuters Markets", "url": "https://www.reuters.com/markets/", "role": "Verified global headlines"},
+]
 GLOBAL_CONTEXT_TICKERS = {
     "ES futures": "ES=F",
     "DAX": "^GDAXI",
@@ -209,6 +218,7 @@ class MorningBriefingResult:
     confidence: int
     warnings: list[str]
     source_statuses: list[SourceStatus]
+    citations: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -867,11 +877,15 @@ def briefing_bundle_to_dict(bundle: MorningBriefingBundle) -> dict:
 
 def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
+    curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
         "You are the Morning Briefing Agent inside SPY Prophet. Produce a concise premium premarket briefing for 0DTE SPY options.\n"
-        "Rules: use only the JSON facts provided; do not invent unavailable options flow, GEX, social, or news. "
-        "Clearly mark unavailable premium feeds. Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
-        "Do not claim a prediction as guaranteed. Tie every recommendation back to SPY Prophet lines and external context.\n\n"
+        "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, GEX, social, or news. "
+        "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
+        "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
+        "Tie every recommendation back to SPY Prophet lines and external context. "
+        "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, but cite only pages you actually used.\n\n"
+        f"SCOUT_LIST_JSON:\n{curated}\n\n"
         f"VERIFIED_DATA_JSON:\n{json.dumps(payload, default=str, indent=2)}"
     )
 
@@ -888,23 +902,61 @@ def extract_openai_text(payload: dict) -> str:
     return "\n".join(pieces).strip()
 
 
-def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None]:
+def extract_openai_citations(payload: dict) -> list[dict]:
+    citations = []
+    seen = set()
+    for item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
+        if isinstance(item, dict) and item.get("type") == "web_search_call":
+            action = item.get("action") or {}
+            for source in action.get("sources") or []:
+                url = source.get("url") if isinstance(source, dict) else None
+                if url and url not in seen:
+                    seen.add(url)
+                    citations.append({"url": url, "title": source.get("title") or url})
+        for content in item.get("content", []) if isinstance(item, dict) else []:
+            for ann in content.get("annotations", []) if isinstance(content, dict) else []:
+                url = ann.get("url") if isinstance(ann, dict) else None
+                if url and url not in seen:
+                    seen.add(url)
+                    citations.append({"url": url, "title": ann.get("title") or url})
+    return citations
+
+
+def openai_web_search_enabled() -> bool:
+    return get_secret_or_env("OPENAI_ENABLE_WEB_SEARCH", OPENAI_WEB_SEARCH_DEFAULT).lower() in {"1", "true", "yes", "on"}
+
+
+def build_openai_request_payload(prompt: str, model: str, enable_web_search: bool = True) -> dict:
+    payload = {"model": model, "input": prompt, "max_output_tokens": 1900}
+    if enable_web_search:
+        payload["tools"] = [{
+            "type": "web_search",
+            "user_location": {"type": "approximate", "country": "US", "timezone": CENTRAL_TZ_NAME},
+        }]
+        payload["tool_choice"] = "auto"
+        payload["include"] = ["web_search_call.action.sources"]
+    return payload
+
+
+def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
     api_key = get_secret_or_env("OPENAI_API_KEY")
     if not api_key:
-        return None, "OPENAI_API_KEY is not configured."
+        return None, "OPENAI_API_KEY is not configured.", []
     model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
     try:
         response = requests.post(
             OPENAI_RESPONSES_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": prompt, "max_output_tokens": 1600},
+            json=build_openai_request_payload(prompt, model, openai_web_search_enabled()),
             timeout=45,
         )
         response.raise_for_status()
-        text = extract_openai_text(response.json())
+        payload = response.json()
+        text = extract_openai_text(payload)
+        citations = extract_openai_citations(payload)
     except Exception as e:
-        return None, f"OpenAI briefing failed: {type(e).__name__}"
-    return text or None, None if text else "OpenAI returned an empty briefing."
+        return None, f"OpenAI briefing failed: {type(e).__name__}", []
+    return text or None, None if text else "OpenAI returned an empty briefing.", citations
 
 
 def move_line(move: MarketMove) -> str:
@@ -936,6 +988,15 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     recommendation = "Wait for a clean hourly rejection at one of the SPY Prophet triggers before choosing direction."
     if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.lines:
         recommendation = f"Favor the nearest valid trigger only after confirmation; historical target-first rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
+    gamma_line = f"- Gamma exposure: {gamma.dealer_tone}. {gamma.notes}\n" if gamma.status.status == "connected" else ""
+    oi_magnets = ", ".join(fmt_price(x) for x in gamma.magnet_strikes) if gamma.magnet_strikes else "Unavailable"
+    social_text = "connected" if bundle.sentiment.social_payload else "headline-only"
+    risk_items = []
+    for event in high_events[:3]:
+        risk_items.append(f"{event.event} at {event.time_label}: avoid fresh entries immediately before the release and wait for post-release structure.")
+    if options.put_call_open_interest_ratio is not None and not pd.isna(options.put_call_open_interest_ratio) and options.put_call_open_interest_ratio > 1.5:
+        risk_items.append("Put open interest is heavy near today's chain; treat bearish reads carefully because hedging can look directional.")
+    risk_text = "\n".join(f"- {item}" for item in risk_items) if risk_items else "- No major risk flags from the loaded sources."
     text = f"""Good morning. Here is what you need to know for SPY trading today.
 
 YOUR LINES TODAY:
@@ -945,12 +1006,11 @@ EXTERNAL FACTORS AFFECTING THESE LINES:
 {event_lines}
 - Options OI put/call ratio: {fmt_float(options.put_call_open_interest_ratio)}; volume put/call ratio: {fmt_float(options.put_call_volume_ratio)}.
 - Max pain/OI magnet proxy: {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.
-- Gamma: {gamma.dealer_tone}. {gamma.notes}
+{gamma_line}- OI magnets: {oi_magnets}.
 - Global tone: {global_lines}
 - Sector leadership: {top_sectors}. Laggards: {weak_sectors}.
-- Macro: 10Y/DXY context is shown from Yahoo Finance where available; VIX term structure requires a configured premium/futures source.
 - Technical: prior high {fmt_price(technical.prior_high)}, prior low {fmt_price(technical.prior_low)}, prior close {fmt_price(technical.prior_close)}, 50DMA {fmt_price(technical.ma50)}, 200DMA {fmt_price(technical.ma200)}, gap {fmt_price(technical.gap_from_prior_close)}.
-- Sentiment: {bundle.sentiment.label} (headline score {bundle.sentiment.headline_score}; social feed {'connected' if bundle.sentiment.social_payload else 'not connected'}).
+- Sentiment: {bundle.sentiment.label} (headline score {bundle.sentiment.headline_score}; {social_text}).
 
 MY RECOMMENDATION:
 {recommendation}
@@ -958,17 +1018,18 @@ MY RECOMMENDATION:
 Confidence: {risk_score}%
 
 RISK FACTORS:
-{chr(10).join('- ' + w for w in warnings[:8]) if warnings else '- All configured sources returned data.'}
+{risk_text}
 """
-    return MorningBriefingResult(bundle.generated_at, "Rule-based verified briefing", None, text, risk_score, warnings, bundle.source_statuses)
+    return MorningBriefingResult(bundle.generated_at, "Rule-based verified briefing", None, text, risk_score, warnings, bundle.source_statuses, [])
 
 
 def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True) -> MorningBriefingResult:
     if use_ai:
-        ai_text, warning = call_openai_morning_briefing(build_morning_briefing_prompt(bundle))
+        ai_text, warning, citations = call_openai_morning_briefing(build_morning_briefing_prompt(bundle))
         if ai_text:
             base = rule_based_morning_briefing(bundle)
-            return MorningBriefingResult(bundle.generated_at, "OpenAI Responses API", get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, base.confidence, base.warnings, bundle.source_statuses)
+            provider = "OpenAI Responses API + web search" if openai_web_search_enabled() else "OpenAI Responses API"
+            return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, base.confidence, base.warnings, bundle.source_statuses, citations)
         return rule_based_morning_briefing(bundle, warning)
     return rule_based_morning_briefing(bundle)
 
@@ -2031,12 +2092,17 @@ def inject_global_css() -> None:
     .briefing-mini-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .briefing-mini-value{font-family:var(--mono-font);font-size:1.15rem;font-weight:850;color:var(--text);margin-top:4px}
     .briefing-mini-copy{font-size:.78rem;color:var(--muted);margin-top:4px;line-height:1.3}
+    .scout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
+    .scout-card,.citation-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
+    .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
+    .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
+    .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
     .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
     .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -2761,10 +2827,12 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
     event = bundle.economic_events[0] if bundle.economic_events else None
     leader = bundle.sector_context[0] if bundle.sector_context else None
     laggard = bundle.sector_context[-1] if bundle.sector_context else None
+    gamma_label = "GEX" if bundle.gamma_insight.status.status == "connected" else "OI Magnet"
+    gamma_copy = bundle.gamma_insight.notes[:80] if bundle.gamma_insight.status.status == "connected" else "Near-SPY open interest magnet proxy"
     mini = [
         ("Macro Event", event.event if event else "None loaded", event.time_label if event else "Calendar connector"),
         ("Put/Call OI", fmt_float(bundle.options_intelligence.put_call_open_interest_ratio), "Delayed yfinance proxy"),
-        ("GEX", bundle.gamma_insight.dealer_tone, bundle.gamma_insight.notes[:80]),
+        (gamma_label, bundle.gamma_insight.dealer_tone, gamma_copy),
         ("Sentiment", bundle.sentiment.label, f"Score {bundle.sentiment.headline_score}"),
         ("Sector Leader", leader.label if leader else "-", fmt_float(leader.change_pct) + "%" if leader else "-"),
         ("Sector Laggard", laggard.label if laggard else "-", fmt_float(laggard.change_pct) + "%" if laggard else "-"),
@@ -2778,6 +2846,36 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
     st.markdown(f"<div class='briefing-mini-grid'>{html}</div>", unsafe_allow_html=True)
 
 
+def render_scout_sources() -> None:
+    cards = []
+    for source in CURATED_MORNING_SOURCES:
+        cards.append(
+            "<div class='scout-card'>"
+            f"<div class='scout-name'>{escape(source['name'])}</div>"
+            f"<div class='scout-role'>{escape(source['role'])}</div>"
+            f"<div class='scout-role'>{escape(source['url'])}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='scout-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def render_briefing_citations(citations: list[dict] | None) -> None:
+    if not citations:
+        return
+    cards = []
+    for citation in citations[:10]:
+        url = citation.get("url") or ""
+        title = citation.get("title") or url
+        cards.append(
+            "<div class='citation-card'>"
+            f"<a class='citation-title' href='{escape(url)}' target='_blank'>{escape(title)}</a>"
+            f"<div class='citation-url'>{escape(url)}</div>"
+            "</div>"
+        )
+    st.markdown("**Sources Used By AI Search**")
+    st.markdown(f"<div class='citation-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_section_title("Morning Briefing", "External context for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
@@ -2788,8 +2886,16 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         ("Premium flow", "Connected" if bundle.options_intelligence.provider_payload else "Not connected"),
     ])
     render_briefing_snapshot(bundle)
+    with st.expander("External scout list the AI will try to search"):
+        render_scout_sources()
+        st.caption("Some public social pages may block automated access or require login. When that happens, the AI must omit them from the briefing rather than guessing.")
     if not ai_ready:
-        render_data_notice("AI synthesis is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
+        render_data_notice("AI web briefing is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
+    with st.expander("How to connect the ChatGPT/OpenAI API"):
+        st.markdown(
+            "Create an OpenAI API key, then add it to Streamlit secrets as `OPENAI_API_KEY`. "
+            "Your regular ChatGPT subscription is separate from API billing. Optional: set `OPENAI_MODEL = \"gpt-4.1-mini\"` and `OPENAI_ENABLE_WEB_SEARCH = \"true\"`."
+        )
     use_ai = st.toggle("Use OpenAI synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
     if st.button("Generate morning briefing", type="primary", key="generate_morning_briefing"):
         result = generate_morning_briefing(bundle, use_ai=use_ai)
@@ -2813,6 +2919,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         """,
         unsafe_allow_html=True,
     )
+    render_briefing_citations(result.citations)
     st.markdown("**Source Truth Table**")
     render_source_statuses(result.source_statuses)
 

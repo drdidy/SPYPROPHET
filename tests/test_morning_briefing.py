@@ -12,6 +12,7 @@ from app import (
     SourceStatus,
     StructureLearningProfile,
     TechnicalContext,
+    build_openai_request_payload,
     build_morning_briefing_prompt,
     calculate_max_pain,
     filter_near_spy_strikes,
@@ -88,7 +89,9 @@ def _bundle() -> MorningBriefingBundle:
 def test_prompt_carries_truthful_source_statuses() -> None:
     prompt = build_morning_briefing_prompt(_bundle())
 
-    assert "do not invent unavailable options flow" in prompt
+    assert "Do not invent unavailable options flow" in prompt
+    assert "SCOUT_LIST_JSON" in prompt
+    assert "Tradytics" in prompt
     assert "GEX_API_URL is not configured" in prompt
     assert "CPI" in prompt
     assert "Upper Call Trigger" in prompt
@@ -99,5 +102,14 @@ def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
 
     assert result.provider == "Rule-based verified briefing"
     assert any("OPENAI_API_KEY is not configured" in warning for warning in result.warnings)
-    assert "True dealer GEX is not available" in result.text
+    assert "True dealer GEX is not available" not in result.text
+    assert any("GEX_API_URL is not configured" in warning for warning in result.warnings)
     assert "CPI at 8:30 AM ET / 7:30 AM CT" in result.text
+
+
+def test_openai_request_payload_enables_web_search() -> None:
+    payload = build_openai_request_payload("brief me", "gpt-4.1-mini", enable_web_search=True)
+
+    assert payload["tools"][0]["type"] == "web_search"
+    assert payload["tools"][0]["user_location"]["timezone"] == "America/Chicago"
+    assert payload["include"] == ["web_search_call.action.sources"]
