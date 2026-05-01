@@ -1,4 +1,4 @@
-from app import display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, ui_icon
+from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, ui_icon
 
 
 def test_fmt_helpers():
@@ -20,6 +20,11 @@ def test_ui_icon_markup():
     m = ui_icon('target', 'amber', 'lg')
     assert "ui-icon amber lg" in m
     assert "<svg" in m and "aria-hidden='true'" in m
+
+
+def test_display_anchor_source_uses_pivot_price():
+    line = DynamicLine("UA", 719.78, None, 0.103, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+    assert display_anchor_source(line) == "High pivot 719.78"
 
 
 def test_display_line_names_are_product_facing():

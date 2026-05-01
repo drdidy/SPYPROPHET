@@ -1339,6 +1339,13 @@ def display_line_description(name: str | None) -> str:
     return _humanize(name)
 
 
+def display_anchor_source(line: DynamicLine | None) -> str:
+    if line is None:
+        return "-"
+    source_name = "High pivot" if line.source == "PRIMARY_HIGH" else "Low pivot" if line.source == "PRIMARY_LOW" else _humanize(line.source)
+    return f"{source_name} {fmt_price(line.anchor_price)}"
+
+
 def display_line_list(names: list[str] | tuple[str, ...] | None) -> str:
     return ", ".join(display_line_name(name) for name in names or []) or "-"
 
@@ -1659,7 +1666,7 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, st
             f"</div>"
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
-            f"<div class='tile-meta'>Yahoo structure day {structure_day or '-'}</div>"
+            f"<div class='tile-meta'>{display_anchor_source(line)}</div>"
             f"<div class='tile-meta'>Anchor close {fmt_time(line.anchor_time)}</div>"
             "</div>"
         )
