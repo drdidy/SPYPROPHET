@@ -184,15 +184,20 @@ def get_live_signal_day(df: pd.DataFrame, current_dt: datetime) -> Optional[date
     if latest_day is None:
         return None
     cur = current_dt.replace(tzinfo=get_central_tz()) if current_dt.tzinfo is None else current_dt.astimezone(get_central_tz())
-    if latest_day == cur.date():
-        return latest_day
+    if latest_day < cur.date():
+        return cur.date()
     return latest_day
 
 
 def filter_rth_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-    return df[df.index.date == trading_day].between_time(time(8, 30), time(15, 0), inclusive="both")
+    session = df[df.index.date == trading_day].sort_index()
+    rth = session.between_time(time(8, 30), time(15, 0), inclusive="both")
+    diffs = session.index.to_series().diff().dropna()
+    if not diffs.empty and diffs.median() >= pd.Timedelta(minutes=30):
+        rth = rth[rth.index.time < time(15, 0)]
+    return rth
 
 
 def filter_extended_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:

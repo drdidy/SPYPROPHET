@@ -54,6 +54,21 @@ def test_rth_filter_boundaries() -> None:
     assert datetime(2026, 4, 28, 15, 1, tzinfo=get_central_tz()) not in rth.index
 
 
+def test_rth_filter_excludes_after_close_hourly_bar() -> None:
+    idx = pd.DatetimeIndex([
+        datetime(2026, 4, 28, 8, 30, tzinfo=get_central_tz()),
+        datetime(2026, 4, 28, 9, 30, tzinfo=get_central_tz()),
+        datetime(2026, 4, 28, 14, 30, tzinfo=get_central_tz()),
+        datetime(2026, 4, 28, 15, 0, tzinfo=get_central_tz()),
+    ])
+    df = pd.DataFrame({"Close": [1.0, 2.0, 3.0, 4.0]}, index=idx)
+
+    rth = filter_rth_session(df, date(2026, 4, 28))
+
+    assert datetime(2026, 4, 28, 14, 30, tzinfo=get_central_tz()) in rth.index
+    assert datetime(2026, 4, 28, 15, 0, tzinfo=get_central_tz()) not in rth.index
+
+
 def test_extended_filter_boundaries() -> None:
     df = _sample_day_frame()
     day = date(2026, 4, 28)
@@ -80,7 +95,7 @@ def test_prior_trading_day_skips_missing_days() -> None:
     assert prior == date(2026, 4, 29)
 
 
-def test_live_signal_day_uses_latest_loaded_session() -> None:
+def test_live_signal_day_uses_current_day_before_first_loaded_candle() -> None:
     idx = pd.DatetimeIndex([
         datetime(2026, 4, 29, 9, 30, tzinfo=get_central_tz()),
         datetime(2026, 4, 30, 9, 30, tzinfo=get_central_tz()),
@@ -90,8 +105,8 @@ def test_live_signal_day_uses_latest_loaded_session() -> None:
     cur = datetime(2026, 5, 1, 7, 0, tzinfo=get_central_tz())
 
     assert get_latest_available_trading_day(df, cur) == date(2026, 4, 30)
-    assert get_live_signal_day(df, cur) == date(2026, 4, 30)
-    assert get_prior_trading_day(df, datetime(2026, 4, 30, tzinfo=get_central_tz())) == date(2026, 4, 29)
+    assert get_live_signal_day(df, cur) == date(2026, 5, 1)
+    assert get_prior_trading_day(df, datetime(2026, 5, 1, tzinfo=get_central_tz())) == date(2026, 4, 30)
 
 
 def test_empty_dataframe_handling() -> None:
