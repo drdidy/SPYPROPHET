@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import pandas as pd
+
+from app import (
+    DynamicLine,
+    calculate_bias_strength,
+    determine_preopen_bias,
+    get_central_tz,
+    get_line_by_name,
+    select_0dte_strikes,
+)
+
+
+def _ts(s: str) -> pd.Timestamp:
+    return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
+
+
+def _lines() -> list[DynamicLine]:
+    anc = _ts("2026-04-28T08:00:00")
+    return [
+        DynamicLine("UA", 100.005, anc, 0.0, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, ""),
+        DynamicLine("UD", 99.995, anc, 0.0, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, ""),
+        DynamicLine("LA", 95.0, anc, 0.0, "ascending", "PUT_ZONE", "PRIMARY_LOW", True, ""),
+        DynamicLine("LD", 94.0, anc, 0.0, "descending", "CALL_ZONE", "PRIMARY_LOW", True, ""),
+    ]
+
+
+def test_get_line_by_name() -> None:
+    lines = _lines()
+    assert get_line_by_name(lines, "UA") is not None
+    assert get_line_by_name(lines, "ZZ") is None
+
+
+def test_bullish_preopen() -> None:
+    b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T08:30:00"))
+    assert b.bias == "BULLISH"
+    assert "UA" in b.watched_call_lines and "UD" in b.watched_call_lines
+    assert b.primary_line == "UD"
+
+
+def test_neutral_preopen() -> None:
+    b = determine_preopen_bias(_lines(), 100.0, _ts("2026-04-29T08:30:00"))
+    assert b.bias == "NEUTRAL"
+    assert "UD" in b.watched_call_lines
+    assert "UA" in b.watched_put_lines
+    assert b.final_take_profit_line in {"UA", "UD"}
+
+
+def test_bearish_preopen() -> None:
+    b = determine_preopen_bias(_lines(), 99.0, _ts("2026-04-29T08:30:00"))
+    assert b.bias == "BEARISH"
+    assert "LD" in b.watched_call_lines
+    assert "LA" in b.watched_put_lines
+
+
+def test_regular_session_mode() -> None:
+    b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T09:00:00"))
+    assert b.bias == "REGULAR_SESSION"
+    assert "no longer active" in b.explanation.lower()
+
+
+def test_missing_ua_or_ud() -> None:
+    lines = [l for l in _lines() if l.name != "UA"]
+    b = determine_preopen_bias(lines, 100.0, _ts("2026-04-29T08:30:00"))
+    assert b.bias == "UNKNOWN" and b.strength_score == 0
+
+
+def test_bias_uses_tradable_values() -> None:
+    b = determine_preopen_bias(_lines(), 100.00, _ts("2026-04-29T08:30:00"))
+    assert b.bias == "NEUTRAL"
+
+
+def test_bias_strength_bounds() -> None:
+    assert 0 <= calculate_bias_strength(110, 100, 99, "BULLISH") <= 100
+    assert 0 <= calculate_bias_strength(90, 100, 99, "BEARISH") <= 100
+    assert calculate_bias_strength(float("nan"), 1, 2, "BULLISH") == 0
+
+
+def test_strike_selection() -> None:
+    s = select_0dte_strikes(712.61, _ts("2026-04-29T08:30:00"))
+    assert s.call_strike == 709
+    assert s.put_strike == 716
+
+
+def test_strike_selection_whole_number() -> None:
+    s = select_0dte_strikes(713.00, _ts("2026-04-29T08:30:00"))
+    assert s.call_strike == 709
+    assert s.put_strike == 717
+
+
+def test_invalid_price() -> None:
+    s = select_0dte_strikes(float("nan"), _ts("2026-04-29T08:30:00"))
+    assert s.warning is not None
