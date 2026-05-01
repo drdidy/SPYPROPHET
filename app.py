@@ -1150,15 +1150,18 @@ def inject_global_css() -> None:
     .brand-row,.panel-head,.quote-head,.tile-head,.hero-price-row{display:flex;align-items:center;gap:12px}
     .brand-row{gap:14px}
     .panel-head,.quote-head,.tile-head{justify-content:space-between}
-    .ui-icon{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:46px;height:46px;border-radius:8px;border:1px solid rgba(141,160,184,.22);background:rgba(255,255,255,.04);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)}
-    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-    .ui-icon.lg{width:62px;height:62px}
-    .ui-icon.md{width:50px;height:50px}
-    .ui-icon.sm{width:42px;height:42px}
-    .ui-icon.blue{color:var(--blue);background:rgba(103,183,255,.12);border-color:rgba(103,183,255,.34)}
-    .ui-icon.green{color:var(--green);background:rgba(33,208,122,.12);border-color:rgba(33,208,122,.34)}
-    .ui-icon.red{color:var(--red);background:rgba(255,95,124,.12);border-color:rgba(255,95,124,.34)}
-    .ui-icon.amber{color:var(--amber);background:rgba(244,199,107,.12);border-color:rgba(244,199,107,.34)}
+    .ui-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:58px;height:58px;border-radius:8px;border:1px solid rgba(255,255,255,.18);overflow:hidden;isolation:isolate;transform:perspective(700px) rotateX(8deg) rotateY(-10deg);box-shadow:0 18px 28px rgba(0,0,0,.36),inset 0 1px 0 rgba(255,255,255,.36),inset 0 -14px 24px rgba(0,0,0,.24)}
+    .ui-icon::before{content:"";position:absolute;inset:4px 5px auto;height:42%;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,.38),rgba(255,255,255,0));z-index:-1}
+    .ui-icon::after{content:"";position:absolute;inset:auto 8px 6px;height:12%;border-radius:999px;background:rgba(255,255,255,.14);filter:blur(1px);z-index:-1}
+    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.45;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 5px 8px rgba(0,0,0,.36))}
+    .ui-icon.lg{width:78px;height:78px}
+    .ui-icon.md{width:62px;height:62px}
+    .ui-icon.sm{width:48px;height:48px}
+    .ui-icon.mini{width:34px;height:34px}
+    .ui-icon.blue{color:#9ed2ff;background:radial-gradient(circle at 30% 20%,#2d8dff 0,#14548f 42%,#0b2440 100%);border-color:rgba(103,183,255,.48)}
+    .ui-icon.green{color:#9effcf;background:radial-gradient(circle at 30% 20%,#26d889 0,#0c7e53 44%,#062a22 100%);border-color:rgba(33,208,122,.48)}
+    .ui-icon.red{color:#ffc0ca;background:radial-gradient(circle at 30% 20%,#ff6a87 0,#9f2745 45%,#35111e 100%);border-color:rgba(255,95,124,.48)}
+    .ui-icon.amber{color:#ffe39a;background:radial-gradient(circle at 30% 20%,#ffd36d 0,#9b6a17 44%,#32220a 100%);border-color:rgba(244,199,107,.5)}
     .label-stack{min-width:0}
     .brand-title{font-size:2.45rem;font-weight:950;color:var(--text);line-height:1;letter-spacing:0}
     .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
@@ -1171,6 +1174,7 @@ def inject_global_css() -> None:
     .hero-intel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
     .intel-mini{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:76px}
     .intel-mini.green{border-color:rgba(33,208,122,.48)} .intel-mini.red{border-color:rgba(255,95,124,.48)} .intel-mini.amber{border-color:rgba(244,199,107,.48)} .intel-mini.blue{border-color:rgba(103,183,255,.48)}
+    .intel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
     .intel-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .intel-value{font-size:1.05rem;font-weight:850;color:var(--text);margin-top:4px;line-height:1.2}
     .intel-mini.green .intel-value{color:var(--green)} .intel-mini.red .intel-value{color:var(--red)} .intel-mini.amber .intel-value{color:var(--amber)} .intel-mini.blue .intel-value{color:var(--blue)}
@@ -1217,7 +1221,7 @@ def inject_global_css() -> None:
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
     @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid{grid-template-columns:1fr}.ui-icon.lg{width:54px;height:54px}}
+    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid{grid-template-columns:1fr}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1381,6 +1385,10 @@ def ui_icon(name: str, tone: str = "blue", size: str = "md") -> str:
         "shield": "<path d='M12 3 5 6v5c0 4.2 2.8 7.8 7 10 4.2-2.2 7-5.8 7-10V6z'/><path d='M9 12l2 2 4-4'/>",
         "call": "<path d='M4 17 17 4'/><path d='M9 4h8v8'/><path d='M4 21h16'/>",
         "put": "<path d='M4 7l13 13'/><path d='M17 12v8H9'/><path d='M4 3h16'/>",
+        "gauge": "<path d='M5 15a7 7 0 0 1 14 0'/><path d='M12 15l4-5'/><path d='M7 18h10'/>",
+        "clock": "<circle cx='12' cy='12' r='8'/><path d='M12 7v5l3 2'/>",
+        "peak": "<path d='M3 18h18'/><path d='m5 16 5-9 3 5 2-3 4 7'/>",
+        "valley": "<path d='M3 6h18'/><path d='m5 8 5 9 3-5 2 3 4-7'/>",
     }
     glyph = icons.get(name, icons["spark"])
     return f"<span class='ui-icon {tone} {size}' aria-hidden='true'><svg viewBox='0 0 24 24'>{glyph}</svg></span>"
@@ -1450,10 +1458,11 @@ def quality_label(quality) -> str:
     return _humanize(quality.grade)
 
 
-def _intel_tile(label: str, value: str, copy: str, tone: str = "blue") -> str:
+def _intel_tile(label: str, value: str, copy: str, tone: str = "blue", icon_name: str | None = None) -> str:
+    icon_html = ui_icon(icon_name, tone, "mini") if icon_name else ""
     return (
         f"<div class='intel-mini {tone}'>"
-        f"<div class='intel-label'>{label}</div>"
+        f"<div class='intel-head'><div class='intel-label'>{label}</div>{icon_html}</div>"
         f"<div class='intel-value'>{value}</div>"
         f"<div class='intel-copy'>{copy}</div>"
         "</div>"
@@ -1496,15 +1505,15 @@ def render_terminal_hero(
     trigger_gap = fmt_price(market_context.trigger_gap) if not pd.isna(market_context.trigger_gap) else "-"
     vix_value = fmt_price(market_context.vix_price) if not pd.isna(market_context.vix_price) else "-"
     intel_html = "".join([
-        _intel_tile("VIX Regime", f"{vix_value} {market_context.vix_label}", market_context.vix_copy, market_context.vix_tone),
-        _intel_tile("SPY Pressure", market_context.spy_pressure, f"3-bar change {pressure_value}", market_context.spy_pressure_tone),
-        _intel_tile("Trigger Gap", market_context.trigger_gap_label, f"Distance {trigger_gap}", market_context.trigger_gap_tone),
-        _intel_tile("Pivot Window", rth_session_window_label(), "Prior-day RTH candles", "blue"),
+        _intel_tile("VIX Regime", f"{vix_value} {market_context.vix_label}", market_context.vix_copy, market_context.vix_tone, "gauge"),
+        _intel_tile("SPY Pressure", market_context.spy_pressure, f"3-bar change {pressure_value}", market_context.spy_pressure_tone, "pulse"),
+        _intel_tile("Trigger Gap", market_context.trigger_gap_label, f"Distance {trigger_gap}", market_context.trigger_gap_tone, "target"),
+        _intel_tile("Pivot Window", rth_session_window_label(), "Prior-day RTH candles", "blue", "clock"),
     ])
     anchors = get_primary_anchor_summary(primary_lines)
     anchor_html = "".join([
-        _intel_tile("High Anchor", fmt_time(anchors["high_time"]), f"High {fmt_price(anchors['high_price'])}", "blue"),
-        _intel_tile("Low Anchor", fmt_time(anchors["low_time"]), f"Low {fmt_price(anchors['low_price'])}", "blue"),
+        _intel_tile("High Anchor", fmt_time(anchors["high_time"]), f"High {fmt_price(anchors['high_price'])}", "blue", "peak"),
+        _intel_tile("Low Anchor", fmt_time(anchors["low_time"]), f"Low {fmt_price(anchors['low_price'])}", "blue", "valley"),
     ])
     st.markdown(
         f"""
