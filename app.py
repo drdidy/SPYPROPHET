@@ -428,7 +428,7 @@ def is_call_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.
     if pd.isna(lv):
         return False
     o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
-    return (c < o) and (o > lv) and (l <= lv) and (c > lv)
+    return (c <= o) and (o > lv) and (l <= lv) and (c > lv)
 
 
 def is_put_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.Timestamp) -> bool:
@@ -436,7 +436,7 @@ def is_put_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.T
     if pd.isna(lv):
         return False
     o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
-    return (c > o) and (o < lv) and (h >= lv) and (c < lv)
+    return (c >= o) and (o < lv) and (h >= lv) and (c < lv)
 
 
 def find_target_for_signal(signal_type: str, rejected_line_name: str, reference_price: float, reference_time: pd.Timestamp, all_lines: list[DynamicLine]) -> tuple[str | None, float]:
@@ -564,15 +564,15 @@ def calculate_close_distance(signal: TradeSignal) -> float:
     return abs(signal.rejection_close - signal.line_value_at_rejection) if signal else float("nan")
 
 def calculate_wick_rejection_metrics(signal: TradeSignal) -> dict:
-    rng = signal.rejection_high - signal.rejection_low
+    rng = round(signal.rejection_high - signal.rejection_low, 10)
     if rng <= 0:
         return {"candle_range": rng, "wick_penetration": 0.0, "wick_rejection_ratio": 0.0, "body_position_score": 0.0}
     if signal.signal_type == "CALL":
-        wick_pen = max(0.0, signal.line_value_at_rejection - signal.rejection_low)
-        rej_dist = signal.rejection_close - signal.rejection_low
+        wick_pen = round(max(0.0, signal.line_value_at_rejection - signal.rejection_low), 10)
+        rej_dist = round(signal.rejection_close - signal.rejection_low, 10)
     else:
-        wick_pen = max(0.0, signal.rejection_high - signal.line_value_at_rejection)
-        rej_dist = signal.rejection_high - signal.rejection_close
+        wick_pen = round(max(0.0, signal.rejection_high - signal.line_value_at_rejection), 10)
+        rej_dist = round(signal.rejection_high - signal.rejection_close, 10)
     ratio = rej_dist / rng
     return {"candle_range": rng, "wick_penetration": wick_pen, "wick_rejection_ratio": ratio, "body_position_score": ratio}
 

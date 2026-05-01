@@ -1,3 +1,4 @@
 .streamlit/secrets.toml
+.venv/
 data/signal_journal.json
 data/*.corrupt.*.json
