@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import (DynamicLine, SecondaryPivot, TradeSignal, build_options_cockpit_state, get_central_tz, get_default_projection_time, option_mark_from_bid_ask_or_last, option_provider_label, option_quote_card_html, project_option_entry_to_target, quote_has_live_market_data, resolve_entry_target_lines, simulate_option_scenarios)
+from app import (DynamicLine, SecondaryPivot, TradeSignal, build_options_cockpit_state, build_options_cockpit_state_with_fallback, get_central_tz, get_default_projection_time, option_mark_from_bid_ask_or_last, option_provider_label, option_quote_card_html, project_option_entry_to_target, quote_has_live_market_data, resolve_entry_target_lines, simulate_option_scenarios)
 
 
 def _ts(s): return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
@@ -191,6 +191,67 @@ def test_yfinance_delayed_quotes_are_allowed_for_marks():
     assert state.scenarios == []
     assert option_provider_label(state) == "YFINANCE delayed"
     assert "Delayed yfinance price" in option_quote_card_html(state.call_quote, 717, state.warning)
+
+
+def test_option_state_fallback_centralizes_yfinance_path(monkeypatch):
+    class EmptyLiveProvider:
+        provider_name = "TASTYTRADE"
+
+        def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
+            base = {
+                "underlying": "SPY",
+                "expiration": expiration_date,
+                "bid": float("nan"),
+                "ask": float("nan"),
+                "mark": float("nan"),
+                "spread": float("nan"),
+                "delta": float("nan"),
+                "gamma": float("nan"),
+                "theta": float("nan"),
+                "vega": float("nan"),
+                "iv": float("nan"),
+                "provider": "TASTYTRADE_CHAIN",
+                "timestamp": _ts("2026-04-29T10:00:00"),
+                "warning": None,
+            }
+            return {
+                "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", **base},
+                "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", **base},
+                "warning": "No live stream data.",
+            }
+
+    def delayed_quotes(expiration_date, call_strike, put_strike):
+        base = {
+            "underlying": "SPY",
+            "expiration": expiration_date,
+            "bid": float("nan"),
+            "ask": float("nan"),
+            "mark": 0.75,
+            "spread": float("nan"),
+            "delta": float("nan"),
+            "gamma": float("nan"),
+            "theta": float("nan"),
+            "vega": float("nan"),
+            "iv": 0.21,
+            "provider": "YFINANCE_DELAYED",
+            "timestamp": _ts("2026-04-29T10:00:00"),
+            "warning": "Delayed yfinance quote.",
+        }
+        return {
+            "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", **base},
+            "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", **base},
+            "warning": "Using delayed yfinance option data.",
+        }
+
+    monkeypatch.setattr("app.fetch_yfinance_option_quotes", delayed_quotes)
+    state = build_options_cockpit_state_with_fallback(
+        Strikes(712.61,717,708,_ts("2026-04-29").date()),
+        provider=EmptyLiveProvider(),
+        current_dt=_ts("2026-04-29T10:00:00"),
+    )
+
+    assert state.provider == "YFINANCE_DELAYED"
+    assert state.call_quote.mark == 0.75
 
 
 def test_option_mark_prefers_midpoint_then_last_price():

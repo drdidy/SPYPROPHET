@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
 from html import escape
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -1133,45 +1137,43 @@ def inject_global_css() -> None:
     st.markdown("""
     <style>
     :root {
-      --bg:#070a0f;--surface:#0d131d;--surface2:#111a28;--surface3:#162235;
-      --border:#26364d;--border2:#355174;--text:#f4f7fb;--muted:#8da0b8;
-      --blue:#67b7ff;--green:#21d07a;--red:#ff5f7c;--amber:#f4c76b;
-      --cyan:#28d2c2;--shadow:0 18px 50px rgba(0,0,0,.35);
+      --bg:#080d12;--surface:#111821;--surface2:#151f2b;--surface3:#1a2633;
+      --border:#243244;--border2:#314357;--text:#f4f7fb;--muted:#9aa7b5;
+      --blue:#4ea8de;--green:#2ecc71;--red:#f45d75;--amber:#f5c451;
+      --cyan:#28d2c2;--shadow:0 14px 34px rgba(0,0,0,.26);
+      --ui-font:Inter,"Source Sans 3","Segoe UI",system-ui,sans-serif;
+      --mono-font:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
     }
-    .block-container{padding-top:3rem;max-width:1240px}
+    html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
+    .block-container{padding-top:2.25rem;max-width:1240px}
     [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
     [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
     [data-testid="stSidebar"] button{border-radius:8px}
     div[data-baseweb="tab-list"]{gap:10px;border-bottom:1px solid var(--border);padding-bottom:0}
     button[role="tab"]{padding:10px 0;border-bottom:2px solid transparent;color:var(--muted)}
     button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
-    .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#0c1421,#101b2b 58%,#0b1019);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
+    .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#101821,#111b26 58%,#0c1219);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
     .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
     .brand-row,.panel-head,.quote-head,.tile-head,.hero-price-row{display:flex;align-items:center;gap:12px}
     .brand-row{gap:14px}
     .panel-head,.quote-head,.tile-head{justify-content:space-between}
-    .ui-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:58px;height:58px;border-radius:8px;border:1px solid rgba(255,255,255,.18);overflow:hidden;isolation:isolate;transform:perspective(700px) rotateX(8deg) rotateY(-10deg);box-shadow:0 18px 28px rgba(0,0,0,.36),inset 0 1px 0 rgba(255,255,255,.36),inset 0 -14px 24px rgba(0,0,0,.24)}
-    .ui-icon::before{content:"";position:absolute;inset:4px 5px auto;height:42%;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,.38),rgba(255,255,255,0));z-index:-1}
-    .ui-icon::after{content:"";position:absolute;inset:auto 8px 6px;height:12%;border-radius:999px;background:rgba(255,255,255,.14);filter:blur(1px);z-index:-1}
-    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.45;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 5px 8px rgba(0,0,0,.36))}
-    .ui-icon.lg{width:78px;height:78px}
-    .ui-icon.md{width:62px;height:62px}
-    .ui-icon.sm{width:48px;height:48px}
-    .ui-icon.mini{width:34px;height:34px}
-    .brand-logo{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:94px;height:94px;border-radius:8px;border:1px solid rgba(151,215,255,.62);overflow:hidden;isolation:isolate;background:radial-gradient(circle at 28% 18%,#8fe3ff 0,#2388dc 34%,#0d315a 66%,#061421 100%);box-shadow:0 24px 40px rgba(0,0,0,.45),0 0 36px rgba(103,183,255,.22),inset 0 1px 0 rgba(255,255,255,.44),inset 0 -18px 30px rgba(0,0,0,.3);transform:perspective(700px) rotateX(8deg) rotateY(-10deg)}
-    .brand-logo::before{content:"";position:absolute;inset:6px 7px auto;height:40%;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,.44),rgba(255,255,255,0));z-index:-1}
-    .brand-logo svg{width:82%;height:82%;overflow:visible}.brand-grid{stroke:rgba(215,240,255,.2);stroke-width:.8}.brand-mono{fill:#f6fbff;font:900 9px Consolas,monospace;letter-spacing:.4px}.brand-path{fill:none;stroke:#f4c76b;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:34;animation:brandDraw 2.9s ease-in-out infinite}.brand-dot{fill:#21d07a;filter:drop-shadow(0 0 5px rgba(33,208,122,.75));animation:brandPulse 1.45s ease-in-out infinite}.brand-orbit{fill:none;stroke:rgba(246,251,255,.54);stroke-width:1.4;stroke-dasharray:4 4;animation:brandOrbit 7s linear infinite;transform-origin:24px 24px}.brand-scan{stroke:#9ed2ff;stroke-width:1.1;opacity:.72;animation:brandScan 2.2s ease-in-out infinite}
-    .ui-icon.blue{color:#9ed2ff;background:radial-gradient(circle at 30% 20%,#2d8dff 0,#14548f 42%,#0b2440 100%);border-color:rgba(103,183,255,.48)}
-    .ui-icon.green{color:#9effcf;background:radial-gradient(circle at 30% 20%,#26d889 0,#0c7e53 44%,#062a22 100%);border-color:rgba(33,208,122,.48)}
-    .ui-icon.red{color:#ffc0ca;background:radial-gradient(circle at 30% 20%,#ff6a87 0,#9f2745 45%,#35111e 100%);border-color:rgba(255,95,124,.48)}
-    .ui-icon.amber{color:#ffe39a;background:radial-gradient(circle at 30% 20%,#ffd36d 0,#9b6a17 44%,#32220a 100%);border-color:rgba(244,199,107,.5)}
+    .ui-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:48px;height:48px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.035);overflow:hidden;isolation:isolate;box-shadow:none}
+    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.25;stroke-linecap:round;stroke-linejoin:round}
+    .ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:52px;height:52px}.ui-icon.sm{width:42px;height:42px}.ui-icon.mini{width:30px;height:30px}
+    .brand-logo{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:82px;height:82px;border-radius:8px;border:1px solid rgba(78,168,222,.48);overflow:hidden;isolation:isolate;background:linear-gradient(135deg,#102335,#0d1723);box-shadow:none}
+    .brand-logo::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 26% 18%,rgba(78,168,222,.36),transparent 48%);z-index:-1}
+    .brand-logo svg{width:82%;height:82%;overflow:visible}.brand-grid{stroke:rgba(215,240,255,.16);stroke-width:.8}.brand-mono{fill:#f6fbff;font:900 9px var(--mono-font);letter-spacing:.4px}.brand-path{fill:none;stroke:var(--amber);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:34;animation:brandDraw 2.9s ease-in-out infinite}.brand-dot{fill:var(--green);animation:brandPulse 1.45s ease-in-out infinite}.brand-orbit{fill:none;stroke:rgba(246,251,255,.48);stroke-width:1.4;stroke-dasharray:4 4;animation:brandOrbit 7s linear infinite;transform-origin:24px 24px}.brand-scan{stroke:#9ed2ff;stroke-width:1.1;opacity:.72;animation:brandScan 2.2s ease-in-out infinite}
+    .ui-icon.blue{color:var(--blue);border-color:rgba(78,168,222,.42);background:rgba(78,168,222,.10)}
+    .ui-icon.green{color:var(--green);border-color:rgba(46,204,113,.42);background:rgba(46,204,113,.10)}
+    .ui-icon.red{color:var(--red);border-color:rgba(244,93,117,.42);background:rgba(244,93,117,.10)}
+    .ui-icon.amber{color:var(--amber);border-color:rgba(245,196,81,.42);background:rgba(245,196,81,.10)}
     .label-stack{min-width:0}
-    .brand-title{font-size:2.45rem;font-weight:950;color:var(--text);line-height:1;letter-spacing:0}
+    .brand-title{font-size:2.25rem;font-weight:850;color:var(--text);line-height:1;letter-spacing:0}
     .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
     .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
     .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:14px;margin-top:16px}
     .hero-price-row{align-items:flex-start}
-    .hero-price{font-family:Consolas,monospace;font-size:3rem;font-weight:800;color:var(--text);line-height:1}
+    .hero-price{font-family:var(--mono-font);font-size:2.85rem;font-weight:800;color:var(--text);line-height:1}
     .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .hero-sub{margin-top:8px;color:var(--muted);font-size:.86rem}
     .hero-intel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
@@ -1179,11 +1181,11 @@ def inject_global_css() -> None:
     .intel-mini.green{border-color:rgba(33,208,122,.48)} .intel-mini.red{border-color:rgba(255,95,124,.48)} .intel-mini.amber{border-color:rgba(244,199,107,.48)} .intel-mini.blue{border-color:rgba(103,183,255,.48)}
     .intel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
     .intel-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .intel-value{font-size:1.05rem;font-weight:850;color:var(--text);margin-top:4px;line-height:1.2}
+    .intel-value{font-size:1rem;font-weight:800;color:var(--text);margin-top:4px;line-height:1.2}
     .intel-mini.green .intel-value{color:var(--green)} .intel-mini.red .intel-value{color:var(--red)} .intel-mini.amber .intel-value{color:var(--amber)} .intel-mini.blue .intel-value{color:var(--blue)}
     .intel-copy{font-size:.76rem;color:var(--muted);margin-top:4px;line-height:1.25}
     .decision-plate{border:1px solid var(--border);border-radius:8px;background:rgba(7,10,15,.58);padding:14px}
-    .decision-main{font-size:1.45rem;font-weight:800;line-height:1.15;color:var(--text);margin:5px 0}
+    .decision-main{font-size:1.6rem;font-weight:850;line-height:1.12;color:var(--text);margin:5px 0}
     .decision-reason{color:var(--muted);font-size:.86rem}
     .wait-discipline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
     .wait-gate{border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:92px}
@@ -1198,32 +1200,41 @@ def inject_global_css() -> None:
     .quote-body{display:grid;gap:6px}
     .quote-eyebrow{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .quote-trigger-name{font-size:.98rem;font-weight:800;color:var(--text);line-height:1.2}
-    .quote-trigger-price{font-family:Consolas,monospace;font-size:1.75rem;font-weight:850;color:var(--blue);line-height:1}
+    .quote-trigger-price{font-family:var(--mono-font);font-size:1.75rem;font-weight:850;color:var(--blue);line-height:1}
     .quote-meta-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid rgba(141,160,184,.16);padding-top:8px;color:var(--muted);font-size:.78rem}
     .quote-meta-row strong{color:var(--text);font-weight:750;text-align:right}
     .strike-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .strike-cell{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(7,10,15,.35);padding:9px}
     .strike-cell.call{border-left:3px solid var(--green)} .strike-cell.put{border-left:3px solid var(--red)}
     .strike-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .strike-value{font-family:Consolas,monospace;font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
+    .strike-value{font-family:var(--mono-font);font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
     .terminal-section{margin-top:14px}
     .command-grid{display:grid;grid-template-columns:1.15fr .95fr .9fr;gap:14px}
-    .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.18)}
+    .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:none}
     .terminal-panel{padding:14px}
     .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px}
     .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:8px}
+    .data-notice{border:1px solid rgba(78,168,222,.28);border-radius:8px;background:rgba(78,168,222,.08);padding:11px 13px;color:#b9dcfb;font-size:.9rem;margin:10px 0}
+    .data-notice.warn{border-color:rgba(245,196,81,.34);background:rgba(245,196,81,.08);color:#f8dfa0}
+    .option-quote-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 8px}
+    .option-quote-strike{font-family:var(--mono-font);font-size:1.55rem;font-weight:850;color:var(--text)}
+    .option-quote-mark{font-family:var(--mono-font);font-size:1.35rem;font-weight:800;color:var(--blue);text-align:right}
+    .option-quote-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}
+    .option-quote-cell{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.025);padding:7px}
+    .option-quote-label{font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .option-quote-value{font-family:var(--mono-font);font-size:.95rem;color:var(--text);margin-top:3px}
     .structure-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
     .structure-note{display:inline-flex;align-items:center;gap:8px;margin-top:14px;border:1px solid rgba(103,183,255,.3);border-radius:8px;background:rgba(103,183,255,.08);padding:7px 10px;color:var(--blue);font-size:.82rem;font-weight:650}
     .structure-tile{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(22,34,53,.8),rgba(13,19,29,.95));padding:12px;min-height:122px}
     .structure-tile.closest{border-color:var(--blue);box-shadow:0 0 0 1px rgba(103,183,255,.3)}
     .tile-name{font-size:1.1rem;font-weight:800;color:var(--text)}
-    .tile-value{font-family:Consolas,monospace;font-size:1.65rem;font-weight:800;color:var(--text);margin-top:4px}
+    .tile-value{font-family:var(--mono-font);font-size:1.65rem;font-weight:800;color:var(--text);margin-top:4px}
     .tile-meta{color:var(--muted);font-size:.78rem;margin-top:4px}
     .tile-call{border-left:3px solid var(--green)} .tile-put{border-left:3px solid var(--red)}
     .brief-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:10px 0 14px}
     .brief-card{border:1px solid var(--border);border-radius:8px;background:rgba(13,19,29,.92);padding:12px}
     .brief-label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .brief-value{font-family:Consolas,monospace;font-size:1.35rem;font-weight:800;color:var(--text);margin-top:4px}
+    .brief-value{font-family:var(--mono-font);font-size:1.35rem;font-weight:800;color:var(--text);margin-top:4px}
     .brief-copy{color:var(--muted);font-size:.82rem;margin-top:4px;line-height:1.35}
     .replay-shell{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(13,19,29,.92),rgba(16,27,43,.82));padding:14px;margin:10px 0 14px}
     .replay-title{font-size:1.15rem;font-weight:800;color:var(--text)}
@@ -1233,11 +1244,11 @@ def inject_global_css() -> None:
     .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
     .status-strip b{color:var(--text);font-weight:600}
     .prophet-header{padding:16px;margin-bottom:12px}.prophet-header h3{margin:0;font-size:1.5rem}
-    .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:Consolas,monospace;color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
+    .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -1263,7 +1274,7 @@ def render_glass_card(title, body_html, kind="neutral", footer=None):
 def render_empty_state(title, message, next_action=None, kind="neutral"):
     st.markdown(f"<div class='empty-state'><b>{title}</b><br>{message}<br><span class='small-muted'>{next_action or ''}</span></div>", unsafe_allow_html=True)
 
-def render_warning_panel(title, message, kind="warning"):
+def render_panel_notice(title, message, kind="warning"):
     st.markdown(f"<div class='warning-panel'><b>{title}</b><br>{message}</div>", unsafe_allow_html=True)
 
 def render_decision_panel(decision_state):
@@ -1318,6 +1329,10 @@ def render_header_ticker(current_price, bias_state, closest_line, latest_signal,
 
 def render_warning_panel(message): st.warning(message)
 
+def render_data_notice(message: str, tone: str = "info") -> None:
+    cls = "warn" if tone == "warn" else "info"
+    st.markdown(f"<div class='data-notice {cls}'>{escape(str(message))}</div>", unsafe_allow_html=True)
+
 def render_debug_json(label, obj):
     st.write(label); st.json(obj)
 
@@ -1342,6 +1357,22 @@ def _humanize(value: str | None) -> str:
     if value is None:
         return "-"
     return str(value).replace("_", " ")
+
+
+def display_state_label(value: str | None) -> str:
+    text = _humanize(value)
+    labels = {
+        "WAIT": "Wait",
+        "WAIT FOR CONFIRMATION": "Wait for confirmation",
+        "WAIT FOR RETEST": "Wait for retest",
+        "TRADE ALLOWED": "Trade allowed",
+        "NO TRADE": "No trade",
+        "REGULAR SESSION": "Session watch",
+        "YFINANCE FALLBACK": "Delayed quote fallback",
+        "TASTYTRADE LIVE": "Tastytrade live",
+        "YFINANCE DELAYED": "Delayed quotes",
+    }
+    return labels.get(text.upper(), text.title() if text == text.upper() else text)
 
 
 def display_line_name(name: str | None) -> str:
@@ -1591,16 +1622,16 @@ def render_terminal_hero(
     latest_candle = fmt_time(df.index[-1]) if df is not None and not df.empty else "-"
     clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
     projection_time = structure_projection_time or now_ct
-    decision = _humanize(decision_state.final_decision if decision_state else "WAIT")
+    decision = display_state_label(decision_state.final_decision if decision_state else "WAIT")
     wait_discipline_html = render_wait_discipline_html(decision_state, latest_signal, closest_line, selected_strikes, now_ct)
     if decision_state and decision_state.signal_quality:
         q = decision_state.signal_quality
-        decision_reason = f"Grade {_humanize(q.grade)} with score {fmt_float(q.score)}. {_humanize(q.action_label)}."
+        decision_reason = f"Grade {display_state_label(q.grade)} with score {fmt_float(q.score)}. {display_state_label(q.action_label)}."
     else:
         decision_reason = bias_state.explanation if bias_state else "Waiting for enough structure to form a read."
     grade = decision_state.signal_quality.grade if decision_state and decision_state.signal_quality else "-"
-    action = _humanize(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
-    signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
+    action = display_state_label(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
+    signal_text = f"{latest_signal.signal_type} {display_state_label(latest_signal.status)}" if latest_signal else "No signal"
     closest_value = closest_line.tradable_value_at(projection_time) if closest_line else None
     closest_name = display_line_name(closest_line.name) if closest_line else "-"
     closest_price = fmt_price(closest_value)
@@ -1661,8 +1692,8 @@ def render_terminal_hero(
               </div>
               <div class='decision-reason'>{decision_reason}</div>
               <div class='pill-row'>
-                {_pill('Bias', bias_state.bias if bias_state else '-')}
-                {_pill('Grade', _humanize(grade))}
+                {_pill('Bias', display_state_label(bias_state.bias) if bias_state else '-')}
+                {_pill('Grade', display_state_label(grade))}
                 {_pill('Action', action)}
                 {_pill('Signal', signal_text)}
               </div>
@@ -1701,7 +1732,7 @@ def render_terminal_hero(
                     <div class='strike-value'>{put_strike}</div>
                   </div>
                 </div>
-                <div class='quote-meta-row'><span>Source</span><strong>{provider_status}</strong></div>
+                <div class='quote-meta-row'><span>Source</span><strong>{display_state_label(provider_status)}</strong></div>
               </div>
             </div>
           </div>
@@ -1774,9 +1805,9 @@ def render_live_command_center(
             </div>
             <div class='panel-copy'>{signal_body}</div>
             <div class='pill-row'>
-              {_pill('Action', quality_label(quality))}
+              {_pill('Action', display_state_label(quality_label(quality)))}
               {_pill('Score', fmt_float(quality.score) if quality else '-')}
-              {_pill('Retest', _humanize(guardrail.retest_status) if guardrail else '-')}
+              {_pill('Retest', display_state_label(guardrail.retest_status) if guardrail else '-')}
             </div>
           </div>
           <div class='terminal-panel'>
@@ -1790,7 +1821,7 @@ def render_live_command_center(
             <div class='panel-copy'>{options_copy}</div>
             <div class='pill-row'>
               {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
-              {_pill('Provider', provider_text)}
+              {_pill('Data', display_state_label(provider_text))}
             </div>
           </div>
         </div>
@@ -2436,6 +2467,34 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, f'{provider_name} options cockpit state.')
 
 
+def option_state_has_market_data(state: OptionsCockpitState | None) -> bool:
+    return bool(state and (quote_has_live_market_data(state.call_quote) or quote_has_live_market_data(state.put_quote)))
+
+
+def build_options_cockpit_state_with_fallback(selected_strikes, latest_signal=None, decision_state=None, provider=None, current_dt=None, all_lines=None, projection_time=None):
+    state = build_options_cockpit_state(
+        selected_strikes,
+        latest_signal=latest_signal,
+        decision_state=decision_state,
+        provider=provider,
+        current_dt=current_dt,
+        all_lines=all_lines or [],
+        projection_time=projection_time,
+    )
+    if option_state_has_market_data(state):
+        return state
+    yfinance_state = build_options_cockpit_state(
+        selected_strikes,
+        latest_signal=latest_signal,
+        decision_state=decision_state,
+        provider=YFinanceOptionProvider(),
+        current_dt=current_dt,
+        all_lines=all_lines or [],
+        projection_time=projection_time,
+    )
+    return yfinance_state if option_state_has_market_data(yfinance_state) else state
+
+
 def get_tastytrade_option_provider():
     missing = get_missing_tastytrade_secrets()
     if missing:
@@ -2465,19 +2524,29 @@ def option_provider_label(state: OptionsCockpitState | None, provider_status: di
 
 def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | None = None, warning: str | None = None) -> str:
     strike = quote.strike if quote else fallback_strike
-    detail = f"Bid {fmt_price(quote.bid if quote else None)} Ask {fmt_price(quote.ask if quote else None)} Spread {fmt_price(quote.spread if quote else None)} Delta {fmt_float(quote.delta if quote else None)}"
+    bid = fmt_price(quote.bid if quote else None)
+    ask = fmt_price(quote.ask if quote else None)
+    spread = fmt_price(quote.spread if quote else None)
+    delta = fmt_float(quote.delta if quote else None)
     if quote_has_live_market_data(quote):
         status = "Delayed yfinance price; mark is midpoint when bid/ask exist, otherwise last trade." if provider_is_yfinance_delayed(quote.provider) else "Live bid/ask and Greeks from Tastytrade."
     elif quote:
         status = "Contract found, but live bid/ask/delta are not available yet."
     else:
         status = warning or "Waiting for Tastytrade to return a live option quote."
-    return f"<div class='card-value'>Strike {strike if strike else '-'} | Mark {fmt_price(quote.mark if quote else None)}</div><div class='small-muted'>{detail}</div><div class='small-muted'>{status}</div>"
-
-
-
-import os, json, hashlib
-from pathlib import Path
+    return (
+        "<div class='option-quote-main'>"
+        f"<div><div class='option-quote-label'>Strike</div><div class='option-quote-strike'>{strike if strike else '-'}</div></div>"
+        f"<div><div class='option-quote-label'>Mark</div><div class='option-quote-mark'>{fmt_price(quote.mark if quote else None)}</div></div>"
+        "</div>"
+        "<div class='option-quote-grid'>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Bid</div><div class='option-quote-value'>{bid}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Ask</div><div class='option-quote-value'>{ask}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Spread</div><div class='option-quote-value'>{spread}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Delta</div><div class='option-quote-value'>{delta}</div></div>"
+        "</div>"
+        f"<div class='small-muted' style='margin-top:10px'>{status}</div>"
+    )
 
 @dataclass(frozen=True)
 class JournalEntry:
@@ -2661,28 +2730,9 @@ def main() -> None:
                 closest = get_closest_primary_line(primary_lines, structure_projection_time, latest_price) if latest_price is not None else None
                 latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
                 decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
-                option_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-                if not (option_state and (quote_has_live_market_data(option_state.call_quote) or quote_has_live_market_data(option_state.put_quote))):
-                    yfinance_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=YFinanceOptionProvider(), current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-                    if yfinance_state and (quote_has_live_market_data(yfinance_state.call_quote) or quote_has_live_market_data(yfinance_state.put_quote)):
-                        option_state = yfinance_state
+                option_state = build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
                 market_context = build_market_context(df, latest_price, closest, structure_projection_time)
 
-    render_terminal_hero(
-        latest_price,
-        bias,
-        decision_state,
-        closest,
-        active_signal,
-        strikes,
-        option_provider_label(option_state, provider_status),
-        now_ct,
-        df,
-        prior_day,
-        market_context,
-        primary_lines,
-        structure_projection_time,
-    )
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
@@ -2695,6 +2745,21 @@ def main() -> None:
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
 
     with tabs["Live Terminal"]:
+        render_terminal_hero(
+            latest_price,
+            bias,
+            decision_state,
+            closest,
+            active_signal,
+            strikes,
+            option_provider_label(option_state, provider_status),
+            now_ct,
+            df,
+            prior_day,
+            market_context,
+            primary_lines,
+            structure_projection_time,
+        )
         render_live_command_center(
             bias,
             decision_state,
@@ -2717,7 +2782,7 @@ def main() -> None:
         chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
         cc1,cc2=st.columns([1.1,1])
-        chart_mode = cc1.selectbox("View", ["Animated Map", "Advanced Candles"], index=0, key="chart_view_mode")
+        chart_mode = cc1.selectbox("View", ["Decision Map", "Technical Candles"], index=0, key="chart_view_mode")
         secondary_mode = cc2.selectbox("Targets", ["nearest 6","nearest 12","all"], index=0, key="chart_target_density")
         show_secondary = True
         show_signals = True
@@ -2725,7 +2790,7 @@ def main() -> None:
         try:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
-            if chart_mode == "Animated Map":
+            if chart_mode == "Decision Map":
                 render_structure_map_svg(chart_df, primary_lines, secondary_lines, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), title="SPY Structure Map", subtitle=f"Prior session {prior_day}; signal day {signal_day}", secondary_mode=secondary_mode)
             else:
                 fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=True, secondary_mode=secondary_mode)
@@ -2744,7 +2809,7 @@ def main() -> None:
             rca,rcb,rcc=st.columns([1,1,1])
             rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
             mode = rcb.selectbox("Mode", ["Full Day Review","Step Replay"], key="replay_mode")
-            replay_view = rcc.selectbox("View", ["Animated Map", "Advanced Candles"], index=0, key="replay_view_mode")
+            replay_view = rcc.selectbox("View", ["Decision Map", "Technical Candles"], index=0, key="replay_view_mode")
             day_df = filter_replay_day(df, rdate)
             rtime = None
             if mode=="Step Replay" and not day_df.empty:
@@ -2762,7 +2827,7 @@ def main() -> None:
                 st.info("Outcome review is visible for this replay.")
             else:
                 st.info("Future outcomes are hidden for this replay point.")
-            if replay_view == "Animated Map":
+            if replay_view == "Decision Map":
                 render_structure_map_svg(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.signals, replay_decision, replay_price, replay_dt, title=f"Replay Map: {rdate}", subtitle=f"Structure from {rs.prior_trading_day}; mode {_humanize(mode)}")
             else:
                 rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, replay_decision, replay_price, replay_dt, show_secondary=show_sec_replay)
@@ -2780,19 +2845,19 @@ def main() -> None:
         st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")
         render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
-            state = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-            if not (state and (quote_has_live_market_data(state.call_quote) or quote_has_live_market_data(state.put_quote))):
-                yfinance_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=YFinanceOptionProvider(), current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
-                if yfinance_state and (quote_has_live_market_data(yfinance_state.call_quote) or quote_has_live_market_data(yfinance_state.put_quote)):
-                    state = yfinance_state
+            state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
-                ("Provider", option_provider_label(state, provider_status)),
+                ("Provider", display_state_label(option_provider_label(state, provider_status))),
                 ("Connection", "Live" if provider_is_live_tastytrade(state.provider) and (state.call_quote or state.put_quote) else "Delayed" if provider_is_yfinance_delayed(state.provider) and (state.call_quote or state.put_quote) else "Unavailable"),
-                ("Mode", "TASTYTRADE" if provider_is_live_tastytrade(state.provider) else "YFINANCE fallback" if provider_is_yfinance_delayed(state.provider) else "TASTYTRADE"),
+                ("Mode", "Tastytrade live" if provider_is_live_tastytrade(state.provider) else "Delayed quote fallback" if provider_is_yfinance_delayed(state.provider) else "Tastytrade"),
             ])
-            if provider_status.get("missing_secrets"): st.warning(f"Missing secrets: {provider_status.get('missing_secrets')}")
+            if provider_status.get("missing_secrets"): render_data_notice("Live Tastytrade setup is incomplete. Delayed quotes can still support mark-only review.")
             if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
-            if state.warning: st.warning(state.warning)
+            if state.warning:
+                if provider_is_yfinance_delayed(state.provider):
+                    render_data_notice("Delayed quotes active. Live Greeks appear when Tastytrade streaming is connected.")
+                else:
+                    st.warning(state.warning)
             c1,c2=st.columns(2)
             with c1:
                 cq=state.call_quote
@@ -2806,7 +2871,7 @@ def main() -> None:
                     ("Mark", fmt_price(state.selected_trade_quote.mark)),
                 ])
             else:
-                st.info("No active options setup. Waiting for confirmed or pending SPY rejection signal.")
+                render_data_notice("No active options setup. Waiting for confirmed or pending SPY rejection signal.")
             if state.entry_target_projection:
                 p = state.entry_target_projection
                 render_status_strip([

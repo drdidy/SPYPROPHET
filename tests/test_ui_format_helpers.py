@@ -1,4 +1,4 @@
-from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, render_brand_logo, ui_icon
+from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, display_state_label, fmt_price, fmt_nan, safe_to_dict, render_badge, render_brand_logo, ui_icon
 
 
 def test_fmt_helpers():
@@ -39,3 +39,9 @@ def test_display_line_names_are_product_facing():
     assert display_line_name("S DESC 002") == "Upper Target"
     assert display_line_description("LA") == "PUT watch from the prior-session low"
     assert display_line_list(["UD", "UA"]) == "Upper Call Trigger, Upper Put Trigger"
+
+
+def test_display_state_labels_hide_internal_enums():
+    assert display_state_label("REGULAR_SESSION") == "Session watch"
+    assert display_state_label("WAIT_FOR_CONFIRMATION") == "Wait for confirmation"
+    assert display_state_label("YFINANCE delayed") == "Delayed quotes"
