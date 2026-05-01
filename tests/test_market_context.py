@@ -7,6 +7,7 @@ import pandas as pd
 from app import (
     DynamicLine,
     JournalEntry,
+    NEWS_RSS_FEEDS,
     build_structure_learning_profile,
     build_market_context,
     calculate_spy_pressure,
@@ -78,6 +79,15 @@ def test_parse_rss_items_and_relevance() -> None:
     assert classify_news_relevance("VIX jumps as Treasury yields rise") == "Volatility watch"
     assert is_market_news_relevant("VIX jumps as Treasury yields rise")
     assert not is_market_news_relevant("Why paying off your mortgage could cost more than investing")
+
+
+def test_reliable_news_feeds_include_official_and_market_sources() -> None:
+    sources = {source for source, _ in NEWS_RSS_FEEDS}
+
+    assert "Federal Reserve Monetary Policy" in sources
+    assert "CNBC Markets" in sources
+    assert "MarketWatch Top Stories" in sources
+    assert "Yahoo Finance SPY" in sources
 
 
 def test_economic_calendar_loads_and_filters(tmp_path) -> None:

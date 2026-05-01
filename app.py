@@ -32,10 +32,17 @@ EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 RTH_SESSION_START = time(8, 30)
 RTH_SESSION_END = time(15, 0)
-NEWS_RSS_URLS = (
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US",
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EVIX&region=US&lang=en-US",
+NEWS_RSS_FEEDS = (
+    ("Yahoo Finance SPY", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US"),
+    ("Yahoo Finance VIX", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EVIX&region=US&lang=en-US"),
+    ("CNBC Markets", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+    ("MarketWatch Top Stories", "https://www.marketwatch.com/rss/topstories"),
+    ("Investing.com Stock Market News", "https://www.investing.com/rss/news_25.rss"),
+    ("Federal Reserve Press Releases", "https://www.federalreserve.gov/feeds/press_all.xml"),
+    ("Federal Reserve Monetary Policy", "https://www.federalreserve.gov/feeds/press_monetary.xml"),
+    ("Federal Reserve Speeches", "https://www.federalreserve.gov/feeds/speeches.xml"),
 )
+NEWS_RSS_URLS = tuple(url for _, url in NEWS_RSS_FEEDS)
 ECONOMIC_CALENDAR_PATH = "data/economic_calendar.json"
 REPLAY_LEARNING_DAYS = 45
 TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
@@ -44,11 +51,16 @@ OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_WEB_SEARCH_DEFAULT = "true"
 CURATED_MORNING_SOURCES = [
+    {"name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/default.htm", "role": "Official Fed press releases, monetary policy, and speeches"},
+    {"name": "BLS", "url": "https://www.bls.gov/feed/", "role": "Official labor and inflation release feeds"},
+    {"name": "Yahoo Finance", "url": "https://finance.yahoo.com/quote/SPY/news/", "role": "SPY and VIX market headlines"},
+    {"name": "CNBC Markets", "url": "https://www.cnbc.com/markets/", "role": "Market-moving headlines"},
+    {"name": "MarketWatch", "url": "https://www.marketwatch.com/", "role": "Broad market headlines"},
+    {"name": "Investing.com News", "url": "https://www.investing.com/news/stock-market-news", "role": "Stock market news feed"},
     {"name": "Tradytics", "url": "https://x.com/Tradytics", "role": "Options flow videos and trader context"},
     {"name": "Unusual Whales", "url": "https://unusualwhales.com", "role": "Options flow and market dashboard"},
     {"name": "Investing.com Calendar", "url": "https://www.investing.com/economic-calendar/", "role": "Macro event timing"},
     {"name": "ForexFactory Calendar", "url": "https://www.forexfactory.com/calendar", "role": "Macro event risk flags"},
-    {"name": "CNBC Markets", "url": "https://www.cnbc.com/markets/", "role": "Market-moving headlines"},
     {"name": "Reuters Markets", "url": "https://www.reuters.com/markets/", "role": "Verified global headlines"},
 ]
 GLOBAL_CONTEXT_TICKERS = {
@@ -457,20 +469,61 @@ def parse_rss_items(xml_text: str, source: str = "Yahoo Finance", limit: int = 8
         items.append(NewsItem(title, link, published, source, summary, classify_news_relevance(title, summary)))
         if len(items) >= limit:
             break
+    if items:
+        return items
+    for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+        title = strip_markup(entry.findtext("{http://www.w3.org/2005/Atom}title"))
+        if not title:
+            continue
+        summary = strip_markup(entry.findtext("{http://www.w3.org/2005/Atom}summary") or entry.findtext("{http://www.w3.org/2005/Atom}content")) or None
+        link = None
+        link_node = entry.find("{http://www.w3.org/2005/Atom}link")
+        if link_node is not None:
+            link = strip_markup(link_node.attrib.get("href"))
+        published = None
+        pub_text = entry.findtext("{http://www.w3.org/2005/Atom}published") or entry.findtext("{http://www.w3.org/2005/Atom}updated")
+        if pub_text:
+            try:
+                published = pd.Timestamp(parsedate_to_datetime(pub_text))
+            except Exception:
+                try:
+                    published = pd.Timestamp(pub_text)
+                except Exception:
+                    published = None
+        items.append(NewsItem(title, link, published, source, summary, classify_news_relevance(title, summary)))
+        if len(items) >= limit:
+            break
     return items
+
+
+def news_sort_key(item: NewsItem) -> tuple[int, int, pd.Timestamp]:
+    relevance_rank = {
+        "Macro catalyst": 0,
+        "Volatility watch": 1,
+        "SPY context": 2,
+        "General market": 3,
+    }.get(item.relevance, 4)
+    official_rank = 0 if item.source.startswith("Federal Reserve") else 1
+    published = item.published if item.published is not None else pd.Timestamp.min.tz_localize("UTC")
+    try:
+        published = pd.Timestamp(published)
+        published = published.tz_localize("UTC") if published.tzinfo is None else published.tz_convert("UTC")
+    except Exception:
+        published = pd.Timestamp.min.tz_localize("UTC")
+    return relevance_rank, official_rank, -published.value
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_market_news(limit: int = 8) -> list[NewsItem]:
     results: list[NewsItem] = []
     seen: set[str] = set()
-    for url in NEWS_RSS_URLS:
+    for source, url in NEWS_RSS_FEEDS:
         try:
             response = requests.get(url, timeout=6, headers={"User-Agent": "SPYProphet/1.0"})
             response.raise_for_status()
         except Exception:
             continue
-        for item in parse_rss_items(response.text, "Yahoo Finance", limit=max(limit * 3, limit + 5)):
+        for item in parse_rss_items(response.text, source, limit=max(limit, 6)):
             if not is_market_news_relevant(item.title, item.summary):
                 continue
             key = item.link or item.title
@@ -478,9 +531,7 @@ def fetch_market_news(limit: int = 8) -> list[NewsItem]:
                 continue
             seen.add(key)
             results.append(item)
-            if len(results) >= limit:
-                return results
-    return results
+    return sorted(results, key=news_sort_key)[:limit]
 
 
 def economic_event_from_dict(raw: dict) -> EconomicEvent | None:
@@ -880,7 +931,13 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
         else "No verified calendar rows loaded from data/economic_calendar.json or Trading Economics API."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
-    source_statuses.append(source_status("Market news", bool(news_items), f"{len(news_items)} market headlines loaded from Yahoo Finance RSS."))
+    news_sources = sorted({item.source for item in news_items})
+    news_detail = (
+        f"{len(news_items)} market headlines loaded from {', '.join(news_sources)}."
+        if news_items
+        else f"No market headlines loaded from {len(NEWS_RSS_FEEDS)} configured public feeds."
+    )
+    source_statuses.append(source_status("Market news", bool(news_items), news_detail))
     return MorningBriefingBundle(
         pd.Timestamp.now(tz=get_central_tz()),
         structure_lines_for_briefing(primary_lines, projection_time),
