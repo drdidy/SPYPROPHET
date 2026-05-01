@@ -1600,7 +1600,7 @@ def render_live_command_center(
         watch_lines = bias_state.watched_call_lines + bias_state.watched_put_lines
     signal_body = signal_setup_copy(latest_signal)
     signal_title = signal_setup_label(latest_signal)
-    options_live = bool(options_state and (options_state.call_quote or options_state.put_quote) and provider_is_live_tastytrade(options_state.provider))
+    options_live = bool(options_state and provider_is_live_tastytrade(options_state.provider) and (quote_has_live_market_data(options_state.call_quote) or quote_has_live_market_data(options_state.put_quote)))
     call_mark = fmt_price(options_state.call_quote.mark) if options_live and options_state.call_quote else "-"
     put_mark = fmt_price(options_state.put_quote.mark) if options_live and options_state.put_quote else "-"
     projection = options_state.entry_target_projection if options_live and options_state else None
@@ -2136,6 +2136,13 @@ def provider_is_live_tastytrade(name: str | None) -> bool:
     return "TASTYTRADE" in text and not is_mock_option_provider_name(text)
 
 
+def quote_has_live_market_data(quote: OptionQuote | None) -> bool:
+    if quote is None:
+        return False
+    values = [quote.bid, quote.ask, quote.mark, quote.delta]
+    return any(value is not None and not pd.isna(value) for value in values)
+
+
 def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
     moves = moves or [0.5,-0.5]; out=[]
     for mv in moves:
@@ -2199,15 +2206,18 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
         return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Mock option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
     if (call_q or put_q) and not any(provider_is_live_tastytrade(name) for name in provider_names):
         return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Non-Tastytrade option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
+    missing_market_data = (call_q or put_q) and not (quote_has_live_market_data(call_q) or quote_has_live_market_data(put_q))
     opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
     sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
-    scenarios = simulate_option_scenarios(sel) if sel else []
+    scenarios = simulate_option_scenarios(sel) if sel and quote_has_live_market_data(sel) else []
     proj=None; warning=q.get("warning")
+    if missing_market_data:
+        warning = 'Tastytrade returned contracts, but bid/ask/delta were not in the chain response. Live quote streaming is required for option bid/ask/spread/delta.'
     if sel and all_lines:
         entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
-        if entry:
+        if entry and quote_has_live_market_data(sel):
             proj = project_option_entry_to_target(sel, selected_strikes.underlying_price, entry, target, entry_projection_time=projection_time or get_default_projection_time(now), target_projection_time=projection_time or get_default_projection_time(now))
-        else:
+        elif entry is None:
             warning = 'Could not resolve entry line; projection unavailable.'
     return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, f'{provider_name} options cockpit state.')
 
@@ -2235,6 +2245,18 @@ def option_provider_label(state: OptionsCockpitState | None, provider_status: di
     if provider_status.get("last_error") or (state and state.warning):
         return "TASTYTRADE unavailable"
     return provider_status.get("provider") or "TASTYTRADE"
+
+
+def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | None = None, warning: str | None = None) -> str:
+    strike = quote.strike if quote else fallback_strike
+    detail = f"Bid {fmt_price(quote.bid if quote else None)} Ask {fmt_price(quote.ask if quote else None)} Spread {fmt_price(quote.spread if quote else None)} Delta {fmt_float(quote.delta if quote else None)}"
+    if quote_has_live_market_data(quote):
+        status = "Live bid/ask and Greeks from Tastytrade."
+    elif quote:
+        status = "Contract found, but live bid/ask/delta are not available yet."
+    else:
+        status = warning or "Waiting for Tastytrade to return a live option quote."
+    return f"<div class='card-value'>Strike {strike if strike else '-'} | Mark {fmt_price(quote.mark if quote else None)}</div><div class='small-muted'>{detail}</div><div class='small-muted'>{status}</div>"
 
 
 
@@ -2550,10 +2572,10 @@ def main() -> None:
             c1,c2=st.columns(2)
             with c1:
                 cq=state.call_quote
-                render_glass_card("CALL Quote", f"<div class='card-value'>Strike {cq.strike if cq else '-'} | Mark {fmt_price(cq.mark if cq else None)}</div><div class='small-muted'>Bid {fmt_price(cq.bid if cq else None)} Ask {fmt_price(cq.ask if cq else None)} Spread {fmt_price(cq.spread if cq else None)} Delta {fmt_float(cq.delta if cq else None)}</div>")
+                render_glass_card("CALL Quote", option_quote_card_html(cq, strikes.call_strike, state.warning))
             with c2:
                 pq=state.put_quote
-                render_glass_card("PUT Quote", f"<div class='card-value'>Strike {pq.strike if pq else '-'} | Mark {fmt_price(pq.mark if pq else None)}</div><div class='small-muted'>Bid {fmt_price(pq.bid if pq else None)} Ask {fmt_price(pq.ask if pq else None)} Spread {fmt_price(pq.spread if pq else None)} Delta {fmt_float(pq.delta if pq else None)}</div>")
+                render_glass_card("PUT Quote", option_quote_card_html(pq, strikes.put_strike, state.warning))
             if state.selected_trade_quote:
                 render_status_strip([
                     ("Active contract", f"{state.selected_trade_quote.option_type} {state.selected_trade_quote.strike}"),
