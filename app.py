@@ -540,7 +540,7 @@ def is_fresh_for_0dte(published, now_ct=None, max_age_days: int = MORNING_BRIEFI
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_market_news(limit: int = 8) -> list[NewsItem]:
+def fetch_market_news_rows(limit: int = 8) -> list[dict]:
     now_ct = datetime.now(tz=get_central_tz())
     results: list[NewsItem] = []
     seen: set[str] = set()
@@ -560,7 +560,38 @@ def fetch_market_news(limit: int = 8) -> list[NewsItem]:
                 continue
             seen.add(key)
             results.append(item)
-    return sorted(results, key=news_sort_key)[:limit]
+    return [
+        {
+            "title": item.title,
+            "link": item.link,
+            "published": item.published.isoformat() if item.published is not None else None,
+            "source": item.source,
+            "summary": item.summary,
+            "relevance": item.relevance,
+        }
+        for item in sorted(results, key=news_sort_key)[:limit]
+    ]
+
+
+def news_item_from_row(row: dict) -> NewsItem:
+    published = None
+    if row.get("published"):
+        try:
+            published = pd.Timestamp(row.get("published"))
+        except Exception:
+            published = None
+    return NewsItem(
+        str(row.get("title") or ""),
+        row.get("link"),
+        published,
+        str(row.get("source") or "Market news"),
+        row.get("summary"),
+        str(row.get("relevance") or "General market"),
+    )
+
+
+def fetch_market_news(limit: int = 8) -> list[NewsItem]:
+    return [news_item_from_row(row) for row in fetch_market_news_rows(limit)]
 
 
 def economic_event_from_dict(raw: dict) -> EconomicEvent | None:
