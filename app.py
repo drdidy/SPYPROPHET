@@ -5000,6 +5000,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
     return f"""
     <style>
       .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Inter,Segoe UI,system-ui,sans-serif;color:#f4f7fb}}
+      .svg-map-shell svg{{display:block;width:100%;height:auto}}
       .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
       .svg-map-title h3{{margin:0;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
       .svg-map-title p{{margin:4px 0 0;color:#9aa7b5;font-size:13px}}
@@ -5020,7 +5021,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
       .map-muted{{fill:#8ba9c8;font-size:12px;font-weight:650}}
       .signal-pulse circle:first-child{{animation:pulse 2.2s ease-in-out infinite;transform-origin:center}}
       .svg-map-cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px;align-items:stretch}}
-      .svg-map-card{{border:1px solid #243244;background:#151f2b;border-radius:8px;padding:11px 12px;min-height:82px;overflow:hidden}}
+      .svg-map-card{{border:1px solid #243244;background:#151f2b;border-radius:8px;padding:11px 12px;min-height:92px;overflow:visible}}
       .svg-card-label{{font-size:11px;color:#9aa7b5;text-transform:uppercase;letter-spacing:.08em}}
       .svg-card-value{{font-size:18px;line-height:1.22;margin-top:5px;font-weight:850;color:#fbfdff;white-space:normal;overflow-wrap:anywhere}}
       .svg-card-copy{{font-size:12px;color:#95acc6;margin-top:6px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}}
@@ -5058,7 +5059,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
     """
 
 
-def render_structure_map_svg(*args, height: int = 760, **kwargs) -> None:
+def render_structure_map_svg(*args, height: int = 940, **kwargs) -> None:
     components.html(build_structure_map_svg(*args, **kwargs), height=height, scrolling=False)
 
 
