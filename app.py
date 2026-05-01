@@ -14,6 +14,7 @@ from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SYMBOL = "SPY"
+VIX_SYMBOL = "^VIX"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
@@ -40,6 +41,20 @@ class SecondaryPivot:
     timestamp: pd.Timestamp | None
     direction: str
     source: str
+
+
+@dataclass(frozen=True)
+class MarketContext:
+    vix_price: float
+    vix_label: str
+    vix_tone: str
+    vix_copy: str
+    spy_pressure: str
+    spy_pressure_tone: str
+    spy_pressure_value: float
+    trigger_gap: float
+    trigger_gap_label: str
+    trigger_gap_tone: str
 
 
 @dataclass(frozen=True)
@@ -153,6 +168,65 @@ def ensure_central_index(df: pd.DataFrame) -> pd.DataFrame:
 def fetch_spy_hourly(period: str = "10d") -> pd.DataFrame:
     raw = yf.download(tickers=SYMBOL, period=period, interval="60m", prepost=True, progress=False, auto_adjust=False, actions=False)
     return ensure_central_index(normalize_yfinance_frame(raw))
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_vix_latest(period: str = "5d", interval: str = "15m") -> float:
+    try:
+        raw = yf.download(tickers=VIX_SYMBOL, period=period, interval=interval, prepost=True, progress=False, auto_adjust=False, actions=False)
+        df = ensure_central_index(normalize_yfinance_frame(raw))
+    except Exception:
+        return float("nan")
+    if df.empty or "Close" not in df:
+        return float("nan")
+    close = df["Close"].dropna()
+    return float(close.iloc[-1]) if not close.empty else float("nan")
+
+
+def classify_vix(vix_price: float) -> tuple[str, str, str]:
+    if vix_price is None or pd.isna(vix_price):
+        return "Unavailable", "amber", "Yahoo VIX feed unavailable"
+    if vix_price < 15:
+        return "Calm", "blue", "Premium can be thin"
+    if vix_price < 20:
+        return "Normal", "green", "Clean trigger reads"
+    if vix_price < 25:
+        return "Elevated", "amber", "Use tighter confirmation"
+    return "Stress", "red", "Avoid chasing wicks"
+
+
+def calculate_spy_pressure(df: pd.DataFrame, lookback_bars: int = 3) -> tuple[str, str, float]:
+    if df is None or df.empty or "Close" not in df:
+        return "Unavailable", "amber", float("nan")
+    close = df["Close"].dropna()
+    if len(close) <= lookback_bars:
+        return "Building", "blue", float("nan")
+    change = float(close.iloc[-1] - close.iloc[-1 - lookback_bars])
+    if change > 1.0:
+        return "Lifting", "green", change
+    if change < -1.0:
+        return "Fading", "red", change
+    return "Balanced", "blue", change
+
+
+def build_market_context(df: pd.DataFrame, latest_price: float | None, closest_line: DynamicLine | None, now_ct, vix_price: float | None = None) -> MarketContext:
+    vix = fetch_vix_latest() if vix_price is None else vix_price
+    vix_label, vix_tone, vix_copy = classify_vix(vix)
+    pressure, pressure_tone, pressure_value = calculate_spy_pressure(df)
+    if closest_line is not None and latest_price is not None and not pd.isna(latest_price):
+        trigger_gap = closest_line.distance_from_price(latest_price, now_ct)
+    else:
+        trigger_gap = float("nan")
+    abs_gap = abs(trigger_gap) if not pd.isna(trigger_gap) else float("nan")
+    if pd.isna(abs_gap):
+        gap_label, gap_tone = "Waiting", "amber"
+    elif abs_gap <= 0.5:
+        gap_label, gap_tone = "At trigger", "green"
+    elif abs_gap <= 1.5:
+        gap_label, gap_tone = "Near trigger", "blue"
+    else:
+        gap_label, gap_tone = "Room to wait", "amber"
+    return MarketContext(vix, vix_label, vix_tone, vix_copy, pressure, pressure_tone, pressure_value, trigger_gap, gap_label, gap_tone)
 
 
 def get_available_trading_days(df: pd.DataFrame) -> list[date]:
@@ -1041,6 +1115,13 @@ def inject_global_css() -> None:
     .hero-price{font-family:Consolas,monospace;font-size:3rem;font-weight:800;color:var(--text);line-height:1}
     .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .hero-sub{margin-top:8px;color:var(--muted);font-size:.86rem}
+    .hero-intel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
+    .intel-mini{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:76px}
+    .intel-mini.green{border-color:rgba(33,208,122,.48)} .intel-mini.red{border-color:rgba(255,95,124,.48)} .intel-mini.amber{border-color:rgba(244,199,107,.48)} .intel-mini.blue{border-color:rgba(103,183,255,.48)}
+    .intel-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .intel-value{font-size:1.05rem;font-weight:850;color:var(--text);margin-top:4px;line-height:1.2}
+    .intel-mini.green .intel-value{color:var(--green)} .intel-mini.red .intel-value{color:var(--red)} .intel-mini.amber .intel-value{color:var(--amber)} .intel-mini.blue .intel-value{color:var(--blue)}
+    .intel-copy{font-size:.76rem;color:var(--muted);margin-top:4px;line-height:1.25}
     .decision-plate{border:1px solid var(--border);border-radius:8px;background:rgba(7,10,15,.58);padding:14px}
     .decision-main{font-size:1.45rem;font-weight:800;line-height:1.15;color:var(--text);margin:5px 0}
     .decision-reason{color:var(--muted);font-size:.86rem}
@@ -1291,6 +1372,16 @@ def quality_label(quality) -> str:
     return _humanize(quality.grade)
 
 
+def _intel_tile(label: str, value: str, copy: str, tone: str = "blue") -> str:
+    return (
+        f"<div class='intel-mini {tone}'>"
+        f"<div class='intel-label'>{label}</div>"
+        f"<div class='intel-value'>{value}</div>"
+        f"<div class='intel-copy'>{copy}</div>"
+        "</div>"
+    )
+
+
 def render_terminal_hero(
     latest_price,
     bias_state,
@@ -1302,6 +1393,7 @@ def render_terminal_hero(
     now_ct,
     df: pd.DataFrame,
     prior_day,
+    market_context: MarketContext | None = None,
 ) -> None:
     latest_candle = fmt_time(df.index[-1]) if df is not None and not df.empty else "-"
     clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
@@ -1317,6 +1409,17 @@ def render_terminal_hero(
     closest_value = closest_line.tradable_value_at(now_ct) if closest_line else None
     closest_text = f"<span class='quote-level'>{display_line_name(closest_line.name)}</span>{fmt_price(closest_value)}" if closest_line else "-"
     contract_text = format_watch_contract_short(selected_strikes, latest_signal, bias_state)
+    if market_context is None:
+        market_context = build_market_context(df, latest_price, closest_line, now_ct, float("nan"))
+    pressure_value = fmt_price(market_context.spy_pressure_value) if not pd.isna(market_context.spy_pressure_value) else "-"
+    trigger_gap = fmt_price(market_context.trigger_gap) if not pd.isna(market_context.trigger_gap) else "-"
+    vix_value = fmt_price(market_context.vix_price) if not pd.isna(market_context.vix_price) else "-"
+    intel_html = "".join([
+        _intel_tile("VIX Regime", f"{vix_value} {market_context.vix_label}", market_context.vix_copy, market_context.vix_tone),
+        _intel_tile("SPY Pressure", market_context.spy_pressure, f"3-bar change {pressure_value}", market_context.spy_pressure_tone),
+        _intel_tile("Trigger Gap", market_context.trigger_gap_label, f"Distance {trigger_gap}", market_context.trigger_gap_tone),
+        _intel_tile("Structure", str(prior_day or "-"), "Yahoo RTH anchor", "blue"),
+    ])
     st.markdown(
         f"""
         <div class='terminal-hero'>
@@ -1335,6 +1438,7 @@ def render_terminal_hero(
               <div class='hero-label'>SPY Last</div>
               <div class='hero-price'>{fmt_price(latest_price)}</div>
               <div class='hero-sub'>Latest candle {latest_candle}</div>
+              <div class='hero-intel'>{intel_html}</div>
             </div>
             <div class='decision-plate'>
               <div class='hero-label'>Final Decision</div>
@@ -2151,7 +2255,7 @@ def main() -> None:
     prior_day = None
     signal_day = None
     rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); pivots={}; secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
-    bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None
+    bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None; market_context=None
     option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
     if df.empty:
@@ -2179,6 +2283,7 @@ def main() -> None:
                 latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
                 decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
                 option_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+                market_context = build_market_context(df, latest_price, closest, now_ct)
 
     render_terminal_hero(
         latest_price,
@@ -2191,6 +2296,7 @@ def main() -> None:
         now_ct,
         df,
         prior_day,
+        market_context,
     )
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
