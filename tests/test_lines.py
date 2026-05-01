@@ -16,6 +16,7 @@ from app import (
     calculate_slope_from_observed,
     get_central_tz,
     get_closest_primary_line,
+    get_primary_anchor_summary,
     project_lines,
 )
 
@@ -130,6 +131,17 @@ def test_structure_tables_explain_source_and_projection() -> None:
     assert "Upper Put Trigger" in set(projection["Trigger"])
     assert "Formula" in projection.columns
     assert projection[projection["Trigger"] == "Upper Call Trigger"].iloc[0]["Based On"] == "High Pivot"
+
+
+def test_primary_anchor_summary() -> None:
+    hp = Pivot("HIGH_PIVOT", 110.0, _ts("2026-04-28T15:00:00"), "session_high", "green", False)
+    lp = Pivot("LOW_PIVOT", 98.0, _ts("2026-04-28T10:30:00"), "session_low", "red", False)
+    summary = get_primary_anchor_summary(build_primary_lines(hp, lp))
+
+    assert summary["high_time"] == _ts("2026-04-28T15:00:00")
+    assert summary["high_price"] == 110.0
+    assert summary["low_time"] == _ts("2026-04-28T10:30:00")
+    assert summary["low_price"] == 98.0
 
 
 def test_invalid_anchor_handling() -> None:

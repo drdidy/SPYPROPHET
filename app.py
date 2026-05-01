@@ -229,6 +229,18 @@ def build_market_context(df: pd.DataFrame, latest_price: float | None, closest_l
     return MarketContext(vix, vix_label, vix_tone, vix_copy, pressure, pressure_tone, pressure_value, trigger_gap, gap_label, gap_tone)
 
 
+def get_primary_anchor_summary(primary_lines: list[DynamicLine] | None) -> dict:
+    lines = primary_lines or []
+    high_line = get_line_by_name(lines, "UA") or get_line_by_name(lines, "UD")
+    low_line = get_line_by_name(lines, "LA") or get_line_by_name(lines, "LD")
+    return {
+        "high_time": high_line.anchor_time if high_line else None,
+        "high_price": high_line.anchor_price if high_line else float("nan"),
+        "low_time": low_line.anchor_time if low_line else None,
+        "low_price": low_line.anchor_price if low_line else float("nan"),
+    }
+
+
 def get_available_trading_days(df: pd.DataFrame) -> list[date]:
     if df is None or df.empty:
         return []
@@ -1394,6 +1406,7 @@ def render_terminal_hero(
     df: pd.DataFrame,
     prior_day,
     market_context: MarketContext | None = None,
+    primary_lines: list[DynamicLine] | None = None,
 ) -> None:
     latest_candle = fmt_time(df.index[-1]) if df is not None and not df.empty else "-"
     clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
@@ -1420,6 +1433,11 @@ def render_terminal_hero(
         _intel_tile("Trigger Gap", market_context.trigger_gap_label, f"Distance {trigger_gap}", market_context.trigger_gap_tone),
         _intel_tile("Structure", str(prior_day or "-"), "Yahoo RTH anchor", "blue"),
     ])
+    anchors = get_primary_anchor_summary(primary_lines)
+    anchor_html = "".join([
+        _intel_tile("High Anchor", fmt_time(anchors["high_time"]), f"High {fmt_price(anchors['high_price'])}", "blue"),
+        _intel_tile("Low Anchor", fmt_time(anchors["low_time"]), f"Low {fmt_price(anchors['low_price'])}", "blue"),
+    ])
     st.markdown(
         f"""
         <div class='terminal-hero'>
@@ -1439,6 +1457,7 @@ def render_terminal_hero(
               <div class='hero-price'>{fmt_price(latest_price)}</div>
               <div class='hero-sub'>Latest candle {latest_candle}</div>
               <div class='hero-intel'>{intel_html}</div>
+              <div class='hero-intel'>{anchor_html}</div>
             </div>
             <div class='decision-plate'>
               <div class='hero-label'>Final Decision</div>
@@ -1556,6 +1575,7 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, st
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
             f"<div class='tile-meta'>Yahoo structure day {structure_day or '-'}</div>"
+            f"<div class='tile-meta'>Anchor close {fmt_time(line.anchor_time)}</div>"
             "</div>"
         )
     if tiles:
@@ -2297,6 +2317,7 @@ def main() -> None:
         df,
         prior_day,
         market_context,
+        primary_lines,
     )
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
