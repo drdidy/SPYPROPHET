@@ -6,6 +6,7 @@ from typing import Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import plotly.graph_objects as go
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
@@ -945,6 +946,15 @@ def make_glow_line_trace(line: DynamicLine, xvals, name: str):
     return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{name}_glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
 
 
+def render_plotly_html(fig: go.Figure, height: int = 780) -> None:
+    html = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displayModeBar": True, "responsive": True},
+    )
+    components.html(html, height=height, scrolling=False)
+
+
 def add_trade_overlay_for_signal(fig, signal: TradeSignal):
     if signal.entry_time is None or pd.isna(signal.entry_price):
         return
@@ -1343,7 +1353,7 @@ def main() -> None:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
             fig = build_prophet_chart(rth_df if not rth_df.empty else df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=show_pivots, secondary_mode=secondary_mode)
-            st.plotly_chart(fig, use_container_width=True)
+            render_plotly_html(fig)
             st.caption("Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary dashed lines = target-only structure | Markers show rejections and entries")
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
@@ -1385,7 +1395,7 @@ def main() -> None:
             st.write(f"Confirmed: {conf} | Pending: {pend} | Target-first: {out_target} | Stop-first: {out_stop} | No-hit: {out_no}")
             replay_candles = day_df if mode=="Full Day Review" or rtime is None else day_df[day_df.index<=rtime]
             rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, build_decision_state(rs.signals[-1] if rs.signals else None, rs.primary_lines+rs.secondary_lines, float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals), float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), show_secondary=show_sec_replay)
-            st.plotly_chart(rfig, use_container_width=True)
+            render_plotly_html(rfig)
             table=[]
             for sg in rs.signals:
                 q=rs.signal_qualities.get(sg.signal_id); o=rs.outcomes.get(sg.signal_id)
