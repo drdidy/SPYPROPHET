@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import TradeSignal, filter_replay_day, get_available_replay_dates, evaluate_signal_outcome, build_replay_state, get_central_tz
+from app import TradeSignal, filter_replay_day, get_available_replay_dates, evaluate_signal_outcome, build_replay_state, get_central_tz, get_latest_active_signal
 
 
 def _ts(s): return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
@@ -49,3 +49,17 @@ def test_outcome_call_put_ambiguous_nohit_pending_unknown_and_bars_moves():
     assert evaluate_signal_outcome(pend,fut).outcome=="PENDING"
     bad=TradeSignal("u","CALL","CONFIRMED","UD",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,None,float('nan'),98.5,None,float('nan'),float('nan'),float('nan'),float('nan'),"be","")
     assert evaluate_signal_outcome(bad,fut).outcome=="UNKNOWN"
+
+
+def test_latest_active_signal_skips_resolved_setups():
+    candles = pd.DataFrame(
+        {"Open":[100,100.5,102],"High":[101,103,103],"Low":[99.5,100,101],"Close":[100.2,102,102.5]},
+        index=pd.DatetimeIndex([_ts("2026-04-29T09:30:00"), _ts("2026-04-29T10:30:00"), _ts("2026-04-29T11:30:00")]),
+    )
+    resolved=TradeSignal("resolved","CALL","CONFIRMED","UD",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,_ts("2026-04-29T10:30:00"),100.5,99.0,"T",101.0,1,1,1,"be","")
+    active=TradeSignal("active","CALL","CONFIRMED","UD",100,_ts("2026-04-29T10:30:00"),101,102,99,100.2,_ts("2026-04-29T11:30:00"),102.0,99.0,"T",104.0,1,1,1,"be","")
+    pending=TradeSignal("pending","PUT","PENDING_CONFIRMATION","UA",100,_ts("2026-04-29T11:30:00"),99,101,98,99.5,None,float("nan"),101.5,None,float("nan"),float("nan"),float("nan"),float("nan"),"be","")
+
+    assert get_latest_active_signal([resolved], candles) is None
+    assert get_latest_active_signal([resolved, active], candles).signal_id == "active"
+    assert get_latest_active_signal([resolved, active, pending], candles).signal_id == "pending"

@@ -169,6 +169,26 @@ def get_prior_trading_day(df: pd.DataFrame, current_dt: datetime) -> Optional[da
     return None
 
 
+def get_latest_available_trading_day(df: pd.DataFrame, current_dt: datetime) -> Optional[date]:
+    if df is None or df.empty:
+        return None
+    cur = current_dt.replace(tzinfo=get_central_tz()) if current_dt.tzinfo is None else current_dt.astimezone(get_central_tz())
+    for day in reversed(get_available_trading_days(df)):
+        if day <= cur.date():
+            return day
+    return None
+
+
+def get_live_signal_day(df: pd.DataFrame, current_dt: datetime) -> Optional[date]:
+    latest_day = get_latest_available_trading_day(df, current_dt)
+    if latest_day is None:
+        return None
+    cur = current_dt.replace(tzinfo=get_central_tz()) if current_dt.tzinfo is None else current_dt.astimezone(get_central_tz())
+    if latest_day == cur.date():
+        return latest_day
+    return latest_day
+
+
 def filter_rth_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -782,6 +802,16 @@ def evaluate_signal_outcome(signal: TradeSignal, future_candles_df: pd.DataFrame
     else:
         max_fav = (signal.entry_price-fut['Low']).max(); max_adv = (signal.entry_price-fut['High']).min()
     return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, outcome, out_time, float(max_fav), float(max_adv), bars, "Hourly replay outcome.")
+
+
+def get_latest_active_signal(signals: list[TradeSignal], candles_df: pd.DataFrame) -> TradeSignal | None:
+    for signal in reversed(signals or []):
+        if signal.status == "PENDING_CONFIRMATION":
+            return signal
+        outcome = evaluate_signal_outcome(signal, candles_df)
+        if outcome.outcome == "NO_HIT":
+            return signal
+    return None
 
 
 def build_replay_state(full_df: pd.DataFrame, replay_date, replay_time=None, slope_per_hour=DEFAULT_SLOPE_PER_HOUR, include_future_outcomes=True) -> ReplayState:
@@ -1560,8 +1590,9 @@ def main() -> None:
     df = fetch_spy_hourly(period="10d") if (refresh or True) else pd.DataFrame()
     latest_price = None
     prior_day = None
-    rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
-    bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None
+    signal_day = None
+    rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
+    bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None
     option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
     if df.empty:
@@ -1569,10 +1600,12 @@ def main() -> None:
     if not df.empty:
         close_series = df.get("Close", pd.Series(dtype="float64")).dropna()
         latest_price = float(close_series.iloc[-1]) if not close_series.empty else None
-        prior_day = get_prior_trading_day(df, now_ct)
+        signal_day = get_live_signal_day(df, now_ct)
+        prior_day = get_prior_trading_day(df, pd.Timestamp(signal_day).to_pydatetime()) if signal_day is not None else None
         if prior_day is not None:
             rth_df = filter_rth_session(df, prior_day)
-            ext_df = filter_extended_session(df, prior_day)
+            signal_rth_df = filter_rth_session(df, signal_day) if signal_day is not None else pd.DataFrame()
+            ext_df = filter_extended_session(df, signal_day) if signal_day is not None else pd.DataFrame()
             if not rth_df.empty:
                 pivots = find_primary_pivots(rth_df)
                 secondary_pivots = find_secondary_pivots(rth_df)
@@ -1581,17 +1614,19 @@ def main() -> None:
                 proj_df = project_lines(primary_lines + secondary_lines, now_ct, latest_price)
                 bias = determine_preopen_bias(primary_lines, latest_price if latest_price is not None else float("nan"), now_ct)
                 strikes = select_0dte_strikes(latest_price if latest_price is not None else float("nan"), now_ct)
-                signals = detect_rejection_signals(rth_df, primary_lines, secondary_lines)
+                signals = detect_rejection_signals(signal_rth_df, primary_lines, secondary_lines)
+                active_signal = get_latest_active_signal(signals, signal_rth_df)
                 closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
-                decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
-                option_state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+                latest_signal_candle = signal_rth_df.iloc[-1] if not signal_rth_df.empty else None
+                decision_state = build_decision_state(active_signal, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), latest_signal_candle, signals_today=signals)
+                option_state = build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
 
     render_terminal_hero(
         latest_price,
         bias,
         decision_state,
         closest,
-        signals[-1] if signals else None,
+        active_signal,
         strikes,
         option_provider_label(option_state, provider_status),
         now_ct,
@@ -1601,14 +1636,15 @@ def main() -> None:
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
-        st.sidebar.caption(f"Prior day: {prior_day}")
+        st.sidebar.caption(f"Structure day: {prior_day}")
+        st.sidebar.caption(f"Signal day: {signal_day}")
 
     tabs = st.tabs(["Live Terminal","Structure Map","Prophet Chart","Signal Engine","Replay Lab","Options Cockpit","Journal Analytics","Playbook","Debug Lab"])
     with tabs[0]:
         render_live_command_center(
             bias,
             decision_state,
-            signals[-1] if signals else None,
+            active_signal,
             strikes,
             option_state,
             latest_price,
@@ -1641,7 +1677,8 @@ def main() -> None:
         try:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
-            fig = build_prophet_chart(rth_df if not rth_df.empty else df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=show_pivots, secondary_mode=secondary_mode)
+            chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
+            fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=show_pivots, secondary_mode=secondary_mode)
             render_plotly_html(fig)
             st.caption("Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary dashed lines = target-only structure | Markers show rejections and entries")
         except Exception as e:
@@ -1650,7 +1687,7 @@ def main() -> None:
     with tabs[3]:
         st.caption("Latest rejection signals, quality, and guardrails.")
         render_section_title("Signal Engine", "Hourly rejection rules")
-        render_signal_card(signals[-1] if signals else None)
+        render_signal_card(active_signal)
         if decision_state and decision_state.signal_quality:
             q = decision_state.signal_quality
             render_status_strip([
@@ -1714,7 +1751,7 @@ def main() -> None:
         st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")
         render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
-            state = option_state or build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+            state = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
                 ("Provider", option_provider_label(state, provider_status)),
                 ("Connection", "Live" if state.call_quote or state.put_quote else "Unavailable"),
@@ -1762,17 +1799,17 @@ def main() -> None:
                 if decision_state.guardrail_state.chase_warning: st.warning(decision_state.guardrail_state.chase_warning)
                 if decision_state.guardrail_state.retest_status != "NONE": st.info(f"Retest: {decision_state.guardrail_state.retest_status}")
                 if decision_state.guardrail_state.structure_warning: st.error(decision_state.guardrail_state.structure_warning)
-            if not signals:
+            if not active_signal:
                 st.write(f"Trigger Needed: Waiting for hourly rejection at {', '.join(bias.watched_call_lines + bias.watched_put_lines)}.")
             else:
-                ls=signals[-1]
+                ls=active_signal
                 if ls.status=="PENDING_CONFIRMATION":
                     st.write(f"Trigger Needed: Pending {ls.signal_type} confirmation on next candle open.")
                 else:
                     st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {ls.target_price}.")
                 st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
                 if strikes:
-                    ps = option_state or build_options_cockpit_state(strikes, latest_signal=ls, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                    ps = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
                     if ps.selected_trade_quote:
                         render_status_strip([("Options", f"{ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike}")])
                     if ps.entry_target_projection:
@@ -1799,8 +1836,8 @@ def main() -> None:
         notes = st.text_area("Notes for latest live signal", "")
         tags_text = st.text_input("Tags (comma-separated)", "")
         cja,cjb,cjc,cjd=st.columns(4)
-        if cja.button("Save latest live signal to journal") and signals:
-            e=build_journal_entry_from_live_state(signals[-1], decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=[t.strip() for t in tags_text.split(',') if t.strip()])
+        if cja.button("Save latest live signal to journal") and active_signal:
+            e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=[t.strip() for t in tags_text.split(',') if t.strip()])
             entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
         if cjb.button("Save replay signals to journal") and 'rs' in locals():
             for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
@@ -1829,6 +1866,7 @@ def main() -> None:
             render_debug_json("Primary lines", [asdict(x) for x in primary_lines])
             st.dataframe(df.tail(20) if not df.empty else pd.DataFrame())
             st.dataframe(rth_df.tail(20) if not rth_df.empty else pd.DataFrame())
+            st.dataframe(signal_rth_df.tail(20) if not signal_rth_df.empty else pd.DataFrame())
             st.dataframe(ext_df.tail(20) if not ext_df.empty else pd.DataFrame())
             render_debug_json("Secondary pivots", [asdict(x) for x in secondary_pivots])
             st.dataframe(proj_df)
@@ -1836,7 +1874,7 @@ def main() -> None:
             render_debug_json("Strikes", asdict(strikes) if strikes else {})
             render_debug_json("Signals", [asdict(x) for x in signals])
             if strikes:
-                dbg_opt = option_state or build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                dbg_opt = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
                 render_debug_json("OptionsCockpitState", asdict(dbg_opt))
                 render_debug_json("ProviderStatus", provider_status if "provider_status" in locals() else {})
                 render_debug_json("OptionsScenario", [asdict(x) for x in dbg_opt.scenarios])
@@ -1844,7 +1882,7 @@ def main() -> None:
             render_debug_json("SignalQuality", asdict(decision_state.signal_quality) if decision_state and decision_state.signal_quality else {})
             render_debug_json("RiskGuardrailState", asdict(decision_state.guardrail_state) if decision_state else {})
             render_debug_json("DecisionState", asdict(decision_state) if decision_state else {})
-            st.write({"current_ts": str(now_ct), "latest_price": latest_price, "candles_plotted": len(rth_df if not rth_df.empty else df), "num_primary_lines": len(primary_lines), "num_secondary_lines_available": len(secondary_lines), "num_signals": len(signals)})
+            st.write({"current_ts": str(now_ct), "latest_price": latest_price, "structure_day": str(prior_day), "signal_day": str(signal_day), "candles_plotted": len(signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df), "num_primary_lines": len(primary_lines), "num_secondary_lines_available": len(secondary_lines), "num_signals": len(signals), "active_signal_id": active_signal.signal_id if active_signal else None})
             j_entries = load_signal_journal("data/signal_journal.json")
             render_debug_json("Journal path", {"path":"data/signal_journal.json","count":len(j_entries),"auto_journal":auto_journal_on})
             render_debug_json("Last 3 journal entries", [journal_entry_to_dict(x) for x in j_entries[-3:]])

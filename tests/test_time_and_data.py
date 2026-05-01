@@ -9,6 +9,8 @@ from app import (
     filter_extended_session,
     filter_rth_session,
     get_central_tz,
+    get_latest_available_trading_day,
+    get_live_signal_day,
     get_prior_trading_day,
 )
 
@@ -76,6 +78,20 @@ def test_prior_trading_day_skips_missing_days() -> None:
     prior = get_prior_trading_day(df, cur)
 
     assert prior == date(2026, 4, 29)
+
+
+def test_live_signal_day_uses_latest_loaded_session() -> None:
+    idx = pd.DatetimeIndex([
+        datetime(2026, 4, 29, 9, 30, tzinfo=get_central_tz()),
+        datetime(2026, 4, 30, 9, 30, tzinfo=get_central_tz()),
+    ])
+    df = pd.DataFrame({"Close": [1.0, 2.0]}, index=idx)
+
+    cur = datetime(2026, 5, 1, 7, 0, tzinfo=get_central_tz())
+
+    assert get_latest_available_trading_day(df, cur) == date(2026, 4, 30)
+    assert get_live_signal_day(df, cur) == date(2026, 4, 30)
+    assert get_prior_trading_day(df, datetime(2026, 4, 30, tzinfo=get_central_tz())) == date(2026, 4, 29)
 
 
 def test_empty_dataframe_handling() -> None:
