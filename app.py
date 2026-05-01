@@ -1158,6 +1158,8 @@ def inject_global_css() -> None:
     .ui-icon.md{width:62px;height:62px}
     .ui-icon.sm{width:48px;height:48px}
     .ui-icon.mini{width:34px;height:34px}
+    .ui-icon.brand-mark{width:86px;height:86px;color:#d7f0ff;background:radial-gradient(circle at 26% 18%,#7dd3ff 0,#1f7ad0 34%,#0d315a 66%,#061421 100%);border-color:rgba(151,215,255,.62);box-shadow:0 22px 36px rgba(0,0,0,.42),0 0 30px rgba(103,183,255,.2),inset 0 1px 0 rgba(255,255,255,.42),inset 0 -18px 28px rgba(0,0,0,.3)}
+    .ui-icon.brand-mark svg{width:68%;height:68%;stroke-width:2.15}
     .ui-icon.blue{color:#9ed2ff;background:radial-gradient(circle at 30% 20%,#2d8dff 0,#14548f 42%,#0b2440 100%);border-color:rgba(103,183,255,.48)}
     .ui-icon.green{color:#9effcf;background:radial-gradient(circle at 30% 20%,#26d889 0,#0c7e53 44%,#062a22 100%);border-color:rgba(33,208,122,.48)}
     .ui-icon.red{color:#ffc0ca;background:radial-gradient(circle at 30% 20%,#ff6a87 0,#9f2745 45%,#35111e 100%);border-color:rgba(255,95,124,.48)}
@@ -1221,7 +1223,7 @@ def inject_global_css() -> None:
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
     @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid{grid-template-columns:1fr}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}}
+    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid{grid-template-columns:1fr}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.ui-icon.brand-mark{width:72px;height:72px}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1376,6 +1378,7 @@ def _pill(label: str, value: str | None, tone: str | None = None) -> str:
 
 def ui_icon(name: str, tone: str = "blue", size: str = "md") -> str:
     icons = {
+        "prophet": "<path d='M3 12s3.2-5.5 9-5.5S21 12 21 12s-3.2 5.5-9 5.5S3 12 3 12z'/><circle cx='12' cy='12' r='2.8'/><path d='M6.6 14.5 10 11l2.2 1.9 4.9-5.4'/><path d='M16.2 7.5h2.6v2.6'/><path d='M12 2.8v2.1'/><path d='M12 19.1v2.1'/><path d='M2.8 12h2.1'/><path d='M19.1 12h2.1'/>",
         "spark": "<path d='M12 2v5'/><path d='M12 17v5'/><path d='M2 12h5'/><path d='M17 12h5'/><path d='m5 5 3.5 3.5'/><path d='m15.5 15.5L19 19'/><path d='m19 5-3.5 3.5'/><path d='m8.5 15.5L5 19'/>",
         "pulse": "<path d='M3 12h4l2-6 4 12 2-6h6'/><path d='M5 20h14'/>",
         "compass": "<circle cx='12' cy='12' r='9'/><path d='m15.5 8.5-2.2 4.8-4.8 2.2 2.2-4.8 4.8-2.2z'/>",
@@ -1391,7 +1394,8 @@ def ui_icon(name: str, tone: str = "blue", size: str = "md") -> str:
         "valley": "<path d='M3 6h18'/><path d='m5 8 5 9 3-5 2 3 4-7'/>",
     }
     glyph = icons.get(name, icons["spark"])
-    return f"<span class='ui-icon {tone} {size}' aria-hidden='true'><svg viewBox='0 0 24 24'>{glyph}</svg></span>"
+    class_name = "brand-mark" if name == "prophet" else ""
+    return f"<span class='ui-icon {tone} {size} {class_name}' aria-hidden='true'><svg viewBox='0 0 24 24'>{glyph}</svg></span>"
 
 
 def _entry_stop_summary(signal) -> str:
@@ -1520,7 +1524,7 @@ def render_terminal_hero(
         <div class='terminal-hero'>
           <div class='terminal-top'>
             <div class='brand-row'>
-              {ui_icon('spark', 'blue', 'lg')}
+              {ui_icon('prophet', 'blue', 'lg')}
               <div class='label-stack'>
                 <div class='brand-title'>SPY Prophet</div>
                 <div class='brand-tagline'>When structure determines foresight...</div>

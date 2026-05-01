@@ -22,6 +22,12 @@ def test_ui_icon_markup():
     assert "<svg" in m and "aria-hidden='true'" in m
 
 
+def test_brand_icon_has_unique_mark_class():
+    m = ui_icon('prophet', 'blue', 'lg')
+    assert "brand-mark" in m
+    assert "M3 12s3.2-5.5" in m
+
+
 def test_display_anchor_source_uses_pivot_price():
     line = DynamicLine("UA", 719.78, None, 0.103, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
     assert display_anchor_source(line) == "High pivot 719.78"
