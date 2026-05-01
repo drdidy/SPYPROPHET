@@ -310,6 +310,8 @@ def project_lines(lines: list[DynamicLine], current_dt: datetime, current_price:
         dist = line.distance_from_price(current_price, current_dt, use_tradable_value=True) if current_price is not None else float("nan")
         records.append({
             "name": line.name,
+            "level": display_line_name(line.name),
+            "role": display_line_description(line.name),
             "raw_projected_value": raw,
             "tradable_value": tradable,
             "distance": dist,
@@ -414,7 +416,7 @@ def determine_preopen_bias(lines: list[DynamicLine], current_price: float, curre
     ld_v = ld.tradable_value_at(now) if ld else float("nan")
 
     if ua is None or ud is None or pd.isna(ua_v) or pd.isna(ud_v):
-        return BiasState("UNKNOWN", current_price, now, [], [], None, None, 0.0, "Missing UA/UD structure; cannot determine bias safely.", ua_v, ud_v, la_v, ld_v)
+        return BiasState("UNKNOWN", current_price, now, [], [], None, None, 0.0, "Missing upper trade structure; cannot determine bias safely.", ua_v, ud_v, la_v, ld_v)
 
     preopen = now.time() < time(9, 0)
     top, bot = max(ua_v, ud_v), min(ua_v, ud_v)
@@ -423,17 +425,17 @@ def determine_preopen_bias(lines: list[DynamicLine], current_price: float, curre
         bias = "BULLISH" if preopen else "REGULAR_SESSION"
         watched_call, watched_put = ["UA", "UD"], []
         primary, tp = "UD", None
-        expl = "Price is above the upper structure; primary CALL watch is UD descending support." if preopen else "Regular session posture: above upper structure; pre-open mode no longer active."
+        expl = "Price is above the upper structure; primary CALL watch is the Upper Call Trigger." if preopen else "Regular session posture: above upper structure; pre-open mode no longer active."
     elif bot <= current_price <= top:
         bias = "NEUTRAL" if preopen else "REGULAR_SESSION"
         watched_call, watched_put = ["UD"], ["UA"]
         primary, tp = "UD", "UA"
-        expl = "Price is inside the upper channel; both sides are active between UD and UA." if preopen else "Regular session posture: price remains in upper channel; pre-open mode no longer active."
+        expl = "Price is inside the upper channel; both call and put triggers are active." if preopen else "Regular session posture: price remains in upper channel; pre-open mode no longer active."
     else:
         bias = "BEARISH" if preopen else "REGULAR_SESSION"
         watched_call, watched_put = ["LD"], ["LA"]
         primary, tp = "LD", "LA"
-        expl = "Price is below the upper channel; lower structure LA/LD is more important." if preopen else "Regular session posture: below upper channel, monitoring lower structure; pre-open mode no longer active."
+        expl = "Price is below the upper channel; lower call and put triggers are more important." if preopen else "Regular session posture: below upper channel, monitoring lower structure; pre-open mode no longer active."
 
     score = calculate_bias_strength(current_price, ua_v, ud_v, bias)
     return BiasState(bias, current_price, now, watched_call, watched_put, primary, tp, score, expl, ua_v, ud_v, la_v, ld_v)
@@ -533,7 +535,7 @@ def build_trade_signal_from_rejection(signal_type: str, line: DynamicLine, rejec
     risk, reward, rr = calculate_signal_risk_reward(signal_type, entry_price, stop_price, target_price)
     lv = line.tradable_value_at(rejection_time)
     sid = f"{signal_type}_{line.name}_{rejection_time.isoformat()}"
-    expl = f"{signal_type} rejection at {line.name}; candle rejected tradable line and {'confirmed by next open' if confirmed else 'awaiting next candle confirmation'}"
+    expl = f"{signal_type} rejection at {display_line_name(line.name)}; candle rejected tradable line and {'confirmed by next open' if confirmed else 'awaiting next candle confirmation'}"
     if target_name is None:
         expl += "; no structural target found in trade direction"
     return TradeSignal(sid, signal_type, status, line.name, float(lv), rejection_time, float(rejection_row['Open']), float(rejection_row['High']), float(rejection_row['Low']), float(rejection_row['Close']), entry_time, entry_price, stop_price, target_name, target_price, risk, reward, rr, "Move to breakeven after +$0.50 favorable SPY move.", expl)
@@ -911,9 +913,10 @@ def inject_global_css() -> None:
     .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
     .pill{border:1px solid var(--border);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.78rem;background:rgba(255,255,255,.03)}
     .pill.green{border-color:rgba(33,208,122,.55);color:var(--green)} .pill.red{border-color:rgba(255,95,124,.55);color:var(--red)} .pill.amber{border-color:rgba(244,199,107,.55);color:var(--amber)} .pill.blue{border-color:rgba(103,183,255,.55);color:var(--blue)}
-    .quote-stack{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .quote-stack{display:grid;grid-template-columns:1fr;gap:8px}
     .quote-mini{border:1px solid var(--border);border-radius:8px;padding:10px;background:rgba(255,255,255,.035)}
     .quote-value{font-family:Consolas,monospace;font-size:1.35rem;font-weight:800;color:var(--text)}
+    .quote-level{display:block;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:1rem;line-height:1.2;white-space:normal}
     .terminal-section{margin-top:14px}
     .command-grid{display:grid;grid-template-columns:1.15fr .95fr .9fr;gap:14px}
     .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.18)}
@@ -1049,14 +1052,39 @@ def _humanize(value: str | None) -> str:
 def display_line_name(name: str | None) -> str:
     if not name:
         return "-"
-    primary = {"UA":"Upper anchor", "UD":"Upper decision", "LA":"Lower anchor", "LD":"Lower decision"}
+    primary = {
+        "UA": "Upper Put Trigger",
+        "UD": "Upper Call Trigger",
+        "LA": "Lower Put Trigger",
+        "LD": "Lower Call Trigger",
+    }
     if name in primary:
         return primary[name]
     if str(name).startswith("S_ASC"):
-        return "Nearest lower target"
+        return "Lower Target"
     if str(name).startswith("S_DESC"):
-        return "Nearest upper target"
+        return "Upper Target"
     return _humanize(name)
+
+
+def display_line_description(name: str | None) -> str:
+    descriptions = {
+        "UA": "PUT watch from the prior-session high",
+        "UD": "CALL watch from the prior-session high",
+        "LA": "PUT watch from the prior-session low",
+        "LD": "CALL watch from the prior-session low",
+    }
+    if not name:
+        return "-"
+    if name in descriptions:
+        return descriptions[name]
+    if str(name).startswith("S_ASC") or str(name).startswith("S_DESC"):
+        return "Target-only structure"
+    return _humanize(name)
+
+
+def display_line_list(names: list[str] | tuple[str, ...] | None) -> str:
+    return ", ".join(display_line_name(name) for name in names or []) or "-"
 
 
 def _pill(label: str, value: str | None, tone: str | None = None) -> str:
@@ -1074,7 +1102,7 @@ def _entry_stop_summary(signal) -> str:
     if signal.stop_price is not None and not pd.isna(signal.stop_price):
         pieces.append(f"Stop {fmt_price(signal.stop_price)}.")
     if signal.target_line_name:
-        pieces.append(f"Target {_humanize(signal.target_line_name)} {fmt_price(signal.target_price)}.")
+        pieces.append(f"Target {display_line_name(signal.target_line_name)} {fmt_price(signal.target_price)}.")
     return " ".join(pieces)
 
 
@@ -1102,7 +1130,7 @@ def render_terminal_hero(
     action = _humanize(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
     signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
     closest_value = closest_line.tradable_value_at(now_ct) if closest_line else None
-    closest_text = f"{closest_line.name} {fmt_price(closest_value)}" if closest_line else "-"
+    closest_text = f"<span class='quote-level'>{display_line_name(closest_line.name)}</span>{fmt_price(closest_value)}" if closest_line else "-"
     call_text = f"C {selected_strikes.call_strike}" if selected_strikes else "C -"
     put_text = f"P {selected_strikes.put_strike}" if selected_strikes else "P -"
     st.markdown(
@@ -1170,15 +1198,15 @@ def render_live_command_center(
     signal_body = "Waiting for an hourly rejection at primary structure."
     signal_title = "No confirmed signal"
     if latest_signal:
-        signal_title = f"{latest_signal.signal_type} at {latest_signal.line_name}"
+        signal_title = f"{latest_signal.signal_type} at {display_line_name(latest_signal.line_name)}"
         signal_body = _entry_stop_summary(latest_signal)
 
     call_mark = fmt_price(options_state.call_quote.mark) if options_state and options_state.call_quote else "-"
     put_mark = fmt_price(options_state.put_quote.mark) if options_state and options_state.put_quote else "-"
     projection = options_state.entry_target_projection if options_state else None
     projection_text = (
-        f"Entry {_humanize(projection.entry_line_name)} at {fmt_price(projection.entry_line_value)}; "
-        f"target {_humanize(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
+        f"Entry {display_line_name(projection.entry_line_name)} at {fmt_price(projection.entry_line_value)}; "
+        f"target {display_line_name(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
         if projection else "Projection appears after a trade direction resolves."
     )
 
@@ -1191,7 +1219,7 @@ def render_live_command_center(
             <div class='panel-copy'>{bias_state.explanation if bias_state else 'Load SPY candles to calculate primary structure.'}</div>
             <div class='pill-row'>
               {_pill('Strength', fmt_float(bias_state.strength_score) if bias_state else '-')}
-              {_pill('Watch', ', '.join(watch_lines) if watch_lines else '-')}
+              {_pill('Watch', display_line_list(watch_lines))}
               {_pill('Price', fmt_price(latest_price))}
             </div>
           </div>
@@ -1234,10 +1262,10 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) ->
         tiles.append(
             f"<div class='structure-tile {kind}{closest_cls}'>"
             f"<div class='tile-label'>{line.zone_type.replace('_', ' ')}</div>"
-            f"<div class='tile-name'>{name}</div>"
+            f"<div class='tile-name'>{display_line_name(name)}</div>"
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>raw {fmt_float(raw_value, 3)} | dist {fmt_float(distance)}</div>"
-            f"<div class='tile-meta'>{line.direction} | {line.description}</div>"
+            f"<div class='tile-meta'>{display_line_description(name)}</div>"
             "</div>"
         )
     if tiles:
@@ -1262,13 +1290,14 @@ def make_line_trace(line: DynamicLine, xvals, name: str, current_dt: pd.Timestam
     ys=[line.tradable_value_at(x) for x in xvals]
     raw=[line.raw_value_at(x) for x in xvals]
     color = '#2dd4bf' if line.zone_type=='CALL_ZONE' else '#fb7185' if line.zone_type=='PUT_ZONE' else '#94a3b8'
-    return go.Scatter(x=xvals,y=ys,mode='lines',name=name,line=dict(color=color,width=width,dash=dash),opacity=opacity,customdata=raw,hovertemplate=f"{name}<br>Tradable=%{{y:.2f}}<br>Raw=%{{customdata:.3f}}<extra></extra>")
+    label = display_line_name(name)
+    return go.Scatter(x=xvals,y=ys,mode='lines',name=label,line=dict(color=color,width=width,dash=dash),opacity=opacity,customdata=raw,hovertemplate=f"{label}<br>Tradable=%{{y:.2f}}<br>Raw=%{{customdata:.3f}}<extra></extra>")
 
 
 def make_glow_line_trace(line: DynamicLine, xvals, name: str):
     ys=[line.tradable_value_at(x) for x in xvals]
     color = 'rgba(45,212,191,0.25)' if line.zone_type=='CALL_ZONE' else 'rgba(251,113,133,0.25)'
-    return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{name}_glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
+    return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{display_line_name(name)} glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
 
 
 def render_plotly_html(fig: go.Figure, height: int = 780, display_mode_bar: bool = True) -> None:
@@ -1316,7 +1345,7 @@ def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, 
         s_lines = select_secondary_lines_for_chart(secondary_lines, current_price if current_price is not None else float('nan'), pd.Timestamp(current_dt), secondary_mode)
         plotted_secondary=s_lines
         for line in s_lines:
-            fig.add_trace(make_line_trace(line,xvals,f"{line.name} TARGET ONLY",current_dt,width=1,dash='dash',opacity=0.55))
+            fig.add_trace(make_line_trace(line,xvals,f"{display_line_name(line.name)} target",current_dt,width=1,dash='dash',opacity=0.55))
     if show_pivots:
         if high_pivot and high_pivot.timestamp is not None and not pd.isna(high_pivot.price): fig.add_trace(go.Scatter(x=[high_pivot.timestamp],y=[high_pivot.price],mode='markers+text',text=['High Pivot'],textposition='top center',marker=dict(color='#f97316',size=9),name='High Pivot'))
         if low_pivot and low_pivot.timestamp is not None and not pd.isna(low_pivot.price): fig.add_trace(go.Scatter(x=[low_pivot.timestamp],y=[low_pivot.price],mode='markers+text',text=['Low Pivot'],textposition='bottom center',marker=dict(color='#38bdf8',size=9),name='Low Pivot'))
@@ -1333,7 +1362,7 @@ def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, 
         fig.add_hline(y=current_price,line_dash='dot',line_color='#cbd5e1',annotation_text=f"SPY {current_price:.2f}")
     if closest:
         cv = closest.tradable_value_at(current_dt); d = current_price-cv if current_price is not None and not pd.isna(cv) else float('nan')
-        fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {closest.name} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(color='#e2e8f0',size=11),align='right')
+        fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {display_line_name(closest.name)} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(color='#e2e8f0',size=11),align='right')
     add_decision_overlay(fig, decision_state)
     fig.update_layout(height=780, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=20), legend=dict(orientation='h'))
     fig.update_xaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)'); fig.update_yaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)')
@@ -1363,14 +1392,15 @@ def build_structure_path_chart(candles_df, primary_lines, secondary_lines, signa
     xvals = list(df.index)
     if current_dt is not None and pd.Timestamp(current_dt) > xvals[-1]:
         xvals.append(pd.Timestamp(current_dt))
-    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "UD"), get_line_by_name(primary_lines, "UA"), "Upper decision zone", "rgba(103,183,255,0.12)")
-    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "LD"), get_line_by_name(primary_lines, "LA"), "Lower decision zone", "rgba(255,95,124,0.10)")
+    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "UD"), get_line_by_name(primary_lines, "UA"), "Upper trade zone", "rgba(103,183,255,0.12)")
+    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "LD"), get_line_by_name(primary_lines, "LA"), "Lower trade zone", "rgba(255,95,124,0.10)")
     fig.add_trace(go.Scatter(x=df.index, y=df[close_col], mode="lines+markers", line=dict(color="#f4f7fb", width=3), marker=dict(size=5, color="#f4f7fb"), name="SPY path", hovertemplate="SPY %{y:.2f}<br>%{x|%b %d %I:%M %p}<extra></extra>"))
     closest = get_closest_primary_line(primary_lines, current_dt, current_price) if current_price is not None and not pd.isna(current_price) else None
     for line in primary_lines:
         color = "#21d07a" if line.zone_type == "CALL_ZONE" else "#ff5f7c" if line.zone_type == "PUT_ZONE" else "#67b7ff"
         width = 4 if closest and closest.name == line.name else 2
-        fig.add_trace(go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(color=color, width=width), name=f"{line.name}: {display_line_name(line.name)}", hovertemplate=f"{line.name}<br>%{{y:.2f}}<extra></extra>"))
+        label = display_line_name(line.name)
+        fig.add_trace(go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(color=color, width=width), name=label, hovertemplate=f"{label}<br>%{{y:.2f}}<extra></extra>"))
     for line in select_secondary_lines_for_chart(secondary_lines, current_price if current_price is not None else float("nan"), pd.Timestamp(current_dt), secondary_mode):
         fig.add_trace(go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(color="#8da0b8", width=1, dash="dot"), opacity=0.55, name=display_line_name(line.name), hovertemplate=f"{display_line_name(line.name)}<br>%{{y:.2f}}<extra></extra>"))
     active_signal = get_latest_active_signal(signals, df)
@@ -1400,7 +1430,7 @@ def render_chart_brief(current_price, closest_line, active_signal, decision_stat
     signal_text = f"{active_signal.signal_type} {_humanize(active_signal.status)}" if active_signal else "No active signal"
     cards = [
         ("Current SPY", fmt_price(current_price), "Live price context"),
-        ("Closest Structure", f"{closest_line.name} {fmt_price(closest_value)}" if closest_line else "-", display_line_name(closest_line.name) if closest_line else "Waiting"),
+        ("Closest Structure", f"{display_line_name(closest_line.name)} {fmt_price(closest_value)}" if closest_line else "-", display_line_description(closest_line.name) if closest_line else "Waiting"),
         ("Signal State", signal_text, display_line_name(active_signal.line_name) if active_signal else "Waiting for rejection"),
         ("Decision", _humanize(decision_state.final_decision) if decision_state else "WAIT", _humanize(decision_state.signal_quality.grade) if decision_state and decision_state.signal_quality else "No grade yet"),
     ]
@@ -1774,9 +1804,11 @@ def main() -> None:
         st.caption("Technical structure tables for primary and secondary levels.")
         render_section_title("Structure Map", "Primary and secondary projected structure")
         if not proj_df.empty:
-            st.dataframe(proj_df[proj_df['is_primary']==True][["name","tradable_value","distance","direction","zone_type","anchor_price","anchor_time"]])
-            st.dataframe(proj_df[proj_df['is_primary']==False][["name","tradable_value","distance","direction","zone_type","anchor_price","anchor_time"]])
-            st.caption("Legend: Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary lines = target only")
+            primary_view = proj_df[proj_df['is_primary']==True][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
+            secondary_view = proj_df[proj_df['is_primary']==False][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
+            st.dataframe(primary_view, use_container_width=True)
+            st.dataframe(secondary_view, use_container_width=True)
+            st.caption("CALL triggers use descending structure. PUT triggers use ascending structure. Secondary levels are target-only structure.")
 
     with tabs[2]:
         render_section_title("Prophet Chart", "Decision map, then advanced candle detail")
@@ -1820,7 +1852,21 @@ def main() -> None:
             if q.strengths:
                 st.success(", ".join(q.strengths).replace("_", " ").title())
         if signals:
-            st.dataframe(pd.DataFrame([asdict(sg) for sg in signals[-5:]])[["signal_id","signal_type","status","line_name","rejection_time","entry_time","entry_price","stop_price","target_line_name","target_price","rr_ratio"]])
+            signal_rows = []
+            for sg in signals[-5:]:
+                signal_rows.append({
+                    "type": sg.signal_type,
+                    "status": _humanize(sg.status),
+                    "trigger": display_line_name(sg.line_name),
+                    "rejection_time": sg.rejection_time,
+                    "entry_time": sg.entry_time,
+                    "entry_price": sg.entry_price,
+                    "stop_price": sg.stop_price,
+                    "target": display_line_name(sg.target_line_name),
+                    "target_price": sg.target_price,
+                    "rr_ratio": sg.rr_ratio,
+                })
+            st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
         st.caption("CALL rejection: red candle rejects descending line from above. PUT rejection: green candle rejects ascending line from below. Entry is next candle open.")
 
     with tabs[4]:
@@ -1912,21 +1958,21 @@ def main() -> None:
         if not bias:
             st.write("Prophet Read: Waiting for structure.")
         else:
-            render_status_strip([("Bias", bias.bias), ("Primary watch", bias.primary_line)])
+            render_status_strip([("Bias", bias.bias), ("Primary watch", display_line_name(bias.primary_line))])
             if decision_state and decision_state.signal_quality:
                 render_status_strip([("Decision", decision_state.final_decision), ("Quality", f"{decision_state.signal_quality.grade} ({decision_state.signal_quality.score:.1f})")])
                 if decision_state.guardrail_state.chase_warning: st.warning(decision_state.guardrail_state.chase_warning)
                 if decision_state.guardrail_state.retest_status != "NONE": st.info(f"Retest: {decision_state.guardrail_state.retest_status}")
                 if decision_state.guardrail_state.structure_warning: st.error(decision_state.guardrail_state.structure_warning)
             if not active_signal:
-                st.write(f"Trigger Needed: Waiting for hourly rejection at {', '.join(bias.watched_call_lines + bias.watched_put_lines)}.")
+                st.write(f"Trigger Needed: Waiting for hourly rejection at {display_line_list(bias.watched_call_lines + bias.watched_put_lines)}.")
             else:
                 ls=active_signal
                 if ls.status=="PENDING_CONFIRMATION":
                     st.write(f"Trigger Needed: Pending {ls.signal_type} confirmation on next candle open.")
                 else:
-                    st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {ls.target_price}.")
-                st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
+                    st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {display_line_name(ls.target_line_name)} at {fmt_price(ls.target_price)}.")
+                st.write(f"Final Destination: {display_line_name(ls.target_line_name)}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
                 if strikes:
                     ps = option_state or build_options_cockpit_state(strikes, latest_signal=active_signal, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
                     if ps.selected_trade_quote:
@@ -1972,7 +2018,15 @@ def main() -> None:
             ("Avg RR", a.average_rr),
             ("Expectancy", fmt_price(a.expectancy_per_contract)),
         ])
-        st.dataframe(pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50))
+        journal_view = pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50)
+        if not journal_view.empty:
+            if "line_name" in journal_view.columns:
+                journal_view["trigger"] = journal_view["line_name"].map(display_line_name)
+                journal_view = journal_view.drop(columns=["line_name"])
+            if "target_line_name" in journal_view.columns:
+                journal_view["target"] = journal_view["target_line_name"].map(display_line_name)
+                journal_view = journal_view.drop(columns=["target_line_name"])
+        st.dataframe(journal_view, use_container_width=True)
         if show_debug:
             st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         for ins in generate_journal_insights(a): st.info(ins)

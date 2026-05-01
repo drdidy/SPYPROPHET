@@ -34,8 +34,8 @@ def test_basic_chart_and_tradable_values():
     fig=build_prophet_chart(df, lines, [], Pivot("H",101,_ts("2026-04-28T11:00:00"),"x","green",False), Pivot("L",99,_ts("2026-04-28T10:00:00"),"x","red",False), [], [], None, 101.2, _ts("2026-04-28T12:00:00"))
     names=[t.name for t in fig.data]
     assert any(n=="SPY" for n in names)
-    assert all(any(n.startswith(x) for n in names) for x in ["UA","UD","LA","LD"])
-    ua_trace = [t for t in fig.data if t.name=="UA"][0]
+    assert all(x in names for x in ["Upper Put Trigger","Upper Call Trigger","Lower Put Trigger","Lower Call Trigger"])
+    ua_trace = [t for t in fig.data if t.name=="Upper Put Trigger"][0]
     assert all(abs(y-100.0)<1e-9 for y in ua_trace.y)  # tradable rounds 100.004 -> 100.00
 
 
@@ -58,6 +58,6 @@ def test_structure_path_chart_novice_view():
     fig=build_structure_path_chart(df, lines, [], [], None, 101.2, _ts("2026-04-28T12:00:00"))
     names=[t.name for t in fig.data]
     assert "SPY path" in names
-    assert "Upper decision zone" in names
-    assert any(str(n).startswith("UA:") for n in names)
+    assert "Upper trade zone" in names
+    assert "Upper Put Trigger" in names
     assert fig.layout.height == 620
