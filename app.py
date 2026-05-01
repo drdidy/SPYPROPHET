@@ -1120,8 +1120,8 @@ def inject_global_css() -> None:
     button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
     .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#0c1421,#101b2b 58%,#0b1019);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
     .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
-    .brand-mark{font-size:.72rem;letter-spacing:.18em;color:var(--blue);text-transform:uppercase}
-    .brand-title{font-size:1.8rem;font-weight:800;color:var(--text);line-height:1.1;margin-top:4px}
+    .brand-title{font-size:2.45rem;font-weight:950;color:var(--text);line-height:1;letter-spacing:0}
+    .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
     .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
     .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:14px;margin-top:16px}
     .hero-price{font-family:Consolas,monospace;font-size:3rem;font-weight:800;color:var(--text);line-height:1}
@@ -1443,8 +1443,8 @@ def render_terminal_hero(
         <div class='terminal-hero'>
           <div class='terminal-top'>
             <div>
-              <div class='brand-mark'>SPY Prophet</div>
-              <div class='brand-title'>0DTE Structure Terminal</div>
+              <div class='brand-title'>SPY Prophet</div>
+              <div class='brand-tagline'>When structure determines foresight...</div>
             </div>
             <div class='market-clock'>
               <div>{clock}</div>
