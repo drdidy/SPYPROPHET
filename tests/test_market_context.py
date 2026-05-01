@@ -15,6 +15,7 @@ from app import (
     classify_news_relevance,
     get_central_tz,
     get_upcoming_economic_events,
+    is_fresh_for_0dte,
     is_market_news_relevant,
     load_economic_calendar,
     make_journal_id,
@@ -79,6 +80,7 @@ def test_parse_rss_items_and_relevance() -> None:
     assert classify_news_relevance("VIX jumps as Treasury yields rise") == "Volatility watch"
     assert is_market_news_relevant("VIX jumps as Treasury yields rise")
     assert not is_market_news_relevant("Why paying off your mortgage could cost more than investing")
+    assert not is_market_news_relevant("If I had invested my Social Security in the S&P 500")
 
 
 def test_reliable_news_feeds_include_official_and_market_sources() -> None:
@@ -88,6 +90,15 @@ def test_reliable_news_feeds_include_official_and_market_sources() -> None:
     assert "CNBC Markets" in sources
     assert "MarketWatch Top Stories" in sources
     assert "Yahoo Finance SPY" in sources
+
+
+def test_0dte_news_freshness_accepts_today_and_previous_day_only() -> None:
+    now = _ts("2026-05-01T07:00:00")
+
+    assert is_fresh_for_0dte(_ts("2026-05-01T06:30:00"), now)
+    assert is_fresh_for_0dte(_ts("2026-04-30T15:30:00"), now)
+    assert not is_fresh_for_0dte(_ts("2026-04-29T15:30:00"), now)
+    assert not is_fresh_for_0dte(None, now)
 
 
 def test_economic_calendar_loads_and_filters(tmp_path) -> None:
@@ -107,6 +118,22 @@ def test_economic_calendar_loads_and_filters(tmp_path) -> None:
     assert len(events) == 2
     assert len(upcoming) == 1
     assert upcoming[0].event == "Jobs report"
+
+
+def test_economic_calendar_can_focus_on_today_only(tmp_path) -> None:
+    path = tmp_path / "calendar.json"
+    path.write_text(
+        """
+        {"events": [
+          {"date": "2026-05-01", "time": "8:30 AM ET", "event": "Jobs report", "impact": "High"},
+          {"date": "2026-05-02", "time": "10:00 AM ET", "event": "Consumer sentiment", "impact": "Medium"}
+        ]}
+        """
+    )
+
+    upcoming = get_upcoming_economic_events(_ts("2026-05-01T07:00:00"), days=0, path=str(path))
+
+    assert [event.event for event in upcoming] == ["Jobs report"]
 
 
 def test_economic_calendar_does_not_create_generic_events(tmp_path, monkeypatch) -> None:

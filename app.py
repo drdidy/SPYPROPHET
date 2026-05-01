@@ -47,6 +47,7 @@ ECONOMIC_CALENDAR_PATH = "data/economic_calendar.json"
 REPLAY_LEARNING_DAYS = 45
 TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
 MORNING_BRIEFING_PATH = "data/morning_briefings.json"
+MORNING_BRIEFING_NEWS_MAX_AGE_DAYS = 1
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_WEB_SEARCH_DEFAULT = "true"
@@ -434,13 +435,16 @@ def is_market_news_relevant(title: str, summary: str | None = None) -> bool:
         "treasury", "yield", "rate cut", "rate hike", "nasdaq", "dow", "russell",
     ]
     weak_terms = ["stocks", "equities", "earnings", "oil", "dollar", "risk-on", "risk off"]
-    personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance"]
+    personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance", "social security"]
+    stale_investor_terms = ["if i had invested", "turn $", "turned $", "portfolio over"]
     title_market_terms = ["spy", "s&p", "spdr", "vix", "stock", "equity", "futures", "fed", "cpi", "pce", "yield", "rate"]
     if any(term in title_text for term in personal_finance_terms) and not any(term in title_text for term in title_market_terms):
         return False
     strong_score = sum(1 for term in strong_terms if term in text)
     weak_score = sum(1 for term in weak_terms if term in text)
     if any(term in text for term in personal_finance_terms) and strong_score == 0:
+        return False
+    if any(term in text for term in stale_investor_terms):
         return False
     return strong_score > 0 or weak_score >= 2
 
@@ -513,8 +517,26 @@ def news_sort_key(item: NewsItem) -> tuple[int, int, pd.Timestamp]:
     return relevance_rank, official_rank, -published.value
 
 
+def is_fresh_for_0dte(published, now_ct=None, max_age_days: int = MORNING_BRIEFING_NEWS_MAX_AGE_DAYS) -> bool:
+    if published is None:
+        return False
+    try:
+        ts = pd.Timestamp(published)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+        ct = get_central_tz()
+        pub_date = ts.tz_convert(ct).date()
+        now_ts = pd.Timestamp(now_ct if now_ct is not None else datetime.now(tz=ct))
+        now_ts = now_ts.tz_localize(ct) if now_ts.tzinfo is None else now_ts.tz_convert(ct)
+        today = now_ts.date()
+    except Exception:
+        return False
+    earliest = (pd.Timestamp(today) - pd.Timedelta(days=max_age_days)).date()
+    return earliest <= pub_date <= today
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_market_news(limit: int = 8) -> list[NewsItem]:
+    now_ct = datetime.now(tz=get_central_tz())
     results: list[NewsItem] = []
     seen: set[str] = set()
     for source, url in NEWS_RSS_FEEDS:
@@ -524,6 +546,8 @@ def fetch_market_news(limit: int = 8) -> list[NewsItem]:
         except Exception:
             continue
         for item in parse_rss_items(response.text, source, limit=max(limit, 6)):
+            if not is_fresh_for_0dte(item.published, now_ct):
+                continue
             if not is_market_news_relevant(item.title, item.summary):
                 continue
             key = item.link or item.title
@@ -933,9 +957,9 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
     news_detail = (
-        f"{len(news_items)} market headlines loaded from {', '.join(news_sources)}."
+        f"{len(news_items)} fresh 0DTE headlines loaded from {', '.join(news_sources)}; only today or previous-day items are included."
         if news_items
-        else f"No market headlines loaded from {len(NEWS_RSS_FEEDS)} configured public feeds."
+        else f"No same-day or previous-day market headlines loaded from {len(NEWS_RSS_FEEDS)} configured public feeds."
     )
     source_statuses.append(source_status("Market news", bool(news_items), news_detail))
     return MorningBriefingBundle(
@@ -965,6 +989,7 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     return (
         "You are the Morning Briefing Agent inside SPY Prophet. Produce a concise premium premarket briefing for 0DTE SPY options.\n"
         "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
+        "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
@@ -4447,7 +4472,7 @@ def main() -> None:
     replay_learning_entries = build_replay_learning_entries(df, max_days=REPLAY_LEARNING_DAYS, slope_per_hour=slope)
     learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
     news_items = fetch_market_news(limit=8)
-    economic_events = get_upcoming_economic_events(now_ct, days=7)
+    economic_events = get_upcoming_economic_events(now_ct, days=0)
     morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
 
     if show_debug:
