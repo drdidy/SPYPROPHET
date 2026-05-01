@@ -2322,7 +2322,7 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     scenarios = simulate_option_scenarios(sel) if quote_has_projection_inputs(sel) else []
     proj=None; warning=q.get("warning")
     if missing_market_data:
-        warning = 'Tastytrade returned contracts, but bid/ask/delta were not in the chain response. Live quote streaming is required for option bid/ask/spread/delta.'
+        warning = q.get("warning") or 'Tastytrade found the contracts, but Live quote streaming has not returned bid/ask/Greeks yet.'
     if sel and all_lines:
         entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
         if entry and quote_has_projection_inputs(sel):
