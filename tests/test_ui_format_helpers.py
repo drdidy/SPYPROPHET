@@ -1,4 +1,4 @@
-from app import display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge
+from app import display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, ui_icon
 
 
 def test_fmt_helpers():
@@ -14,6 +14,12 @@ def test_safe_to_dict_redacts():
 def test_render_badge_markup():
     m = render_badge('CALL','call')
     assert 'badge-call' in m and 'CALL' in m
+
+
+def test_ui_icon_markup():
+    m = ui_icon('target', 'amber', 'lg')
+    assert "ui-icon amber lg" in m
+    assert "<svg" in m and "aria-hidden='true'" in m
 
 
 def test_display_line_names_are_product_facing():

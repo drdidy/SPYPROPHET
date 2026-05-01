@@ -1120,10 +1120,24 @@ def inject_global_css() -> None:
     button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
     .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#0c1421,#101b2b 58%,#0b1019);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
     .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
+    .brand-row,.panel-head,.quote-head,.tile-head,.hero-price-row{display:flex;align-items:center;gap:12px}
+    .brand-row{gap:14px}
+    .panel-head,.quote-head,.tile-head{justify-content:space-between}
+    .ui-icon{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:46px;height:46px;border-radius:8px;border:1px solid rgba(141,160,184,.22);background:rgba(255,255,255,.04);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)}
+    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+    .ui-icon.lg{width:62px;height:62px}
+    .ui-icon.md{width:50px;height:50px}
+    .ui-icon.sm{width:42px;height:42px}
+    .ui-icon.blue{color:var(--blue);background:rgba(103,183,255,.12);border-color:rgba(103,183,255,.34)}
+    .ui-icon.green{color:var(--green);background:rgba(33,208,122,.12);border-color:rgba(33,208,122,.34)}
+    .ui-icon.red{color:var(--red);background:rgba(255,95,124,.12);border-color:rgba(255,95,124,.34)}
+    .ui-icon.amber{color:var(--amber);background:rgba(244,199,107,.12);border-color:rgba(244,199,107,.34)}
+    .label-stack{min-width:0}
     .brand-title{font-size:2.45rem;font-weight:950;color:var(--text);line-height:1;letter-spacing:0}
     .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
     .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
     .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:14px;margin-top:16px}
+    .hero-price-row{align-items:flex-start}
     .hero-price{font-family:Consolas,monospace;font-size:3rem;font-weight:800;color:var(--text);line-height:1}
     .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .hero-sub{margin-top:8px;color:var(--muted);font-size:.86rem}
@@ -1175,6 +1189,7 @@ def inject_global_css() -> None:
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
     @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid{grid-template-columns:1fr}.ui-icon.lg{width:54px;height:54px}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1320,6 +1335,22 @@ def _pill(label: str, value: str | None, tone: str | None = None) -> str:
     return f"<span class='pill {tone or _tone_for_text(value)}'>{label}: {value or '-'}</span>"
 
 
+def ui_icon(name: str, tone: str = "blue", size: str = "md") -> str:
+    icons = {
+        "spark": "<path d='M12 2v5'/><path d='M12 17v5'/><path d='M2 12h5'/><path d='M17 12h5'/><path d='m5 5 3.5 3.5'/><path d='m15.5 15.5L19 19'/><path d='m19 5-3.5 3.5'/><path d='m8.5 15.5L5 19'/>",
+        "pulse": "<path d='M3 12h4l2-6 4 12 2-6h6'/><path d='M5 20h14'/>",
+        "compass": "<circle cx='12' cy='12' r='9'/><path d='m15.5 8.5-2.2 4.8-4.8 2.2 2.2-4.8 4.8-2.2z'/>",
+        "bolt": "<path d='M13 2 4 14h7l-1 8 10-13h-7l1-7z'/>",
+        "target": "<circle cx='12' cy='12' r='9'/><circle cx='12' cy='12' r='5'/><path d='M12 7v10'/><path d='M7 12h10'/>",
+        "contract": "<path d='M7 3h7l4 4v14H7z'/><path d='M14 3v5h4'/><path d='M9.5 12h5'/><path d='M9.5 16h5'/>",
+        "shield": "<path d='M12 3 5 6v5c0 4.2 2.8 7.8 7 10 4.2-2.2 7-5.8 7-10V6z'/><path d='M9 12l2 2 4-4'/>",
+        "call": "<path d='M4 17 17 4'/><path d='M9 4h8v8'/><path d='M4 21h16'/>",
+        "put": "<path d='M4 7l13 13'/><path d='M17 12v8H9'/><path d='M4 3h16'/>",
+    }
+    glyph = icons.get(name, icons["spark"])
+    return f"<span class='ui-icon {tone} {size}' aria-hidden='true'><svg viewBox='0 0 24 24'>{glyph}</svg></span>"
+
+
 def _entry_stop_summary(signal) -> str:
     if signal is None:
         return ""
@@ -1442,9 +1473,12 @@ def render_terminal_hero(
         f"""
         <div class='terminal-hero'>
           <div class='terminal-top'>
-            <div>
-              <div class='brand-title'>SPY Prophet</div>
-              <div class='brand-tagline'>When structure determines foresight...</div>
+            <div class='brand-row'>
+              {ui_icon('spark', 'blue', 'lg')}
+              <div class='label-stack'>
+                <div class='brand-title'>SPY Prophet</div>
+                <div class='brand-tagline'>When structure determines foresight...</div>
+              </div>
             </div>
             <div class='market-clock'>
               <div>{clock}</div>
@@ -1453,15 +1487,25 @@ def render_terminal_hero(
           </div>
           <div class='hero-grid'>
             <div>
-              <div class='hero-label'>SPY Last</div>
-              <div class='hero-price'>{fmt_price(latest_price)}</div>
+              <div class='hero-price-row'>
+                {ui_icon('pulse', market_context.spy_pressure_tone, 'lg')}
+                <div class='label-stack'>
+                  <div class='hero-label'>SPY Last</div>
+                  <div class='hero-price'>{fmt_price(latest_price)}</div>
+                </div>
+              </div>
               <div class='hero-sub'>Latest candle {latest_candle}</div>
               <div class='hero-intel'>{intel_html}</div>
               <div class='hero-intel'>{anchor_html}</div>
             </div>
             <div class='decision-plate'>
-              <div class='hero-label'>Final Decision</div>
-              <div class='decision-main'>{decision}</div>
+              <div class='panel-head'>
+                <div>
+                  <div class='hero-label'>Final Decision</div>
+                  <div class='decision-main'>{decision}</div>
+                </div>
+                {ui_icon('compass', _tone_for_text(decision), 'lg')}
+              </div>
               <div class='decision-reason'>{decision_reason}</div>
               <div class='pill-row'>
                 {_pill('Bias', bias_state.bias if bias_state else '-')}
@@ -1472,12 +1516,18 @@ def render_terminal_hero(
             </div>
             <div class='quote-stack'>
               <div class='quote-mini'>
-                <div class='hero-label'>Closest</div>
+                <div class='quote-head'>
+                  <div class='hero-label'>Closest</div>
+                  {ui_icon('target', 'amber', 'sm')}
+                </div>
                 <div class='quote-value'>{closest_text}</div>
                 <div class='hero-sub'>Primary structure</div>
               </div>
               <div class='quote-mini'>
-                <div class='hero-label'>0DTE</div>
+                <div class='quote-head'>
+                  <div class='hero-label'>0DTE</div>
+                  {ui_icon('contract', 'green', 'sm')}
+                </div>
                 <div class='quote-value'>{contract_text}</div>
                 <div class='hero-sub'>{provider_status}</div>
               </div>
@@ -1519,13 +1569,21 @@ def render_live_command_center(
         else "Live Tastytrade premiums are not connected yet. Strikes are shown, but no option prices are displayed until quotes are live."
     )
     provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
+    direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
+    setup_tone = _tone_for_text(signal_title)
+    options_tone = "green" if options_live else "amber"
 
     st.markdown(
         f"""
         <div class='terminal-section command-grid'>
           <div class='terminal-panel'>
-            <div class='panel-label'>Direction</div>
-            <div class='panel-title'>{market_read_label(bias_state)}</div>
+            <div class='panel-head'>
+              <div>
+                <div class='panel-label'>Direction</div>
+                <div class='panel-title'>{market_read_label(bias_state)}</div>
+              </div>
+              {ui_icon('compass', direction_tone, 'md')}
+            </div>
             <div class='panel-copy'>{market_read_copy(bias_state)}</div>
             <div class='pill-row'>
               {_pill('Confidence', fmt_float(bias_state.strength_score) if bias_state else '-')}
@@ -1534,8 +1592,13 @@ def render_live_command_center(
             </div>
           </div>
           <div class='terminal-panel'>
-            <div class='panel-label'>Setup</div>
-            <div class='panel-title'>{signal_title}</div>
+            <div class='panel-head'>
+              <div>
+                <div class='panel-label'>Setup</div>
+                <div class='panel-title'>{signal_title}</div>
+              </div>
+              {ui_icon('bolt', setup_tone, 'md')}
+            </div>
             <div class='panel-copy'>{signal_body}</div>
             <div class='pill-row'>
               {_pill('Action', quality_label(quality))}
@@ -1544,8 +1607,13 @@ def render_live_command_center(
             </div>
           </div>
           <div class='terminal-panel'>
-            <div class='panel-label'>Options Data</div>
-            <div class='panel-title'>{format_watch_contract(selected_strikes, latest_signal, bias_state)}</div>
+            <div class='panel-head'>
+              <div>
+                <div class='panel-label'>Options Data</div>
+                <div class='panel-title'>{format_watch_contract(selected_strikes, latest_signal, bias_state)}</div>
+              </div>
+              {ui_icon('shield', options_tone, 'md')}
+            </div>
             <div class='panel-copy'>{options_copy}</div>
             <div class='pill-row'>
               {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
@@ -1567,11 +1635,16 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, st
         value = line.tradable_value_at(now_ct)
         distance = line.distance_from_price(latest_price, now_ct) if latest_price is not None else float("nan")
         kind = "tile-call" if line.zone_type == "CALL_ZONE" else "tile-put" if line.zone_type == "PUT_ZONE" else ""
+        icon_name = "call" if line.zone_type == "CALL_ZONE" else "put" if line.zone_type == "PUT_ZONE" else "target"
+        icon_tone = "green" if line.zone_type == "CALL_ZONE" else "red" if line.zone_type == "PUT_ZONE" else "blue"
         closest_cls = " closest" if closest_line is not None and closest_line.name == name else ""
         tiles.append(
             f"<div class='structure-tile {kind}{closest_cls}'>"
-            f"<div class='tile-label'>{zone_side_label(line.zone_type)}</div>"
-            f"<div class='tile-name'>{display_line_name(name)}</div>"
+            f"<div class='tile-head'>"
+            f"<div class='label-stack'><div class='tile-label'>{zone_side_label(line.zone_type)}</div>"
+            f"<div class='tile-name'>{display_line_name(name)}</div></div>"
+            f"{ui_icon(icon_name, icon_tone, 'sm')}"
+            f"</div>"
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
             f"<div class='tile-meta'>Yahoo structure day {structure_day or '-'}</div>"
