@@ -1108,6 +1108,55 @@ def _entry_stop_summary(signal) -> str:
     return " ".join(pieces)
 
 
+def market_read_label(bias_state) -> str:
+    if not bias_state:
+        return "Waiting for structure"
+    labels = {
+        "BULLISH": "Call-side watch",
+        "BEARISH": "Put-side watch",
+        "NEUTRAL": "Two-sided watch",
+        "REGULAR_SESSION": "Session watch",
+        "UNKNOWN": "Structure unavailable",
+    }
+    return labels.get(bias_state.bias, _humanize(bias_state.bias))
+
+
+def market_read_copy(bias_state) -> str:
+    if not bias_state:
+        return "Load SPY candles to calculate the prior-session structure."
+    if bias_state.bias == "NEUTRAL":
+        return "SPY is between the upper call and put triggers. Wait for a clean hourly rejection before choosing calls or puts."
+    if bias_state.bias == "BULLISH":
+        return "SPY is above the upper structure. Calls are the primary watch if price rejects the Upper Call Trigger."
+    if bias_state.bias == "BEARISH":
+        return "SPY is below the upper structure. Puts are the primary watch if price rejects the Lower Put Trigger."
+    return bias_state.explanation
+
+
+def signal_setup_label(signal) -> str:
+    if signal is None:
+        return "No active setup"
+    status = "forming" if signal.status == "PENDING_CONFIRMATION" else "confirmed"
+    return f"{signal.signal_type} setup {status}"
+
+
+def signal_setup_copy(signal) -> str:
+    if signal is None:
+        return "Waiting for an hourly candle to reject a trade trigger."
+    level = display_line_name(signal.line_name)
+    if signal.status == "PENDING_CONFIRMATION":
+        return f"Price rejected {level}. No trade yet; wait for the next hourly candle open. Stop {fmt_price(signal.stop_price)}. Target {display_line_name(signal.target_line_name)} {fmt_price(signal.target_price)}."
+    return f"Confirmed at {level}. Entry {fmt_price(signal.entry_price)}. Stop {fmt_price(signal.stop_price)}. Target {display_line_name(signal.target_line_name)} {fmt_price(signal.target_price)}."
+
+
+def quality_label(quality) -> str:
+    if quality is None:
+        return "-"
+    if str(quality.action_label).upper() in {"NO_TRADE", "WAIT_FOR_CONFIRMATION"}:
+        return _humanize(quality.action_label)
+    return _humanize(quality.grade)
+
+
 def render_terminal_hero(
     latest_price,
     bias_state,
@@ -1197,51 +1246,49 @@ def render_live_command_center(
     watch_lines = []
     if bias_state:
         watch_lines = bias_state.watched_call_lines + bias_state.watched_put_lines
-    signal_body = "Waiting for an hourly rejection at primary structure."
-    signal_title = "No confirmed signal"
-    if latest_signal:
-        signal_title = f"{latest_signal.signal_type} at {display_line_name(latest_signal.line_name)}"
-        signal_body = _entry_stop_summary(latest_signal)
-
-    call_mark = fmt_price(options_state.call_quote.mark) if options_state and options_state.call_quote else "-"
-    put_mark = fmt_price(options_state.put_quote.mark) if options_state and options_state.put_quote else "-"
-    projection = options_state.entry_target_projection if options_state else None
+    signal_body = signal_setup_copy(latest_signal)
+    signal_title = signal_setup_label(latest_signal)
+    options_live = bool(options_state and (options_state.call_quote or options_state.put_quote) and provider_is_live_tastytrade(options_state.provider))
+    call_mark = fmt_price(options_state.call_quote.mark) if options_live and options_state.call_quote else "-"
+    put_mark = fmt_price(options_state.put_quote.mark) if options_live and options_state.put_quote else "-"
+    projection = options_state.entry_target_projection if options_live and options_state else None
     projection_text = (
         f"Entry {display_line_name(projection.entry_line_name)} at {fmt_price(projection.entry_line_value)}; "
         f"target {display_line_name(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
-        if projection else "Projection appears after a trade direction resolves."
+        if projection else "Live option premiums appear after Tastytrade is connected and a setup resolves."
     )
+    provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
 
     st.markdown(
         f"""
         <div class='terminal-section command-grid'>
           <div class='terminal-panel'>
-            <div class='panel-label'>Market Read</div>
-            <div class='panel-title'>{bias_state.bias if bias_state else 'Waiting for structure'}</div>
-            <div class='panel-copy'>{bias_state.explanation if bias_state else 'Load SPY candles to calculate primary structure.'}</div>
+            <div class='panel-label'>Direction</div>
+            <div class='panel-title'>{market_read_label(bias_state)}</div>
+            <div class='panel-copy'>{market_read_copy(bias_state)}</div>
             <div class='pill-row'>
-              {_pill('Strength', fmt_float(bias_state.strength_score) if bias_state else '-')}
-              {_pill('Watch', display_line_list(watch_lines))}
+              {_pill('Confidence', fmt_float(bias_state.strength_score) if bias_state else '-')}
+              {_pill('Triggers', display_line_list(watch_lines))}
               {_pill('Price', fmt_price(latest_price))}
             </div>
           </div>
           <div class='terminal-panel'>
-            <div class='panel-label'>Signal Engine</div>
+            <div class='panel-label'>Setup</div>
             <div class='panel-title'>{signal_title}</div>
             <div class='panel-copy'>{signal_body}</div>
             <div class='pill-row'>
-              {_pill('Quality', _humanize(quality.grade) if quality else '-')}
+              {_pill('Action', quality_label(quality))}
               {_pill('Score', fmt_float(quality.score) if quality else '-')}
               {_pill('Retest', _humanize(guardrail.retest_status) if guardrail else '-')}
             </div>
           </div>
           <div class='terminal-panel'>
-            <div class='panel-label'>Options Setup</div>
+            <div class='panel-label'>Options Data</div>
             <div class='panel-title'>CALL {selected_strikes.call_strike if selected_strikes else '-'} / PUT {selected_strikes.put_strike if selected_strikes else '-'}</div>
             <div class='panel-copy'>CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}</div>
             <div class='pill-row'>
               {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
-              {_pill('Provider', options_state.provider if options_state else '-')}
+              {_pill('Provider', provider_text)}
             </div>
           </div>
         </div>
@@ -1487,7 +1534,8 @@ class OptionsCockpitState:
     scenarios: list[OptionsScenario]; entry_target_projection: EntryTargetOptionProjection | None; warning: str | None; explanation: str
 
 def is_mock_option_provider_name(name: str | None) -> bool:
-    return "MOCK" in str(name or "").upper()
+    text = str(name or "").upper()
+    return "MOCK" in text or text == "MOC"
 
 
 def provider_is_live_tastytrade(name: str | None) -> bool:
