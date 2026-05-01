@@ -927,6 +927,16 @@ def inject_global_css() -> None:
     .tile-value{font-family:Consolas,monospace;font-size:1.65rem;font-weight:800;color:var(--text);margin-top:4px}
     .tile-meta{color:var(--muted);font-size:.78rem;margin-top:4px}
     .tile-call{border-left:3px solid var(--green)} .tile-put{border-left:3px solid var(--red)}
+    .brief-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:10px 0 14px}
+    .brief-card{border:1px solid var(--border);border-radius:8px;background:rgba(13,19,29,.92);padding:12px}
+    .brief-label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .brief-value{font-family:Consolas,monospace;font-size:1.35rem;font-weight:800;color:var(--text);margin-top:4px}
+    .brief-copy{color:var(--muted);font-size:.82rem;margin-top:4px;line-height:1.35}
+    .replay-shell{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(13,19,29,.92),rgba(16,27,43,.82));padding:14px;margin:10px 0 14px}
+    .replay-title{font-size:1.15rem;font-weight:800;color:var(--text)}
+    .replay-copy{font-size:.88rem;color:var(--muted);margin-top:6px;line-height:1.45}
+    .outcome-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-top:12px}
+    .outcome-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
     .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
     .status-strip b{color:var(--text);font-weight:600}
     .prophet-header{padding:16px;margin-bottom:12px}.prophet-header h3{margin:0;font-size:1.5rem}
@@ -934,7 +944,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1034,6 +1044,19 @@ def _humanize(value: str | None) -> str:
     if value is None:
         return "-"
     return str(value).replace("_", " ")
+
+
+def display_line_name(name: str | None) -> str:
+    if not name:
+        return "-"
+    primary = {"UA":"Upper anchor", "UD":"Upper decision", "LA":"Lower anchor", "LD":"Lower decision"}
+    if name in primary:
+        return primary[name]
+    if str(name).startswith("S_ASC"):
+        return "Nearest lower target"
+    if str(name).startswith("S_DESC"):
+        return "Nearest upper target"
+    return _humanize(name)
 
 
 def _pill(label: str, value: str | None, tone: str | None = None) -> str:
@@ -1248,11 +1271,11 @@ def make_glow_line_trace(line: DynamicLine, xvals, name: str):
     return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{name}_glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
 
 
-def render_plotly_html(fig: go.Figure, height: int = 780) -> None:
+def render_plotly_html(fig: go.Figure, height: int = 780, display_mode_bar: bool = True) -> None:
     html = fig.to_html(
         full_html=False,
         include_plotlyjs=True,
-        config={"displayModeBar": True, "responsive": True},
+        config={"displayModeBar": display_mode_bar, "responsive": True},
     )
     components.html(html, height=height, scrolling=False)
 
@@ -1317,6 +1340,95 @@ def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, 
     if show_secondary and secondary_mode!='all' and len(secondary_lines)>len(plotted_secondary):
         fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.02,text='Showing nearest secondary target lines.',showarrow=False,font=dict(size=10,color='#94a3b8'))
     return fig
+
+
+def _zone_fill_trace(xvals, line: DynamicLine, name: str, color: str):
+    return go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(width=0, color=color), hoverinfo="skip", showlegend=False, name=name)
+
+
+def add_structure_channel(fig, xvals, lower_line, upper_line, name: str, color: str):
+    if lower_line is None or upper_line is None:
+        return
+    fig.add_trace(_zone_fill_trace(xvals, lower_line, f"{name} low", color))
+    fig.add_trace(go.Scatter(x=xvals, y=[upper_line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(width=0, color=color), fill="tonexty", fillcolor=color, hoverinfo="skip", showlegend=True, name=name))
+
+
+def build_structure_path_chart(candles_df, primary_lines, secondary_lines, signals, decision_state, current_price, current_dt, secondary_mode="nearest 6"):
+    fig = go.Figure()
+    if candles_df is None or candles_df.empty:
+        fig.add_annotation(text="No price path available.", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        return fig
+    df = candles_df.sort_index()
+    _, _, _, close_col = safe_ohlc_columns(df)
+    xvals = list(df.index)
+    if current_dt is not None and pd.Timestamp(current_dt) > xvals[-1]:
+        xvals.append(pd.Timestamp(current_dt))
+    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "UD"), get_line_by_name(primary_lines, "UA"), "Upper decision zone", "rgba(103,183,255,0.12)")
+    add_structure_channel(fig, xvals, get_line_by_name(primary_lines, "LD"), get_line_by_name(primary_lines, "LA"), "Lower decision zone", "rgba(255,95,124,0.10)")
+    fig.add_trace(go.Scatter(x=df.index, y=df[close_col], mode="lines+markers", line=dict(color="#f4f7fb", width=3), marker=dict(size=5, color="#f4f7fb"), name="SPY path", hovertemplate="SPY %{y:.2f}<br>%{x|%b %d %I:%M %p}<extra></extra>"))
+    closest = get_closest_primary_line(primary_lines, current_dt, current_price) if current_price is not None and not pd.isna(current_price) else None
+    for line in primary_lines:
+        color = "#21d07a" if line.zone_type == "CALL_ZONE" else "#ff5f7c" if line.zone_type == "PUT_ZONE" else "#67b7ff"
+        width = 4 if closest and closest.name == line.name else 2
+        fig.add_trace(go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(color=color, width=width), name=f"{line.name}: {display_line_name(line.name)}", hovertemplate=f"{line.name}<br>%{{y:.2f}}<extra></extra>"))
+    for line in select_secondary_lines_for_chart(secondary_lines, current_price if current_price is not None else float("nan"), pd.Timestamp(current_dt), secondary_mode):
+        fig.add_trace(go.Scatter(x=xvals, y=[line.tradable_value_at(x) for x in xvals], mode="lines", line=dict(color="#8da0b8", width=1, dash="dot"), opacity=0.55, name=display_line_name(line.name), hovertemplate=f"{display_line_name(line.name)}<br>%{{y:.2f}}<extra></extra>"))
+    active_signal = get_latest_active_signal(signals, df)
+    if active_signal:
+        color = "#21d07a" if active_signal.signal_type == "CALL" else "#ff5f7c"
+        y = active_signal.rejection_low if active_signal.signal_type == "CALL" else active_signal.rejection_high
+        fig.add_trace(go.Scatter(x=[active_signal.rejection_time], y=[y], mode="markers+text", text=[f"{active_signal.signal_type} watch"], textposition="top center", marker=dict(size=14, color=color, symbol="diamond"), name="Active setup"))
+        if active_signal.status == "CONFIRMED" and active_signal.entry_time is not None and not pd.isna(active_signal.entry_price):
+            fig.add_trace(go.Scatter(x=[active_signal.entry_time], y=[active_signal.entry_price], mode="markers+text", text=["Entry"], textposition="bottom center", marker=dict(size=10, color="#f4c76b"), name="Entry"))
+        if not pd.isna(active_signal.stop_price):
+            fig.add_hline(y=active_signal.stop_price, line_dash="dash", line_color="#ff5f7c", annotation_text="Stop")
+        if active_signal.target_line_name and not pd.isna(active_signal.target_price):
+            fig.add_hline(y=active_signal.target_price, line_dash="dash", line_color="#f4c76b", annotation_text="Target")
+    if current_price is not None and not pd.isna(current_price):
+        fig.add_hline(y=current_price, line_dash="dot", line_color="#f4f7fb", annotation_text=f"Now {current_price:.2f}")
+    title = "Price path with decision zones"
+    if decision_state:
+        title = f"{_humanize(decision_state.final_decision)}: {title}"
+    fig.update_layout(height=620, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0b1220", font=dict(color="#cbd5e1"), title=dict(text=title, x=0.01, font=dict(size=16)), margin=dict(l=20, r=20, t=48, b=20), hovermode="x unified", legend=dict(orientation="h", y=-0.12), xaxis_title="Central Time", yaxis_title="SPY")
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)", rangeslider_visible=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)")
+    return fig
+
+
+def render_chart_brief(current_price, closest_line, active_signal, decision_state, current_dt):
+    closest_value = closest_line.tradable_value_at(current_dt) if closest_line else None
+    signal_text = f"{active_signal.signal_type} {_humanize(active_signal.status)}" if active_signal else "No active signal"
+    cards = [
+        ("Current SPY", fmt_price(current_price), "Live price context"),
+        ("Closest Structure", f"{closest_line.name} {fmt_price(closest_value)}" if closest_line else "-", display_line_name(closest_line.name) if closest_line else "Waiting"),
+        ("Signal State", signal_text, display_line_name(active_signal.line_name) if active_signal else "Waiting for rejection"),
+        ("Decision", _humanize(decision_state.final_decision) if decision_state else "WAIT", _humanize(decision_state.signal_quality.grade) if decision_state and decision_state.signal_quality else "No grade yet"),
+    ]
+    html = "".join(f"<div class='brief-card'><div class='brief-label'>{label}</div><div class='brief-value'>{value}</div><div class='brief-copy'>{copy}</div></div>" for label, value, copy in cards)
+    st.markdown(f"<div class='brief-grid'>{html}</div>", unsafe_allow_html=True)
+
+
+def render_replay_story(rs: ReplayState, replay_candles: pd.DataFrame, mode: str):
+    latest_price = float(replay_candles["Close"].iloc[-1]) if replay_candles is not None and not replay_candles.empty else float("nan")
+    active = get_latest_active_signal(rs.signals, replay_candles) if replay_candles is not None and not replay_candles.empty else None
+    story = "No active setup at this replay point."
+    if active:
+        story = f"{active.signal_type} setup at {display_line_name(active.line_name)}. Status: {_humanize(active.status)}."
+    html = (
+        "<div class='replay-shell'>"
+        f"<div class='replay-title'>{mode}: {rs.replay_date}</div>"
+        f"<div class='replay-copy'>Structure came from {rs.prior_trading_day}. Replay price is {fmt_price(latest_price)}. {story}</div>"
+        "<div class='outcome-row'>"
+        f"<div class='outcome-card'><div class='brief-label'>Signals</div><div class='brief-value'>{len(rs.signals)}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>Confirmed</div><div class='brief-value'>{len([x for x in rs.signals if x.status=='CONFIRMED'])}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>Pending</div><div class='brief-value'>{len([x for x in rs.signals if x.status=='PENDING_CONFIRMATION'])}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>Targets</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='TARGET_FIRST'])}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>Stops</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='STOP_FIRST'])}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>No Hit</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='NO_HIT'])}</div></div>"
+        "</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+    return active
 
 
 
@@ -1667,20 +1779,26 @@ def main() -> None:
             st.caption("Legend: Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary lines = target only")
 
     with tabs[2]:
-        render_section_title("Prophet Chart", "Structure, signals, and decision overlay")
-        cc1,cc2,cc3,cc4,cc5=st.columns(5)
-        show_secondary = cc1.checkbox("Show Secondary", value=True)
-        show_signals = cc2.checkbox("Show Signals", value=True)
-        show_overlays = cc3.checkbox("Show Stops/Targets", value=True)
-        show_pivots = cc4.checkbox("Show Pivots", value=True)
-        secondary_mode = cc5.selectbox("Secondary Mode", ["nearest 6","nearest 12","all"], index=1)
+        render_section_title("Prophet Chart", "Decision map, then advanced candle detail")
+        chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
+        render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
+        cc1,cc2,cc3,cc4,cc5=st.columns([1.1,1,1,1,1])
+        chart_mode = cc1.selectbox("View", ["Structure Path", "Candlestick Advanced"], index=0, key="chart_view_mode")
+        show_secondary = cc2.checkbox("Targets", value=True, key="chart_show_targets")
+        show_signals = cc3.checkbox("Signals", value=True, key="chart_show_signals")
+        show_overlays = cc4.checkbox("Stops/Targets", value=True, key="chart_show_overlays")
+        secondary_mode = cc5.selectbox("Target Density", ["nearest 6","nearest 12","all"], index=0, key="chart_target_density")
         try:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
-            chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
-            fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=show_pivots, secondary_mode=secondary_mode)
-            render_plotly_html(fig)
-            st.caption("Descending primary lines = CALL zones | Ascending primary lines = PUT zones | Secondary dashed lines = target-only structure | Markers show rejections and entries")
+            if chart_mode == "Structure Path":
+                fig = build_structure_path_chart(chart_df, primary_lines, secondary_lines if show_secondary else [], signals if show_signals else [], decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), secondary_mode=secondary_mode)
+                render_plotly_html(fig, height=660, display_mode_bar=False)
+                st.caption("Simple view: the white path is SPY, shaded areas are decision zones, dashed rails are nearby targets.")
+            else:
+                fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=True, secondary_mode=secondary_mode)
+                render_plotly_html(fig)
+                st.caption("Advanced view: candlesticks, all selected structure rails, signal markers, and trade overlays.")
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
 
@@ -1706,46 +1824,47 @@ def main() -> None:
         st.caption("CALL rejection: red candle rejects descending line from above. PUT rejection: green candle rejects ascending line from below. Entry is next candle open.")
 
     with tabs[4]:
-        st.caption("Historical replay and outcome review console.")
-        render_section_title("Replay Lab", "Historical Replay and Outcome Review")
+        st.caption("Historical replay as a decision story.")
+        render_section_title("Replay Lab", "Replay a session against prior-day structure")
         dates = get_available_replay_dates(df)
         if not dates:
             st.info("No replay dates available.")
         else:
-            rdate = st.selectbox("Replay date", dates, index=max(0,len(dates)-1))
-            mode = st.selectbox("Mode", ["Full Day Review","Step Replay"])
+            rca,rcb,rcc=st.columns([1,1,1])
+            rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
+            mode = rcb.selectbox("Mode", ["Full Day Review","Step Replay"], key="replay_mode")
+            replay_view = rcc.selectbox("View", ["Structure Path", "Candlestick Advanced"], index=0, key="replay_view_mode")
             day_df = filter_replay_day(df, rdate)
             rtime = None
             if mode=="Step Replay" and not day_df.empty:
-                rtime = st.selectbox("Replay time", list(day_df.index), index=len(day_df)-1)
+                rtime = st.selectbox("Replay time", list(day_df.index), index=len(day_df)-1, key="replay_time")
                 st.caption("Step Replay hides future candles and signals by default to avoid look-ahead bias.")
-            include_out = st.toggle("Show future outcome overlays", value=(mode=="Full Day Review"))
-            st.info("Hindsight outcome overlay enabled." if include_out else "Future outcomes hidden.")
-            show_sec_replay = st.toggle("Show secondary target lines", value=True)
+            include_out = st.toggle("Show future outcome overlays", value=(mode=="Full Day Review"), key="replay_include_outcomes")
+            show_sec_replay = st.toggle("Show secondary target lines", value=True, key="replay_show_secondary")
             rs = build_replay_state(df, rdate, replay_time=rtime, slope_per_hour=slope, include_future_outcomes=include_out)
-            conf = len([x for x in rs.signals if x.status=='CONFIRMED']); pend=len([x for x in rs.signals if x.status=='PENDING_CONFIRMATION'])
-            out_target = len([o for o in rs.outcomes.values() if o.outcome=='TARGET_FIRST']); out_stop = len([o for o in rs.outcomes.values() if o.outcome=='STOP_FIRST']); out_no = len([o for o in rs.outcomes.values() if o.outcome=='NO_HIT'])
-            render_status_strip([
-                ("Prior day", rs.prior_trading_day),
-                ("Signals", len(rs.signals)),
-                ("Confirmed", conf),
-                ("Pending", pend),
-                ("Target first", out_target),
-                ("Stop first", out_stop),
-                ("No hit", out_no),
-            ])
             replay_candles = day_df if mode=="Full Day Review" or rtime is None else day_df[day_df.index<=rtime]
-            rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, build_decision_state(rs.signals[-1] if rs.signals else None, rs.primary_lines+rs.secondary_lines, float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals), float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan'), replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct), show_secondary=show_sec_replay)
-            render_plotly_html(rfig)
+            replay_active = render_replay_story(rs, replay_candles, mode)
+            replay_dt = replay_candles.index[-1] if not replay_candles.empty else pd.Timestamp(now_ct)
+            replay_price = float(replay_candles['Close'].iloc[-1]) if not replay_candles.empty else float('nan')
+            replay_decision = build_decision_state(replay_active, rs.primary_lines+rs.secondary_lines, replay_price, replay_dt, replay_candles.iloc[-1] if not replay_candles.empty else None, signals_today=rs.signals)
+            if include_out:
+                st.info("Outcome review is visible for this replay.")
+            else:
+                st.info("Future outcomes are hidden for this replay point.")
+            if replay_view == "Structure Path":
+                rfig = build_structure_path_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.signals, replay_decision, replay_price, replay_dt)
+                render_plotly_html(rfig, height=660, display_mode_bar=False)
+            else:
+                rfig = build_prophet_chart(replay_candles, rs.primary_lines, rs.secondary_lines if show_sec_replay else [], rs.high_pivot, rs.low_pivot, [], rs.signals, replay_decision, replay_price, replay_dt, show_secondary=show_sec_replay)
+                render_plotly_html(rfig)
             table=[]
             for sg in rs.signals:
                 q=rs.signal_qualities.get(sg.signal_id); o=rs.outcomes.get(sg.signal_id)
-                table.append({"signal_id":sg.signal_id,"signal_type":sg.signal_type,"status":sg.status,"line_name":sg.line_name,"rejection_time":sg.rejection_time,"entry_time":sg.entry_time,"entry_price":sg.entry_price,"stop_price":sg.stop_price,"target_line_name":sg.target_line_name,"target_price":sg.target_price,"quality_grade":q.grade if q else None,"quality_score":q.score if q else None,"outcome":o.outcome if o else None,"outcome_time":o.outcome_time if o else None,"max_favorable_move":o.max_favorable_move if o else None,"max_adverse_move":o.max_adverse_move if o else None,"bars_to_outcome":o.bars_to_outcome if o else None})
-            st.dataframe(pd.DataFrame(table))
+                table.append({"type":sg.signal_type,"status":_humanize(sg.status),"line":display_line_name(sg.line_name),"rejection_time":sg.rejection_time,"entry":fmt_price(sg.entry_price),"stop":fmt_price(sg.stop_price),"target":display_line_name(sg.target_line_name),"target_price":fmt_price(sg.target_price),"grade":_humanize(q.grade) if q else None,"score":fmt_float(q.score) if q else None,"outcome":_humanize(o.outcome) if o else None,"bars":o.bars_to_outcome if o else None})
+            if table:
+                st.dataframe(pd.DataFrame(table), use_container_width=True)
             if table:
                 st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
-            if rs.outcomes:
-                vals=list(rs.outcomes.values()); st.caption(f"First signal outcome: {vals[0].outcome}.")
 
     with tabs[5]:
         st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")

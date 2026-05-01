@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import DynamicLine, Pivot, SecondaryPivot, TradeSignal, build_prophet_chart, get_central_tz, select_secondary_lines_for_chart
+from app import DynamicLine, Pivot, SecondaryPivot, TradeSignal, build_prophet_chart, build_structure_path_chart, get_central_tz, select_secondary_lines_for_chart
 
 
 def _ts(s: str):
@@ -51,3 +51,13 @@ def test_secondary_modes_and_signal_markers():
     names=[t.name for t in fig.data]
     assert any("signal" in str(n).lower() for n in names)
     assert any(n=="ENTRY" for n in names)
+
+
+def test_structure_path_chart_novice_view():
+    df=_candles(); lines=_lines()
+    fig=build_structure_path_chart(df, lines, [], [], None, 101.2, _ts("2026-04-28T12:00:00"))
+    names=[t.name for t in fig.data]
+    assert "SPY path" in names
+    assert "Upper decision zone" in names
+    assert any(str(n).startswith("UA:") for n in names)
+    assert fig.layout.height == 620
