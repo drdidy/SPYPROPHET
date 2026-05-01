@@ -2255,6 +2255,16 @@ def inject_global_css() -> None:
     .morning-action-list{display:grid;gap:8px}
     .morning-action-item{display:flex;align-items:flex-start;gap:9px;border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;color:var(--muted);font-size:.82rem;line-height:1.35}
     .morning-action-dot{width:8px;height:8px;border-radius:99px;background:var(--blue);margin-top:5px;flex:0 0 8px}
+    .ai-verify{border:1px solid rgba(46,204,113,.24);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.09),rgba(103,183,255,.055),rgba(8,13,18,.96));padding:13px;margin:12px 0}
+    .ai-verify-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+    .ai-verify-title{font-size:1.05rem;font-weight:950;color:var(--text)}
+    .ai-verify-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
+    .ai-verify-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .ai-verify-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:94px}
+    .ai-verify-card.good{border-color:rgba(46,204,113,.34)}.ai-verify-card.warn{border-color:rgba(245,196,81,.34)}.ai-verify-card.info{border-color:rgba(103,183,255,.28)}
+    .ai-verify-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
+    .ai-verify-value{font-size:.96rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:6px}
+    .ai-verify-note{font-size:.74rem;color:var(--muted);line-height:1.32;margin-top:5px}
     .morning-narrative{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(14,22,33,.98),rgba(8,13,18,.98));padding:14px;margin-top:12px}
     .morning-narrative-head{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:10px;margin-bottom:10px}
     .morning-narrative-title{font-size:1.05rem;font-weight:900;color:var(--text)}
@@ -2298,7 +2308,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -3204,6 +3214,62 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
     )
 
 
+def _ai_verify_card(label: str, value: str, note: str, state: str = "info") -> str:
+    return (
+        f"<div class='ai-verify-card {state}'>"
+        f"<div class='ai-verify-label'>{escape(label)}</div>"
+        f"<div class='ai-verify-value'>{escape(value)}</div>"
+        f"<div class='ai-verify-note'>{escape(note)}</div>"
+        "</div>"
+    )
+
+
+def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, use_ai: bool) -> None:
+    used_openai = bool(result.model)
+    web_enabled = openai_web_search_enabled()
+    cards = [
+        _ai_verify_card(
+            "API Key",
+            "Configured" if ai_ready else "Missing",
+            "Streamlit can see OPENAI_API_KEY." if ai_ready else "Add OPENAI_API_KEY to Streamlit secrets.",
+            "good" if ai_ready else "warn",
+        ),
+        _ai_verify_card(
+            "This Briefing",
+            "OpenAI used" if used_openai else "Rule-based",
+            "Provider returned an AI result." if used_openai else "Click Generate AI web briefing with OpenAI synthesis on.",
+            "good" if used_openai else "warn",
+        ),
+        _ai_verify_card(
+            "Model",
+            result.model or get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
+            "Model charged only when an OpenAI briefing is generated.",
+            "info",
+        ),
+        _ai_verify_card(
+            "Web Search",
+            "Enabled" if web_enabled else "Off",
+            f"{len(result.citations or [])} citations returned in this run.",
+            "good" if web_enabled and result.citations else "info" if web_enabled else "warn",
+        ),
+    ]
+    st.markdown(
+        f"""
+        <div class='ai-verify'>
+          <div class='ai-verify-head'>
+            <div>
+              <div class='ai-verify-title'>AI Verification</div>
+              <div class='ai-verify-copy'>This tells you whether this briefing actually used the OpenAI API. Your OpenAI balance may stay unchanged until you click Generate, and dashboard usage can lag.</div>
+            </div>
+            {ui_icon('spark', 'green' if used_openai else 'amber', 'md')}
+          </div>
+          <div class='ai-verify-grid'>{''.join(cards)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_value = f"{event.event} at {event.time_label}" if event else "No verified event loaded"
@@ -3448,6 +3514,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     if result is None:
         result = generate_morning_briefing(bundle, use_ai=False)
     render_morning_briefing_hero(bundle, result, ai_ready)
+    render_ai_verification_panel(result, ai_ready, use_ai)
     render_morning_lines_deck(bundle)
     render_morning_action_panel(bundle, result)
     render_morning_context_deck(bundle)
