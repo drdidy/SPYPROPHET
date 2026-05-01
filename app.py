@@ -973,7 +973,7 @@ def render_signal_card(signal):
     render_metric_card("Signal", f"{signal.line_name} @ {_fmt_num(signal.line_value_at_rejection)}", f"entry {_fmt_num(signal.entry_price)} | stop {_fmt_num(signal.stop_price)} | target {signal.target_line_name}:{_fmt_num(signal.target_price)} | RR {_fmt_num(signal.rr_ratio)}")
 
 
-def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="MOCK"):
+def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="TASTYTRADE"):
     txt = f"SPY {_fmt_num(current_price)} • BIAS {bias_state.bias if bias_state else 'N/A'} • CLOSEST {closest_line.name if closest_line else 'N/A'} • SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} • C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} • PROVIDER {provider_status}"
     st.markdown(f"<div class='metric-card ticker-scroll'><div class='ticker-track'>{txt} &nbsp;&nbsp;&nbsp; {txt}</div></div>", unsafe_allow_html=True)
 
@@ -1106,8 +1106,7 @@ def render_live_command_center(
     decision_state,
     latest_signal,
     selected_strikes,
-    primary_lines,
-    now_ct,
+    options_state,
     latest_price,
 ) -> None:
     quality = decision_state.signal_quality if decision_state else None
@@ -1121,13 +1120,6 @@ def render_live_command_center(
         signal_title = f"{latest_signal.signal_type} at {latest_signal.line_name}"
         signal_body = _entry_stop_summary(latest_signal)
 
-    options_state = build_options_cockpit_state(
-        selected_strikes,
-        latest_signal=latest_signal,
-        decision_state=decision_state,
-        current_dt=now_ct,
-        all_lines=primary_lines,
-    ) if selected_strikes else None
     call_mark = fmt_price(options_state.call_quote.mark) if options_state and options_state.call_quote else "-"
     put_mark = fmt_price(options_state.put_quote.mark) if options_state and options_state.put_quote else "-"
     projection = options_state.entry_target_projection if options_state else None
@@ -1320,18 +1312,6 @@ class OptionsCockpitState:
     provider: str; underlying_price: float; expiration: object; call_quote: OptionQuote | None; put_quote: OptionQuote | None; selected_trade_quote: OptionQuote | None
     scenarios: list[OptionsScenario]; entry_target_projection: EntryTargetOptionProjection | None; warning: str | None; explanation: str
 
-class MockOptionProvider:
-    provider_name='MOCK'
-    def _quote(self, underlying_price, expiration_date, strike, option_type, ts):
-        intrinsic = max(0.0, underlying_price-strike) if option_type=='CALL' else max(0.0, strike-underlying_price)
-        tv = max(0.15, min(3.00, underlying_price*0.0025)); mark=round(intrinsic+tv,2); bid=max(0.01,round(mark-0.05,2)); ask=round(mark+0.05,2)
-        m = min(1.0, abs(underlying_price-strike)/10)
-        delta = round((0.70-0.30*m) * (1 if option_type=='CALL' else -1),2)
-        return OptionQuote(f"SPY-{expiration_date}-{strike}-{option_type[0]}","SPY",expiration_date,int(strike),option_type,bid,ask,mark,round(ask-bid,2),delta,0.05,-0.10,0.03,0.25,'MOCK',ts,"Mock quote — not live market data.")
-    def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
-        ts=pd.Timestamp.now(tz=get_central_tz())
-        return {'call':self._quote(underlying_price,expiration_date,call_strike,'CALL',ts),'put':self._quote(underlying_price,expiration_date,put_strike,'PUT',ts)}
-
 def simulate_option_scenarios(quote: OptionQuote, moves=None) -> list[OptionsScenario]:
     moves = moves or [0.5,-0.5]; out=[]
     for mv in moves:
@@ -1374,11 +1354,16 @@ def project_option_entry_to_target(quote, current_underlying_price, entry_line, 
     return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,target_line.name,ttv,tpt,move_t,est_target,prof,ret,warn,'Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Actual 0DTE prices may change faster than this estimate.')
 
 def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_state=None, provider=None, current_dt=None, all_lines=None, entry_line_name=None, target_line_name=None, projection_time=None, option_type_override=None):
-    provider = provider or MockOptionProvider(); now=pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())
-    provider_name = getattr(provider, "provider_name", provider.__class__.__name__)
+    now=pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())
+    provider_name = getattr(provider, "provider_name", "TASTYTRADE")
     if selected_strikes is None or pd.isna(selected_strikes.underlying_price):
         return OptionsCockpitState(provider_name,float('nan'),None,None,None,None,[],None,'Invalid/missing strikes or underlying.', 'No options cockpit available.')
-    q = provider.get_selected_quotes(selected_strikes.underlying_price, selected_strikes.expiration_date, selected_strikes.call_strike, selected_strikes.put_strike)
+    if provider is None:
+        return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Tastytrade quotes unavailable. Check credentials or provider connection.', 'No live options provider available.')
+    try:
+        q = provider.get_selected_quotes(selected_strikes.underlying_price, selected_strikes.expiration_date, selected_strikes.call_strike, selected_strikes.put_strike)
+    except Exception as e:
+        return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, f'Tastytrade provider error: {type(e).__name__}', 'Live options provider failed.')
     call_q = q.get('call') or q.get('CALL')
     put_q = q.get('put') or q.get('PUT')
     if isinstance(call_q, dict): call_q = OptionQuote(**call_q)
@@ -1388,7 +1373,7 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     opt_type = option_type_override or (latest_signal.signal_type if latest_signal else None)
     sel = call_q if opt_type=='CALL' else put_q if opt_type=='PUT' else None
     scenarios = simulate_option_scenarios(sel) if sel else []
-    proj=None; warning=q.get("warning") or ("Mock quote - not live market data." if provider_name == "MOCK" else None)
+    proj=None; warning=q.get("warning")
     if sel and all_lines:
         entry,target = resolve_entry_target_lines(all_lines, latest_signal=latest_signal, option_type=opt_type, entry_line_name=entry_line_name, target_line_name=target_line_name, current_price=selected_strikes.underlying_price, current_dt=now)
         if entry:
@@ -1396,6 +1381,29 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
         else:
             warning = 'Could not resolve entry line; projection unavailable.'
     return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, call_q, put_q, sel, scenarios, proj, warning, f'{provider_name} options cockpit state.')
+
+
+def get_tastytrade_option_provider():
+    missing = get_missing_tastytrade_secrets()
+    if missing:
+        return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":missing}
+    try:
+        env=st.secrets.get("TASTYTRADE_ENVIRONMENT","production")
+        provider = TastytradeProvider(st.secrets["TASTYTRADE_CLIENT_ID"], st.secrets["TASTYTRADE_CLIENT_SECRET"], st.secrets["TASTYTRADE_REFRESH_TOKEN"], env)
+        return provider, {"provider":"TASTYTRADE","connected":True,"quotes_ok":None,"missing_secrets":[]}
+    except Exception as e:
+        return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":[],"last_error":type(e).__name__}
+
+
+def option_provider_label(state: OptionsCockpitState | None, provider_status: dict | None = None) -> str:
+    provider_status = provider_status or {}
+    if state and (state.call_quote or state.put_quote):
+        return state.provider
+    if provider_status.get("missing_secrets"):
+        return "TASTYTRADE setup needed"
+    if provider_status.get("last_error") or (state and state.warning):
+        return "TASTYTRADE unavailable"
+    return provider_status.get("provider") or "TASTYTRADE"
 
 
 
@@ -1545,7 +1553,8 @@ def main() -> None:
     st.sidebar.selectbox("Auto-refresh", ["Off","30 sec","60 sec","5 min"])
     show_debug = st.sidebar.toggle("Show Debug Lab", value=False)
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
-    provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=1 if not get_missing_tastytrade_secrets() else 0)
+    provider = "TASTYTRADE"
+    st.sidebar.caption("Provider: TASTYTRADE")
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
 
     df = fetch_spy_hourly(period="10d") if (refresh or True) else pd.DataFrame()
@@ -1553,6 +1562,8 @@ def main() -> None:
     prior_day = None
     rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
     bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None
+    option_provider, provider_status = get_tastytrade_option_provider()
+    option_state = None
     if df.empty:
         st.warning("No SPY data loaded. Click refresh or check yfinance availability.")
     if not df.empty:
@@ -1573,6 +1584,7 @@ def main() -> None:
                 signals = detect_rejection_signals(rth_df, primary_lines, secondary_lines)
                 closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
                 decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
+                option_state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
 
     render_terminal_hero(
         latest_price,
@@ -1581,7 +1593,7 @@ def main() -> None:
         closest,
         signals[-1] if signals else None,
         strikes,
-        provider,
+        option_provider_label(option_state, provider_status),
         now_ct,
         df,
         prior_day,
@@ -1598,18 +1610,16 @@ def main() -> None:
             decision_state,
             signals[-1] if signals else None,
             strikes,
-            primary_lines + secondary_lines,
-            now_ct,
+            option_state,
             latest_price,
         )
         render_structure_tiles(primary_lines, latest_price, now_ct, closest)
-        if strikes:
-            ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-            if ostate.entry_target_projection:
+        if option_state:
+            if option_state.entry_target_projection:
                 render_status_strip([
-                    ("Entry premium", fmt_price(ostate.entry_target_projection.estimated_entry_mark)),
-                    ("Target premium", fmt_price(ostate.entry_target_projection.estimated_target_mark)),
-                    ("Est. P/L", fmt_price(ostate.entry_target_projection.estimated_profit_per_contract)),
+                    ("Entry premium", fmt_price(option_state.entry_target_projection.estimated_entry_mark)),
+                    ("Target premium", fmt_price(option_state.entry_target_projection.estimated_target_mark)),
+                    ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
 
     with tabs[1]:
@@ -1701,34 +1711,18 @@ def main() -> None:
                 vals=list(rs.outcomes.values()); st.caption(f"First signal outcome: {vals[0].outcome}.")
 
     with tabs[5]:
-        st.caption("Live and fallback option quotes for the selected 0DTE strikes.")
+        st.caption("Live Tastytrade option quotes for the selected 0DTE strikes.")
         render_section_title("Options Cockpit", "Quote and projection console")
         if strikes:
-            requested_provider = provider
-            provider_obj = MockOptionProvider()
-            provider_status = {"provider":"MOCK","connected":True,"fallback_used":False,"missing_secrets":[]}
-            if requested_provider == "TASTYTRADE":
-                missing=get_missing_tastytrade_secrets()
-                if missing:
-                    provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":missing,"last_error":"Missing secrets"}
-                else:
-                    try:
-                        env=st.secrets.get("TASTYTRADE_ENVIRONMENT","production")
-                        provider_obj = TastytradeProvider(st.secrets["TASTYTRADE_CLIENT_ID"], st.secrets["TASTYTRADE_CLIENT_SECRET"], st.secrets["TASTYTRADE_REFRESH_TOKEN"], env)
-                        _ = provider_obj.get_selected_quotes(strikes.underlying_price, strikes.expiration_date, strikes.call_strike, strikes.put_strike)
-                        provider_status = provider_obj.get_status()
-                        if not provider_status.get("quotes_ok"):
-                            provider_obj = MockOptionProvider(); provider_status["provider"]="MOCK_FALLBACK"; provider_status["fallback_used"]=True
-                    except Exception as e:
-                        provider_obj = MockOptionProvider(); provider_status={"provider":"MOCK_FALLBACK","connected":False,"fallback_used":True,"missing_secrets":[],"last_error":type(e).__name__}
-            state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=provider_obj, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
+            state = option_state or build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
-                ("Provider", provider_status.get('provider', state.provider)),
-                ("Connection", "Live" if provider_status.get("connected") and not provider_status.get("fallback_used") else "Fallback"),
-                ("Mode", requested_provider),
+                ("Provider", option_provider_label(state, provider_status)),
+                ("Connection", "Live" if state.call_quote or state.put_quote else "Unavailable"),
+                ("Mode", "TASTYTRADE"),
             ])
             if provider_status.get("missing_secrets"): st.warning(f"Missing secrets: {provider_status.get('missing_secrets')}")
             if provider_status.get("last_error"): st.warning(f"Provider error: {provider_status.get('last_error')}")
+            if state.warning: st.warning(state.warning)
             c1,c2=st.columns(2)
             with c1:
                 cq=state.call_quote
@@ -1755,8 +1749,6 @@ def main() -> None:
                 if p.option_type=='PUT' and p.entry_line_value > state.underlying_price: st.caption("PUT premium expected to depreciate into entry.")
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
-        if provider != "TASTYTRADE":
-            st.caption("Switch provider to TASTYTRADE for live quote lookup.")
 
     with tabs[7]:
         st.caption("Concise command brief from current state.")
@@ -1780,7 +1772,7 @@ def main() -> None:
                     st.write(f"Primary Path: {ls.signal_type} entry {ls.entry_price}, stop {ls.stop_price}, target {ls.target_price}.")
                 st.write(f"Final Destination: {ls.target_line_name}. Invalidation: stop at {fmt_price(ls.stop_price)}. {ls.breakeven_rule}")
                 if strikes:
-                    ps = build_options_cockpit_state(strikes, latest_signal=ls, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                    ps = option_state or build_options_cockpit_state(strikes, latest_signal=ls, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
                     if ps.selected_trade_quote:
                         render_status_strip([("Options", f"{ps.selected_trade_quote.option_type} {ps.selected_trade_quote.strike}")])
                     if ps.entry_target_projection:
@@ -1796,10 +1788,7 @@ def main() -> None:
         journal_path='data/signal_journal.json'
         entries = load_signal_journal(journal_path)
         auto_status = AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
-        if strikes:
-            opt_state = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-        else:
-            opt_state = None
+        opt_state = option_state if strikes else None
         entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on)
         render_status_strip([
             ("Auto journal", "On" if auto_status.enabled else "Off"),
@@ -1847,7 +1836,7 @@ def main() -> None:
             render_debug_json("Strikes", asdict(strikes) if strikes else {})
             render_debug_json("Signals", [asdict(x) for x in signals])
             if strikes:
-                dbg_opt = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
+                dbg_opt = option_state or build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
                 render_debug_json("OptionsCockpitState", asdict(dbg_opt))
                 render_debug_json("ProviderStatus", provider_status if "provider_status" in locals() else {})
                 render_debug_json("OptionsScenario", [asdict(x) for x in dbg_opt.scenarios])
