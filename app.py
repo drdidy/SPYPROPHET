@@ -1654,7 +1654,7 @@ def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, 
         cv = closest.tradable_value_at(current_dt); d = current_price-cv if current_price is not None and not pd.isna(cv) else float('nan')
         fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {display_line_name(closest.name)} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(color='#e2e8f0',size=11),align='right')
     add_decision_overlay(fig, decision_state)
-    fig.update_layout(height=780, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=20), legend=dict(orientation='h'))
+    fig.update_layout(height=820, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=150), legend=dict(orientation='h', x=0, y=-0.18, xanchor='left', yanchor='top', font=dict(size=10), bgcolor='rgba(8,13,22,0.72)', bordercolor='rgba(148,163,184,0.25)', borderwidth=1))
     fig.update_xaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)'); fig.update_yaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)')
     if show_secondary and secondary_mode!='all' and len(secondary_lines)>len(plotted_secondary):
         fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.02,text='Showing nearest secondary target lines.',showarrow=False,font=dict(size=10,color='#94a3b8'))
@@ -1709,7 +1709,7 @@ def build_structure_path_chart(candles_df, primary_lines, secondary_lines, signa
     title = "Price path with decision zones"
     if decision_state:
         title = f"{_humanize(decision_state.final_decision)}: {title}"
-    fig.update_layout(height=620, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0b1220", font=dict(color="#cbd5e1"), title=dict(text=title, x=0.01, font=dict(size=16)), margin=dict(l=20, r=20, t=48, b=20), hovermode="x unified", legend=dict(orientation="h", y=-0.12), xaxis_title="Central Time", yaxis_title="SPY")
+    fig.update_layout(height=700, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0b1220", font=dict(color="#cbd5e1"), title=dict(text=title, x=0.01, font=dict(size=16)), margin=dict(l=20, r=20, t=48, b=135), hovermode="x unified", legend=dict(orientation="h", x=0, y=-0.18, xanchor="left", yanchor="top", font=dict(size=10), bgcolor="rgba(8,13,22,0.72)", bordercolor="rgba(148,163,184,0.25)", borderwidth=1), xaxis_title="Central Time", yaxis_title="SPY")
     fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)", rangeslider_visible=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)")
     return fig
@@ -1885,15 +1885,15 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
       .map-label{{fill:#d9ecff;font-size:13px;font-weight:800}}
       .map-muted{{fill:#8ba9c8;font-size:12px;font-weight:650}}
       .signal-pulse circle:first-child{{animation:pulse 2.2s ease-in-out infinite;transform-origin:center}}
-      .svg-map-cards{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}}
-      .svg-map-card{{border:1px solid #263e5b;background:#0d1726;border-radius:8px;padding:11px 12px;min-height:72px}}
+      .svg-map-cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px;align-items:stretch}}
+      .svg-map-card{{border:1px solid #263e5b;background:#0d1726;border-radius:8px;padding:11px 12px;min-height:82px;overflow:hidden}}
       .svg-card-label{{font-size:11px;color:#7db9ef;text-transform:uppercase;letter-spacing:.08em}}
-      .svg-card-value{{font-size:19px;line-height:1.2;margin-top:5px;font-weight:850;color:#fbfdff}}
-      .svg-card-copy{{font-size:12px;color:#95acc6;margin-top:6px}}
+      .svg-card-value{{font-size:18px;line-height:1.22;margin-top:5px;font-weight:850;color:#fbfdff;white-space:normal;overflow-wrap:anywhere}}
+      .svg-card-copy{{font-size:12px;color:#95acc6;margin-top:6px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}}
       @keyframes drawPath{{to{{stroke-dashoffset:0}}}}
       @keyframes railFlow{{to{{stroke-dashoffset:-120}}}}
       @keyframes pulse{{0%,100%{{transform:scale(.85);opacity:.16}}50%{{transform:scale(1.4);opacity:.32}}}}
-      @media (max-width:760px){{.svg-map-title{{display:block}}.svg-map-badge{{display:inline-block;margin-top:10px}}.svg-map-cards{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+      @media (max-width:760px){{.svg-map-title{{display:block}}.svg-map-badge{{display:inline-block;margin-top:10px}}.svg-map-cards{{grid-template-columns:1fr}}}}
     </style>
     <div class='svg-map-shell'>
       <div class='svg-map-title'><div><h3>{_svg_text(title)}</h3><p>{_svg_text(subtitle)}</p></div><div class='svg-map-badge'>Animated structure map</div></div>
@@ -1924,7 +1924,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
     """
 
 
-def render_structure_map_svg(*args, height: int = 820, **kwargs) -> None:
+def render_structure_map_svg(*args, height: int = 900, **kwargs) -> None:
     components.html(build_structure_map_svg(*args, **kwargs), height=height, scrolling=False)
 
 

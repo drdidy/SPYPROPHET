@@ -37,6 +37,8 @@ def test_basic_chart_and_tradable_values():
     assert all(x in names for x in ["Upper Put Trigger","Upper Call Trigger","Lower Put Trigger","Lower Call Trigger"])
     ua_trace = [t for t in fig.data if t.name=="Upper Put Trigger"][0]
     assert all(abs(y-100.0)<1e-9 for y in ua_trace.y)  # tradable rounds 100.004 -> 100.00
+    assert fig.layout.margin.b >= 135
+    assert fig.layout.legend.y < 0
 
 
 def test_secondary_modes_and_signal_markers():
@@ -60,7 +62,8 @@ def test_structure_path_chart_novice_view():
     assert "SPY path" in names
     assert "Upper trade zone" in names
     assert "Upper Put Trigger" in names
-    assert fig.layout.height == 620
+    assert fig.layout.height == 700
+    assert fig.layout.margin.b >= 120
 
 
 def test_animated_structure_map_svg():
@@ -68,6 +71,7 @@ def test_animated_structure_map_svg():
     html=build_structure_map_svg(df, lines, [], [], None, 101.2, _ts("2026-04-28T12:00:00"), title="Test Map")
     assert "<svg" in html
     assert "Animated structure map" in html
+    assert "repeat(auto-fit,minmax(210px,1fr))" in html
     assert "Upper Put Trigger" in html
     assert "SPY 101.20" in html
     assert "Candlestick" not in html
