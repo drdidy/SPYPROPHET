@@ -193,12 +193,32 @@ def _empty_pivot(name: str) -> Pivot:
     return Pivot(name=name, price=float("nan"), timestamp=None, source="empty_rth", candle_color="none", fallback_used=True)
 
 
+def get_hourly_candle_close_time(df: pd.DataFrame, candle_time: pd.Timestamp) -> pd.Timestamp:
+    idx = df.sort_index().index
+    pos = idx.get_loc(candle_time)
+    if isinstance(pos, slice):
+        pos = pos.start
+    elif not isinstance(pos, int):
+        pos = int(pos[0])
+    if pos + 1 < len(idx):
+        return pd.Timestamp(idx[pos + 1])
+
+    ts = pd.Timestamp(candle_time)
+    ct = get_central_tz()
+    ts = ts.tz_localize(ct) if ts.tzinfo is None else ts.tz_convert(ct)
+    rth_close = pd.Timestamp(ts.date(), tz=ct) + pd.Timedelta(hours=15)
+    if ts >= rth_close:
+        return ts
+    return min(ts + pd.Timedelta(hours=1), rth_close)
+
+
 def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
     if rth_df is None or rth_df.empty:
         return _empty_pivot("HIGH_PIVOT")
     df = rth_df.sort_index()
     high_ts = df["High"].idxmax()
-    return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), high_ts, "session_high", candle_color(df.loc[high_ts]), False)
+    anchor_ts = get_hourly_candle_close_time(df, high_ts)
+    return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), anchor_ts, "session_high", candle_color(df.loc[high_ts]), False)
 
 
 def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
@@ -206,7 +226,8 @@ def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
         return _empty_pivot("LOW_PIVOT")
     df = rth_df.sort_index()
     low_ts = df["Low"].idxmin()
-    return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), low_ts, "session_low", candle_color(df.loc[low_ts]), False)
+    anchor_ts = get_hourly_candle_close_time(df, low_ts)
+    return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), anchor_ts, "session_low", candle_color(df.loc[low_ts]), False)
 
 
 def find_primary_pivots(rth_df: pd.DataFrame) -> dict:

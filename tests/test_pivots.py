@@ -5,10 +5,12 @@ from datetime import datetime
 import pandas as pd
 
 from app import (
+    DEFAULT_SLOPE_PER_HOUR,
     candle_color,
     find_high_pivot,
     find_low_pivot,
     find_secondary_pivots,
+    build_primary_lines,
     get_central_tz,
 )
 
@@ -37,7 +39,7 @@ def test_high_pivot_found() -> None:
     ])
     p = find_high_pivot(df)
     assert p.price == 12
-    assert p.timestamp == df.index[1]
+    assert p.timestamp == df.index[1] + pd.Timedelta(hours=1)
     assert p.fallback_used is False
     assert p.source == "session_high"
 
@@ -49,7 +51,7 @@ def test_low_pivot_found() -> None:
     ])
     p = find_low_pivot(df)
     assert p.price == 8
-    assert p.timestamp == df.index[0]
+    assert p.timestamp == df.index[1]
     assert not p.fallback_used
     assert p.candle_color == "red"
 
@@ -67,8 +69,22 @@ def test_newest_pattern_selected_for_high_and_low() -> None:
     ])
     hp = find_high_pivot(df)
     lp = find_low_pivot(df)
-    assert hp.timestamp == df.index[4]
-    assert lp.timestamp == df.index[6]
+    assert hp.timestamp == df.index[5]
+    assert lp.timestamp == df.index[7]
+
+
+def test_high_pivot_projection_uses_candle_close_anchor() -> None:
+    df = _df([
+        ("2026-04-28T13:00:00", 718, 718.5, 717, 718.2),
+        ("2026-04-28T14:00:00", 718.2, 719.78, 718, 719.1),
+    ])
+    hp = find_high_pivot(df)
+    assert hp.price == 719.78
+    assert hp.timestamp == _df([("2026-04-28T15:00:00", 0, 0, 0, 0)]).index[0]
+    ua, ud, *_ = build_primary_lines(hp, find_low_pivot(df), DEFAULT_SLOPE_PER_HOUR)
+    next_9am = _df([("2026-04-29T09:00:00", 0, 0, 0, 0)]).index[0]
+    assert ua.tradable_value_at(next_9am) == 721.63
+    assert ud.tradable_value_at(next_9am) == 717.93
 
 
 def test_doji_does_not_invalidate_session_extreme_primary() -> None:
@@ -96,7 +112,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 12, 13, 11, 13),
     ])
     hp = find_high_pivot(high_no_pattern)
-    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[1]
+    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[2]
 
     low_no_pattern = _df([
         ("2026-04-28T08:30:00", 10, 11, 8, 9),
@@ -104,7 +120,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 8, 9, 7, 7),
     ])
     lp = find_low_pivot(low_no_pattern)
-    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[1]
+    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[2]
 
 
 def test_secondary_pivots() -> None:
