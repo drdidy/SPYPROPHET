@@ -9,10 +9,11 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SYMBOL = "SPY"
-CENTRAL_TZ_NAME = "US/Central"
+CENTRAL_TZ_NAME = "America/Chicago"
+CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 
@@ -96,8 +97,15 @@ class DynamicLine:
         return float((abs_dist / price) * 100) if not pd.isna(abs_dist) else float("nan")
 
 
-def get_central_tz() -> ZoneInfo:
-    return ZoneInfo(CENTRAL_TZ_NAME)
+def get_central_tz():
+    for tz_name in CENTRAL_TZ_ALIASES:
+        try:
+            return ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            continue
+
+    import pytz
+    return pytz.timezone(CENTRAL_TZ_NAME)
 
 
 def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:

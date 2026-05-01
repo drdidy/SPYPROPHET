@@ -6,3 +6,4 @@ plotly
 pytz
 pytest
 requests
+tzdata
