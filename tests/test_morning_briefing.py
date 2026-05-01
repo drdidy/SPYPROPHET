@@ -19,6 +19,9 @@ from app import (
     economic_event_from_ai_calendar_dict,
     extract_json_payload_from_text,
     fallback_morning_decision,
+    summarize_unusual_whales_flow_alerts,
+    summarize_unusual_whales_gex,
+    unusual_whales_card_data,
     merge_citations,
     morning_decision_from_result,
     calculate_max_pain,
@@ -220,3 +223,84 @@ def test_ai_calendar_event_requires_exact_date_time_and_source() -> None:
     assert event.impact == "High"
 
     assert economic_event_from_ai_calendar_dict({"event": "CPI", "event_date": "2026-05-01"}) is None
+
+
+def test_unusual_whales_flow_alerts_reduce_to_actionable_pressure() -> None:
+    now = pd.Timestamp("2026-05-01 09:45", tz="America/Chicago")
+    summary = summarize_unusual_whales_flow_alerts(
+        {
+            "data": [
+                {
+                    "ticker": "SPY",
+                    "type": "call",
+                    "strike": "720",
+                    "created_at": "2026-05-01T14:40:00Z",
+                    "total_premium": "250000",
+                    "total_ask_side_prem": "240000",
+                    "total_bid_side_prem": "10000",
+                    "has_sweep": True,
+                    "alert_rule": "RepeatedHits",
+                },
+                {
+                    "ticker": "SPY",
+                    "type": "put",
+                    "strike": "715",
+                    "created_at": "2026-04-20T14:40:00Z",
+                    "total_premium": "999999",
+                    "total_ask_side_prem": "999999",
+                    "total_bid_side_prem": "0",
+                },
+            ]
+        },
+        now,
+    )
+
+    assert summary["alert_count"] == 1
+    assert summary["flow_bias"] == "Bullish flow"
+    assert summary["key_strikes"][0]["strike"] == 720.0
+    assert summary["largest_alerts"][0]["sweep"] is True
+
+
+def test_unusual_whales_gex_finds_flip_and_levels() -> None:
+    summary = summarize_unusual_whales_gex(
+        {
+            "data": [
+                {"strike": "718", "call_gamma_oi": "100", "put_gamma_oi": "-300"},
+                {"strike": "720", "call_gamma_oi": "400", "put_gamma_oi": "-100"},
+            ]
+        },
+        latest_price=719,
+    )
+
+    assert summary["gamma_flip"] == 719.0
+    assert summary["levels"][0]["strike"] in {718.0, 720.0}
+
+
+def test_unusual_whales_card_only_appears_when_paid_data_loaded() -> None:
+    empty = OptionsIntelligence(SourceStatus("Options intelligence", "connected", ""), 1, 1, 710, 712, 708, [])
+    assert unusual_whales_card_data(empty)[0] == ""
+
+    loaded = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", ""),
+        1,
+        1,
+        710,
+        712,
+        708,
+        [],
+        unusual_whales={
+            "flow_alerts": {
+                "flow_bias": "Bearish flow",
+                "alert_count": 3,
+                "net_premium_pressure": -350000,
+                "key_strikes": [{"strike": 718, "call_premium": 0, "put_premium": 400000}],
+            },
+            "market_tide": {"tone": "Risk-off options tide"},
+        },
+    )
+
+    value, copy, chips, tone = unusual_whales_card_data(loaded)
+    assert "Bearish flow" in value
+    assert "718" in copy
+    assert "3 flow alerts" in chips
+    assert tone == "red"

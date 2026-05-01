@@ -52,6 +52,8 @@ MORNING_BRIEFING_NEWS_MAX_AGE_DAYS = 1
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_WEB_SEARCH_DEFAULT = "true"
+UNUSUAL_WHALES_BASE_URL = "https://api.unusualwhales.com"
+UNUSUAL_WHALES_TOKEN_KEYS = ("UNUSUAL_WHALES_API_KEY", "UNUSUAL_WHALES_REFRESH_TOKEN")
 CURATED_MORNING_SOURCES = [
     {"name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/default.htm", "role": "Official Fed press releases, monetary policy, and speeches"},
     {"name": "BLS", "url": "https://www.bls.gov/feed/", "role": "Official labor and inflation release feeds"},
@@ -169,6 +171,7 @@ class OptionsIntelligence:
     put_wall: float
     high_open_interest: list[dict]
     selected_quotes: list[dict] | None = None
+    unusual_whales: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -910,6 +913,377 @@ def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> t
     return payload if isinstance(payload, dict) else {"data": payload}, source_status(url_key, True, "Configured external endpoint returned data.", pd.Timestamp.now(tz=get_central_tz()), url)
 
 
+def get_unusual_whales_token() -> str:
+    for key in UNUSUAL_WHALES_TOKEN_KEYS:
+        token = get_secret_or_env(key)
+        if token:
+            return token
+    return ""
+
+
+def unusual_whales_status(ok: bool, detail: str, as_of=None, url: str | None = None, skipped: bool = False) -> SourceStatus:
+    state = "skipped" if skipped else "connected" if ok else "unavailable"
+    return SourceStatus("Unusual Whales intelligence", state, detail, pd.Timestamp(as_of) if as_of is not None else None, url)
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_unusual_whales_json(endpoint: str, params: tuple[tuple[str, object], ...] = ()) -> tuple[dict | None, str | None]:
+    token = get_unusual_whales_token()
+    if not token:
+        return None, "UNUSUAL_WHALES_API_KEY or UNUSUAL_WHALES_REFRESH_TOKEN is not configured."
+    url = f"{UNUSUAL_WHALES_BASE_URL}{endpoint}"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "UW-CLIENT-API-ID": "100001",
+        "User-Agent": "SPYProphet/1.0",
+    }
+    try:
+        response = requests.get(url, headers=headers, params=list(params), timeout=12)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.HTTPError as e:
+        status = getattr(e.response, "status_code", "HTTP")
+        return None, f"Unusual Whales {endpoint} failed with {status}."
+    except Exception as e:
+        return None, f"Unusual Whales {endpoint} failed: {type(e).__name__}."
+    if isinstance(payload, dict):
+        return payload, None
+    return {"data": payload}, None
+
+
+def payload_rows(payload: dict | list | None) -> list[dict]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ["data", "results", "rows", "events", "calendar"]:
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return [payload]
+
+
+def parse_market_timestamp(value) -> pd.Timestamp | None:
+    if not value:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+        return ts.tz_convert(get_central_tz())
+    except Exception:
+        return None
+
+
+def row_is_current_for_0dte(row: dict, now_ct, time_keys: tuple[str, ...] = ("created_at", "timestamp", "time", "date")) -> bool:
+    for key in time_keys:
+        ts = parse_market_timestamp(row.get(key))
+        if ts is not None:
+            return is_fresh_for_0dte(ts, now_ct)
+    return False
+
+
+def _sum_rows(rows: list[dict], key: str) -> float:
+    return float(sum(_finite_float(row.get(key), 0.0) for row in rows))
+
+
+def _strike_key(value) -> float | None:
+    strike = _finite_float(value)
+    return None if pd.isna(strike) else float(strike)
+
+
+def summarize_unusual_whales_flow_alerts(payload: dict | None, now_ct, expiration_date=None) -> dict:
+    expiry_target = str(expiration_date) if expiration_date is not None else ""
+    rows = []
+    for row in payload_rows(payload):
+        ticker = str(row.get("ticker") or row.get("ticker_symbol") or row.get("underlying_symbol") or "").upper()
+        if ticker and ticker != SYMBOL:
+            continue
+        row_expiry = str(row.get("expiry") or row.get("expiration") or "")
+        if expiry_target and row_expiry and row_expiry != expiry_target:
+            continue
+        if not row_is_current_for_0dte(row, now_ct, ("created_at", "timestamp", "time")):
+            continue
+        rows.append(row)
+    call_rows = [row for row in rows if str(row.get("type") or row.get("option_type") or "").lower() == "call"]
+    put_rows = [row for row in rows if str(row.get("type") or row.get("option_type") or "").lower() == "put"]
+    call_ask = _sum_rows(call_rows, "total_ask_side_prem")
+    call_bid = _sum_rows(call_rows, "total_bid_side_prem")
+    put_ask = _sum_rows(put_rows, "total_ask_side_prem")
+    put_bid = _sum_rows(put_rows, "total_bid_side_prem")
+    call_premium = _sum_rows(call_rows, "total_premium")
+    put_premium = _sum_rows(put_rows, "total_premium")
+    bullish = call_ask + put_bid
+    bearish = put_ask + call_bid
+    gross = max(bullish + bearish, 1.0)
+    net = bullish - bearish
+    if net > max(100000, gross * 0.15):
+        bias = "Bullish flow"
+    elif net < -max(100000, gross * 0.15):
+        bias = "Bearish flow"
+    else:
+        bias = "Mixed flow"
+    by_strike: dict[float, dict] = {}
+    for row in rows:
+        strike = _strike_key(row.get("strike"))
+        if strike is None:
+            continue
+        side = str(row.get("type") or row.get("option_type") or "").lower()
+        bucket = by_strike.setdefault(strike, {"strike": strike, "call_premium": 0.0, "put_premium": 0.0, "net_pressure": 0.0, "alerts": 0})
+        premium = _finite_float(row.get("total_premium"), 0.0)
+        ask = _finite_float(row.get("total_ask_side_prem"), 0.0)
+        bid = _finite_float(row.get("total_bid_side_prem"), 0.0)
+        if side == "call":
+            bucket["call_premium"] += premium
+            bucket["net_pressure"] += ask - bid
+        elif side == "put":
+            bucket["put_premium"] += premium
+            bucket["net_pressure"] += bid - ask
+        bucket["alerts"] += 1
+    largest = sorted(rows, key=lambda row: _finite_float(row.get("total_premium"), 0.0), reverse=True)[:5]
+    alert_summaries = [
+        {
+            "type": str(row.get("type") or row.get("option_type") or "").upper(),
+            "strike": _finite_float(row.get("strike")),
+            "expiry": row.get("expiry"),
+            "premium": _finite_float(row.get("total_premium"), 0.0),
+            "ask_premium": _finite_float(row.get("total_ask_side_prem"), 0.0),
+            "bid_premium": _finite_float(row.get("total_bid_side_prem"), 0.0),
+            "rule": row.get("alert_rule") or row.get("rule_name"),
+            "sweep": bool(row.get("has_sweep") or row.get("is_sweep")),
+            "created_at": row.get("created_at") or row.get("timestamp"),
+        }
+        for row in largest
+    ]
+    key_strikes = sorted(by_strike.values(), key=lambda row: abs(row.get("net_pressure", 0.0)) + row.get("call_premium", 0.0) + row.get("put_premium", 0.0), reverse=True)[:6]
+    latest_ts = max((parse_market_timestamp(row.get("created_at") or row.get("timestamp") or row.get("time")) for row in rows), default=None)
+    return {
+        "flow_bias": bias,
+        "alert_count": len(rows),
+        "call_premium": call_premium,
+        "put_premium": put_premium,
+        "bullish_premium": bullish,
+        "bearish_premium": bearish,
+        "net_premium_pressure": net,
+        "largest_alerts": alert_summaries,
+        "key_strikes": key_strikes,
+        "as_of": str(latest_ts) if latest_ts is not None else None,
+    }
+
+
+def summarize_unusual_whales_options_volume(payload: dict | None, now_ct) -> dict | None:
+    rows = [row for row in payload_rows(payload) if row_is_current_for_0dte(row, now_ct, ("timestamp", "date", "time"))]
+    if not rows:
+        return None
+    row = rows[-1]
+    call_volume = _finite_float(row.get("call_volume") or row.get("calls_volume") or row.get("call_vol"), 0.0)
+    put_volume = _finite_float(row.get("put_volume") or row.get("puts_volume") or row.get("put_vol"), 0.0)
+    ratio = _finite_float(row.get("put_call_ratio") or row.get("put_call_volume_ratio"))
+    if pd.isna(ratio) and call_volume:
+        ratio = put_volume / call_volume
+    return {
+        "call_volume": call_volume,
+        "put_volume": put_volume,
+        "put_call_volume_ratio": ratio,
+        "timestamp": row.get("timestamp") or row.get("date") or row.get("time"),
+    }
+
+
+def summarize_unusual_whales_iv(payload: dict | None) -> dict | None:
+    rows = payload_rows(payload)
+    if not rows:
+        return None
+    row = rows[-1]
+    return {
+        "iv": _finite_float(row.get("iv") or row.get("implied_volatility") or row.get("interpolated_iv")),
+        "iv_rank": _finite_float(row.get("iv_rank") or row.get("rank")),
+        "iv_percentile": _finite_float(row.get("iv_percentile") or row.get("percentile")),
+        "term_note": row.get("tenor") or row.get("expiry") or row.get("date"),
+    }
+
+
+def summarize_unusual_whales_darkpool(payload: dict | None, now_ct, latest_price: float | None = None) -> dict | None:
+    rows = []
+    for row in payload_rows(payload):
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+        if ticker and ticker != SYMBOL:
+            continue
+        if not row_is_current_for_0dte(row, now_ct, ("executed_at", "timestamp", "time")):
+            continue
+        rows.append(row)
+    if not rows:
+        return None
+    total_premium = _sum_rows(rows, "premium")
+    largest = sorted(rows, key=lambda row: _finite_float(row.get("premium"), 0.0), reverse=True)[:5]
+    levels: dict[float, float] = {}
+    for row in rows:
+        price = _finite_float(row.get("price"))
+        if pd.isna(price):
+            continue
+        rounded = round(price, 1)
+        if latest_price is not None and not pd.isna(latest_price) and abs(rounded - float(latest_price)) > 15:
+            continue
+        levels[rounded] = levels.get(rounded, 0.0) + _finite_float(row.get("premium"), 0.0)
+    return {
+        "print_count": len(rows),
+        "total_premium": total_premium,
+        "largest_prints": [
+            {
+                "price": _finite_float(row.get("price")),
+                "premium": _finite_float(row.get("premium"), 0.0),
+                "size": _finite_float(row.get("size"), 0.0),
+                "executed_at": row.get("executed_at") or row.get("timestamp"),
+            }
+            for row in largest
+        ],
+        "key_levels": [{"price": price, "premium": premium} for price, premium in sorted(levels.items(), key=lambda item: item[1], reverse=True)[:5]],
+    }
+
+
+def summarize_unusual_whales_market_tide(payload: dict | None, now_ct) -> dict | None:
+    rows = [row for row in payload_rows(payload) if row_is_current_for_0dte(row, now_ct, ("timestamp", "date"))]
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda row: parse_market_timestamp(row.get("timestamp") or row.get("date")) or pd.Timestamp.min.tz_localize("UTC"))
+    latest = rows[-1]
+    call_net = _finite_float(latest.get("net_call_premium"), 0.0)
+    put_net = _finite_float(latest.get("net_put_premium"), 0.0)
+    net = call_net - abs(put_net)
+    if net > 1000000:
+        tone = "Risk-on options tide"
+    elif net < -1000000:
+        tone = "Risk-off options tide"
+    else:
+        tone = "Balanced options tide"
+    return {
+        "tone": tone,
+        "net_call_premium": call_net,
+        "net_put_premium": put_net,
+        "net_volume": _finite_float(latest.get("net_volume"), 0.0),
+        "timestamp": latest.get("timestamp") or latest.get("date"),
+    }
+
+
+def summarize_unusual_whales_gex(payload: dict | None, latest_price: float | None = None) -> dict:
+    rows = []
+    for row in payload_rows(payload):
+        strike = _strike_key(row.get("strike") or row.get("price"))
+        if strike is None:
+            continue
+        call_gex = _finite_float(row.get("call_gex"), _finite_float(row.get("call_gamma_oi"), 0.0))
+        put_gex = _finite_float(row.get("put_gex"), _finite_float(row.get("put_gamma_oi"), 0.0))
+        total = call_gex + put_gex
+        rows.append({"strike": strike, "total_gex": total, "call_gex": call_gex, "put_gex": put_gex})
+    if latest_price is not None and not pd.isna(latest_price):
+        rows = [row for row in rows if abs(row["strike"] - float(latest_price)) <= 35] or rows
+    rows = sorted(rows, key=lambda row: row["strike"])
+    gamma_flip = None
+    for left, right in zip(rows, rows[1:]):
+        if left["total_gex"] == 0:
+            gamma_flip = left["strike"]
+            break
+        if (left["total_gex"] < 0 < right["total_gex"]) or (left["total_gex"] > 0 > right["total_gex"]):
+            gamma_flip = round((left["strike"] + right["strike"]) / 2, 2)
+            break
+    ranked = sorted(rows, key=lambda row: abs(row["total_gex"]), reverse=True)[:6]
+    net = sum(row["total_gex"] for row in rows)
+    tone = "Stabilizing positive gamma" if net > 0 else "Volatile negative gamma" if net < 0 else "Neutral gamma"
+    return {"gamma_flip": gamma_flip, "dealer_tone": tone, "levels": ranked, "net_gex": net}
+
+
+def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | None = None, now_ct=None) -> tuple[dict | None, SourceStatus]:
+    now = pd.Timestamp(now_ct if now_ct is not None else datetime.now(tz=get_central_tz()))
+    now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
+    if not get_unusual_whales_token():
+        return None, unusual_whales_status(False, "Unusual Whales token is not configured.", skipped=True)
+    today = str(now.date())
+    errors = []
+    flow_payload, err = fetch_unusual_whales_json(
+        "/api/option-trades/flow-alerts",
+        (
+            ("ticker_symbol", SYMBOL),
+            ("is_otm", True),
+            ("min_premium", 10000),
+            ("limit", 100),
+        ),
+    )
+    if err:
+        errors.append(err)
+    tide_payload, err = fetch_unusual_whales_json("/api/market/market-tide", (("date", today), ("otm_only", "true"), ("interval_5m", "true")))
+    if err:
+        errors.append(err)
+    options_volume_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/options-volume", (("date", today),))
+    if err:
+        errors.append(err)
+    iv_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/interpolated-iv", (("date", today),))
+    if err:
+        errors.append(err)
+    gex_payload, err = fetch_unusual_whales_json(
+        f"/api/stock/{SYMBOL}/spot-exposures/strike",
+        tuple(
+            (key, value)
+            for key, value in [
+                ("date", today),
+                ("min_strike", int(float(latest_price) - 35) if latest_price is not None and not pd.isna(latest_price) else None),
+                ("max_strike", int(float(latest_price) + 35) if latest_price is not None and not pd.isna(latest_price) else None),
+                ("limit", 100),
+            ]
+            if value is not None
+        ),
+    )
+    if err:
+        errors.append(err)
+    darkpool_payload, err = fetch_unusual_whales_json(f"/api/darkpool/{SYMBOL}", (("limit", 50),))
+    if err:
+        errors.append(err)
+    news_payload, err = fetch_unusual_whales_json("/api/news/headlines", (("ticker", SYMBOL), ("limit", 10),))
+    if err:
+        errors.append(err)
+    flow = summarize_unusual_whales_flow_alerts(flow_payload, now, expiration_date)
+    tide = summarize_unusual_whales_market_tide(tide_payload, now)
+    volume = summarize_unusual_whales_options_volume(options_volume_payload, now)
+    iv = summarize_unusual_whales_iv(iv_payload)
+    darkpool = summarize_unusual_whales_darkpool(darkpool_payload, now, latest_price)
+    gex = summarize_unusual_whales_gex(gex_payload, latest_price)
+    uw_news_rows = [row for row in payload_rows(news_payload) if row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))][:5]
+    has_data = bool(flow["alert_count"] or tide or volume or iv or darkpool or uw_news_rows or gex.get("levels"))
+    if not has_data:
+        detail = "Unusual Whales token was found, but no current SPY 0DTE rows returned yet."
+        if errors:
+            detail = errors[0]
+        return None, unusual_whales_status(False, detail, now)
+    payload = {
+        "source": "Unusual Whales API",
+        "date": today,
+        "flow_alerts": flow,
+        "market_tide": tide,
+        "options_volume": volume,
+        "interpolated_iv": iv,
+        "darkpool": darkpool,
+        "fresh_news": [
+            {
+                "title": row.get("title") or row.get("headline"),
+                "source": row.get("source") or row.get("provider") or "Unusual Whales",
+                "published_at": row.get("created_at") or row.get("published_at") or row.get("timestamp") or row.get("date"),
+                "url": row.get("url") or row.get("link"),
+            }
+            for row in uw_news_rows
+        ],
+        "gex": gex,
+    }
+    bits = []
+    if flow["alert_count"]:
+        bits.append(f"{flow['alert_count']} SPY 0DTE OTM flow alerts")
+    if tide:
+        bits.append(tide["tone"])
+    if gex.get("levels"):
+        bits.append("GEX by strike")
+    if darkpool:
+        bits.append("SPY dark-pool prints")
+    detail = "Loaded " + ", ".join(bits or ["Unusual Whales SPY context"]) + "."
+    return payload, unusual_whales_status(True, detail, flow.get("as_of") or now, f"{UNUSUAL_WHALES_BASE_URL}/docs")
+
+
 def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_price: float | None, width: float = 25.0) -> tuple[pd.DataFrame, pd.DataFrame]:
     if underlying_price is None or pd.isna(underlying_price):
         return calls, puts
@@ -925,10 +1299,14 @@ def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_
 
 def build_options_intelligence(expiration_date, underlying_price: float | None = None, option_state: OptionsCockpitState | None = None) -> OptionsIntelligence:
     selected_quotes = selected_option_quote_summaries(option_state)
+    whales_payload, whales_status = fetch_unusual_whales_intelligence(expiration_date, underlying_price)
+    if whales_payload is not None:
+        whales_payload = {**whales_payload, "status": asdict(whales_status)}
     calls, puts, chain_status = option_chain_for_expiration(expiration_date)
     calls, puts = filter_near_spy_strikes(calls, puts, underlying_price)
     if calls.empty or puts.empty:
-        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], selected_quotes)
+        status = whales_status if whales_payload else chain_status
+        return OptionsIntelligence(status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], selected_quotes, whales_payload)
     call_oi = float(calls.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     put_oi = float(puts.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     call_vol = float(calls.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
@@ -936,8 +1314,11 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
     call_wall = float(calls.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if call_oi > 0 else float("nan")
     put_wall = float(puts.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if put_oi > 0 else float("nan")
     detail = "Available option-chain context using near-SPY open interest, volume, and selected contract quotes."
+    if whales_payload:
+        detail += " Unusual Whales paid flow/GEX context is loaded."
+    status = source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz()))
     return OptionsIntelligence(
-        source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz())),
+        status,
         put_oi / call_oi if call_oi else float("nan"),
         put_vol / call_vol if call_vol else float("nan"),
         calculate_max_pain(calls, puts),
@@ -945,10 +1326,25 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
         put_wall,
         top_open_interest_rows(calls, puts),
         selected_quotes,
+        whales_payload,
     )
 
 
 def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExposureInsight:
+    whales = options_intel.unusual_whales or {}
+    whales_gex = whales.get("gex") if isinstance(whales, dict) else None
+    if isinstance(whales_gex, dict) and (whales_gex.get("levels") or whales_gex.get("gamma_flip")):
+        levels = whales_gex.get("levels") or []
+        magnets = [row.get("strike") for row in levels if isinstance(row, dict) and row.get("strike") is not None]
+        notes = "Unusual Whales spot GEX by strike is loaded; use these levels as volatility/magnet context, not as standalone entries."
+        return GammaExposureInsight(
+            source_status("Unusual Whales GEX", True, "SPY spot GEX by strike loaded from Unusual Whales.", pd.Timestamp.now(tz=get_central_tz()), f"{UNUSUAL_WHALES_BASE_URL}/docs"),
+            whales_gex.get("gamma_flip"),
+            str(whales_gex.get("dealer_tone") or "Unusual Whales GEX"),
+            [float(x) for x in magnets[:6] if not pd.isna(_finite_float(x))],
+            notes,
+            whales,
+        )
     if not get_secret_or_env("GEX_API_URL"):
         magnets = [x for x in [options_intel.put_wall, options_intel.max_pain, options_intel.call_wall] if x is not None and not pd.isna(x)]
         return GammaExposureInsight(source_status("OI magnet proxy", True, "Near-SPY option open interest proxy from available option chain."), None, "OI proxy", magnets, "Near-SPY open-interest magnets from the option chain.", None)
@@ -1010,6 +1406,15 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     sentiment = score_headline_sentiment(news_items)
     macro_context = [move for move in global_context if move.label in {"Dollar Index", "10Y yield", "5Y yield"}]
     source_statuses = [technical.status, options_intel.status, sentiment.status]
+    whales_status_raw = (options_intel.unusual_whales or {}).get("status") if isinstance(options_intel.unusual_whales, dict) else None
+    if isinstance(whales_status_raw, dict):
+        source_statuses.append(SourceStatus(
+            str(whales_status_raw.get("name") or "Unusual Whales intelligence"),
+            str(whales_status_raw.get("status") or "connected"),
+            str(whales_status_raw.get("detail") or "Unusual Whales data loaded."),
+            pd.Timestamp(whales_status_raw.get("as_of")) if whales_status_raw.get("as_of") else None,
+            whales_status_raw.get("url"),
+        ))
     if gamma.provider_payload:
         source_statuses.append(gamma.status)
     source_statuses.append(source_status("Global yfinance markets", bool(global_context), f"{len(global_context)} instruments loaded from Yahoo Finance."))
@@ -1053,6 +1458,7 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     return (
         "You are the Morning Briefing Agent inside SPY Prophet. Produce an actionable, structured briefing for a novice 0DTE SPY options trader.\n"
         "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
+        "If options_intelligence.unusual_whales is present, treat it as the primary paid options-flow source and explicitly weigh SPY 0DTE OTM flow, market tide, key strikes, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
         "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
@@ -1342,6 +1748,12 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             quote_value = f"{desired_type} {fmt_price(quote.get('strike'), 0)}"
             break
     confidence = int(result.confidence if result else 45)
+    flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
+    flow_reason = (
+        f"Unusual Whales 0DTE flow reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}."
+        if isinstance(flow, dict) and flow.get("flow_bias")
+        else f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}."
+    )
     return {
         "stance": "WAIT",
         "headline": "Wait for a confirmed hourly rejection before choosing a 0DTE contract.",
@@ -1358,7 +1770,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
         },
         "why": [
             f"Structure learning is {bundle.learning_profile.confidence_label} with target-first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
-            f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}.",
+            flow_reason,
             f"Macro timing: {event.event} at {event.time_label}." if event else "Macro timing is not loaded yet.",
         ],
         "avoid": [
@@ -1431,11 +1843,23 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
             f"- {quote.get('provider')} {quote.get('type')} {quote.get('strike')}: mark {fmt_price(quote.get('mark'))}, bid/ask {fmt_price(quote.get('bid'))}/{fmt_price(quote.get('ask'))}, delta {fmt_float(quote.get('delta'))}, spread {fmt_price(quote.get('spread'))}."
             for quote in options.selected_quotes
         )
+    whales = options.unusual_whales or {}
+    flow = whales.get("flow_alerts", {}) if isinstance(whales, dict) else {}
+    tide = whales.get("market_tide") if isinstance(whales, dict) else None
+    flow_line = ""
+    if flow:
+        first_strike = (flow.get("key_strikes") or [{}])[0]
+        strike_text = f" Key strike {fmt_price(first_strike.get('strike'), 0)}." if isinstance(first_strike, dict) and first_strike.get("strike") is not None else ""
+        flow_line = f"- Unusual Whales: {flow.get('flow_bias')} with net premium pressure {fmt_money_short(flow.get('net_premium_pressure'))}.{strike_text}\n"
+    if tide:
+        flow_line += f"- Market tide: {tide.get('tone')} with call net {fmt_money_short(tide.get('net_call_premium'))} and put net {fmt_money_short(tide.get('net_put_premium'))}.\n"
     risk_items = []
     for event in high_events[:3]:
         risk_items.append(f"{event.event} at {event.time_label}: avoid fresh entries immediately before the release and wait for post-release structure.")
     if options.put_call_open_interest_ratio is not None and not pd.isna(options.put_call_open_interest_ratio) and options.put_call_open_interest_ratio > 1.5:
         risk_items.append("Put open interest is heavy near today's chain; treat bearish reads carefully because hedging can look directional.")
+    if isinstance(flow, dict) and flow.get("flow_bias") in {"Bearish flow", "Bullish flow"}:
+        risk_items.append(f"Unusual Whales flow is {flow.get('flow_bias').lower()}; do not take the opposite side unless SPY Prophet confirms a rejection.")
     risk_text = "\n".join(f"- {item}" for item in risk_items) if risk_items else "- No major risk flags from the loaded sources."
     text = f"""Good morning. Here is what you need to know for SPY trading today.
 
@@ -1447,6 +1871,7 @@ EXTERNAL FACTORS AFFECTING THESE LINES:
 - Options OI put/call ratio: {fmt_float(options.put_call_open_interest_ratio)}; volume put/call ratio: {fmt_float(options.put_call_volume_ratio)}.
 - Max pain/OI magnet proxy: {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.
 {selected_quote_lines}
+{flow_line}
 {gamma_line}- OI magnets: {oi_magnets}.
 - Global tone: {global_lines}
 - Sector leadership: {top_sectors}. Laggards: {weak_sectors}.
@@ -2365,6 +2790,21 @@ def fmt_float(value, digits=2):
 def fmt_pct(value, digits=1):
     v=fmt_nan(value,None)
     return "-" if v is None else f"{float(v):.{digits}f}%"
+
+def fmt_money_short(value):
+    v = fmt_nan(value, None)
+    if v is None:
+        return "-"
+    amount = float(v)
+    sign = "-" if amount < 0 else ""
+    amount = abs(amount)
+    if amount >= 1_000_000_000:
+        return f"{sign}${amount / 1_000_000_000:.1f}B"
+    if amount >= 1_000_000:
+        return f"{sign}${amount / 1_000_000:.1f}M"
+    if amount >= 1_000:
+        return f"{sign}${amount / 1_000:.0f}K"
+    return f"{sign}${amount:.0f}"
 
 def fmt_time(value):
     if value is None: return "-"
@@ -3488,6 +3928,57 @@ def _joined_moves(moves: list[MarketMove], limit: int = 3) -> str:
     return " | ".join(move_line(move) for move in moves[:limit])
 
 
+def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, list[str], str]:
+    whales = options.unusual_whales or {}
+    if not isinstance(whales, dict) or not whales:
+        return "", "", [], "blue"
+    flow = whales.get("flow_alerts") or {}
+    tide = whales.get("market_tide") or {}
+    darkpool = whales.get("darkpool") or {}
+    volume = whales.get("options_volume") or {}
+    bias = str(flow.get("flow_bias") or tide.get("tone") or "Paid flow loaded")
+    net_pressure = flow.get("net_premium_pressure")
+    value = f"{bias} {fmt_money_short(net_pressure)}" if net_pressure is not None and not pd.isna(_finite_float(net_pressure)) else bias
+    key_strikes = flow.get("key_strikes") if isinstance(flow, dict) else []
+    first_strike = key_strikes[0] if key_strikes else None
+    copy = "SPY 0DTE OTM flow is being merged into the Action Brief."
+    if isinstance(first_strike, dict) and first_strike.get("strike") is not None:
+        side = "call" if _finite_float(first_strike.get("call_premium"), 0) >= _finite_float(first_strike.get("put_premium"), 0) else "put"
+        copy = f"Most active nearby whale strike: {fmt_price(first_strike.get('strike'), 0)} {side.upper()} pressure."
+    elif darkpool:
+        copy = f"Dark-pool prints loaded: {darkpool.get('print_count', 0)} prints, {fmt_money_short(darkpool.get('total_premium'))} notional."
+    chips = []
+    if isinstance(flow, dict) and flow.get("alert_count"):
+        chips.append(f"{flow.get('alert_count')} flow alerts")
+    if isinstance(tide, dict) and tide.get("tone"):
+        chips.append(str(tide.get("tone")))
+    if isinstance(volume, dict) and not pd.isna(_finite_float(volume.get("put_call_volume_ratio"))):
+        chips.append(f"Vol P/C {fmt_float(volume.get('put_call_volume_ratio'))}")
+    if isinstance(darkpool, dict) and darkpool.get("key_levels"):
+        level = darkpool["key_levels"][0]
+        chips.append(f"DP level {fmt_price(level.get('price'))}")
+    tone = "green" if "bull" in bias.lower() or "risk-on" in bias.lower() else "red" if "bear" in bias.lower() or "risk-off" in bias.lower() else "amber"
+    return value, copy, chips[:4], tone
+
+
+def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str, list[str], str] | None:
+    whales = options.unusual_whales or {}
+    if not isinstance(whales, dict) or not whales:
+        return None
+    gex = whales.get("gex") or {}
+    if not isinstance(gex, dict) or not (gex.get("levels") or gex.get("gamma_flip")):
+        return None
+    flip = gex.get("gamma_flip")
+    value = f"Flip {fmt_price(flip)}" if flip is not None and not pd.isna(_finite_float(flip)) else str(gex.get("dealer_tone") or "GEX loaded")
+    levels = [row for row in (gex.get("levels") or []) if isinstance(row, dict)]
+    copy = "Dealer hedging context from Unusual Whales spot GEX by strike."
+    if levels:
+        copy = "Largest GEX strike " + fmt_price(levels[0].get("strike"), 0) + "; use as magnet/volatility context."
+    chips = [f"{fmt_price(row.get('strike'), 0)} {fmt_money_short(row.get('total_gex'))}" for row in levels[:3]]
+    tone = "green" if _finite_float(gex.get("net_gex"), 0) > 0 else "red" if _finite_float(gex.get("net_gex"), 0) < 0 else "blue"
+    return value, copy, chips, tone
+
+
 def _morning_card_html(title: str, value: str, copy: str, icon: str, tone: str = "blue", chips: list[str] | None = None) -> str:
     chip_html = ""
     if chips:
@@ -3684,7 +4175,15 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     headline_value = f"{len(bundle.news_items)} fresh headlines" if bundle.news_items else "No fresh headlines"
     headline_copy = f"Loaded from {', '.join(headline_sources[:3])}." if headline_sources else "Only same-day or previous-day market headlines are allowed."
     gap_tone = "green" if technical.gap_from_prior_close and technical.gap_from_prior_close > 0 else "red" if technical.gap_from_prior_close and technical.gap_from_prior_close < 0 else "blue"
-    cards = [
+    cards = []
+    whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(options)
+    if whale_value:
+        cards.append(_morning_card_html("Whale Flow", whale_value, whale_copy, "bolt", whale_tone, whale_chips))
+    gex_card = unusual_whales_gex_card_data(options)
+    if gex_card:
+        gex_value, gex_copy, gex_chips, gex_tone = gex_card
+        cards.append(_morning_card_html("Dealer Gamma", gex_value, gex_copy, "gauge", gex_tone, gex_chips))
+    cards.extend([
         _morning_card_html("Macro Timing", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"),
         _morning_card_html(
             "Options Positioning",
@@ -3712,7 +4211,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
             "shield",
             "green" if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate else "amber",
         ),
-    ]
+    ])
     st.markdown(f"<div class='morning-dashboard'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
@@ -3744,6 +4243,13 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
     options_detail = f"{bundle.options_intelligence.status.detail} Selected quote source: {quote_detail}"
+    whales = bundle.options_intelligence.unusual_whales or {}
+    whale_flow = whales.get("flow_alerts", {}) if isinstance(whales, dict) else {}
+    whale_detail = (
+        f"{whale_flow.get('alert_count', 0)} SPY 0DTE OTM alerts; {whale_flow.get('flow_bias', 'flow loaded')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
+        if whale_flow
+        else "Unusual Whales paid feed was not loaded into this run."
+    )
     news_asof = bundle.news_items[0].published if bundle.news_items else None
     global_asof = bundle.global_context[0].as_of if bundle.global_context else None
     ai_detail = (
@@ -3754,6 +4260,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from your pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
         _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
         _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
+        _evidence_card("Unusual Whales", "Paid flow connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
         _evidence_card("Fresh Headlines", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded for catalyst context.", news_asof, "connected" if bundle.news_items else "watch"),
@@ -3814,7 +4321,8 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
         rows.append(_source_row_html("OpenAI web citations", "not used", "No AI web search citations were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
         ("Economic calendar", "Click Generate AI web briefing for current public calendar scouting, or connect Trading Economics/custom JSON for scheduled releases."),
-        ("Options depth", "Live Tastytrade gives bid, ask, spread, and Greeks. Delayed yfinance remains a price-only backup when live quotes are not active."),
+        ("Unusual Whales", "Add UNUSUAL_WHALES_API_KEY or UNUSUAL_WHALES_REFRESH_TOKEN in Streamlit secrets for paid 0DTE flow, market tide, dark-pool, IV, and GEX context."),
+        ("Options depth", "Live Tastytrade gives bid, ask, spread, and Greeks. Unusual Whales adds order-flow context; yfinance remains a delayed backup."),
         ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
     ]
     upgrade_html = "".join(
