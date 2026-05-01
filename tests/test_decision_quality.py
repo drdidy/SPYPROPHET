@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import pandas as pd
 
-from app import DynamicLine, TradeSignal, build_decision_state, calculate_wick_rejection_metrics, evaluate_daily_risk, evaluate_structure_status, get_central_tz, score_signal_quality, evaluate_chase_status
+from app import DynamicLine, SelectedStrikes, TradeSignal, build_decision_state, build_wait_discipline_items, calculate_wick_rejection_metrics, evaluate_daily_risk, evaluate_structure_status, get_central_tz, score_signal_quality, evaluate_chase_status
 
 
 def _ts(s: str) -> pd.Timestamp:
@@ -65,3 +65,17 @@ def test_decision_priority_and_daily_guardrail() -> None:
 
     stop = evaluate_daily_risk([_sig(), _sig(), _sig()], [score_signal_quality(_sig())], max_signals_per_day=3)
     assert stop["daily_action"] == "STOP_TRADING"
+
+
+def test_wait_discipline_items_fill_wait_card_with_strategy_gates() -> None:
+    line = DynamicLine("UD",100,_ts("2026-04-28T08:00:00"),0,"descending","CALL_ZONE","PRIMARY_HIGH",True,"")
+    pending = _sig(status="PENDING_CONFIRMATION")
+    decision = build_decision_state(pending, [line], 100.1, _ts("2026-04-28T10:30:00"), pd.Series({"Close":100.2}), [])
+    strikes = SelectedStrikes(100.0, 102, 98, _ts("2026-04-28").date(), "0DTE", None)
+
+    items = build_wait_discipline_items(decision, pending, line, strikes, _ts("2026-04-28T10:30:00"))
+
+    assert [item["label"] for item in items] == ["Candle Gate", "Chase Guard", "Contract Guard"]
+    assert items[0]["value"] == "Open 11:00 AM CDT"
+    assert items[1]["value"] == "No early entry"
+    assert items[2]["value"] == "Call OTM"

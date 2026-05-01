@@ -1185,6 +1185,11 @@ def inject_global_css() -> None:
     .decision-plate{border:1px solid var(--border);border-radius:8px;background:rgba(7,10,15,.58);padding:14px}
     .decision-main{font-size:1.45rem;font-weight:800;line-height:1.15;color:var(--text);margin:5px 0}
     .decision-reason{color:var(--muted);font-size:.86rem}
+    .wait-discipline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+    .wait-gate{border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:92px}
+    .wait-gate-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .wait-gate-value{font-size:1rem;font-weight:850;color:var(--text);margin-top:5px;line-height:1.18}
+    .wait-gate-copy{font-size:.76rem;line-height:1.25;color:var(--muted);margin-top:5px}
     .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
     .pill{border:1px solid var(--border);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.78rem;background:rgba(255,255,255,.03)}
     .pill.green{border-color:rgba(33,208,122,.55);color:var(--green)} .pill.red{border-color:rgba(255,95,124,.55);color:var(--red)} .pill.amber{border-color:rgba(244,199,107,.55);color:var(--amber)} .pill.blue{border-color:rgba(103,183,255,.55);color:var(--blue)}
@@ -1223,7 +1228,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid{grid-template-columns:1fr}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -1480,6 +1485,74 @@ def quality_label(quality) -> str:
     return _humanize(quality.grade)
 
 
+def next_hourly_checkpoint(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize(get_central_tz()) if ts.tzinfo is None else ts.tz_convert(get_central_tz())
+    floor = ts.replace(minute=0, second=0, microsecond=0, nanosecond=0)
+    return floor if ts == floor else floor + pd.Timedelta(hours=1)
+
+
+def build_wait_discipline_items(decision_state=None, latest_signal=None, closest_line=None, selected_strikes=None, now_ct=None) -> list[dict]:
+    now = pd.Timestamp(now_ct) if now_ct is not None else pd.Timestamp.now(tz=get_central_tz())
+    now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
+    if latest_signal and latest_signal.status == "PENDING_CONFIRMATION":
+        checkpoint = pd.Timestamp(latest_signal.rejection_time) + pd.Timedelta(hours=1)
+        candle_value = f"Open {fmt_clock_time(checkpoint)}"
+        candle_copy = "Entry is locked until the next hourly candle opens."
+    elif latest_signal:
+        candle_value = "Confirmed"
+        candle_copy = "Manage the confirmed setup; do not add after the chase guard fails."
+    else:
+        candle_value = f"Next {fmt_clock_time(next_hourly_checkpoint(now))}"
+        trigger = display_line_name(closest_line.name) if closest_line else "primary structure"
+        candle_copy = f"Need an hourly rejection at {trigger} before any entry."
+
+    guardrail = decision_state.guardrail_state if decision_state else None
+    chase_status = str(guardrail.chase_status if guardrail else "NO_SIGNAL").upper()
+    if chase_status == "MISSED_ENTRY":
+        chase_value = "Retest only"
+        chase_copy = "Price moved too far from entry; the first trade is gone."
+    elif latest_signal and latest_signal.status == "PENDING_CONFIRMATION":
+        chase_value = "No early entry"
+        chase_copy = "Let confirmation print before pricing the contract."
+    else:
+        chase_value = "Max $0.30"
+        chase_copy = "After confirmation, avoid entries beyond the chase limit."
+
+    watch_type = get_watch_option_type(latest_signal, None)
+    if watch_type == "CALL":
+        contract_value = "Call OTM"
+        contract_copy = f"Strike stays about ${TARGET_OTM_STRIKE_DISTANCE:.0f} above the entry reference."
+    elif watch_type == "PUT":
+        contract_value = "Put OTM"
+        contract_copy = f"Strike stays about ${TARGET_OTM_STRIKE_DISTANCE:.0f} below the entry reference."
+    elif selected_strikes:
+        contract_value = "Two-sided OTM"
+        contract_copy = "Keep the call above and put below the trigger reference."
+    else:
+        contract_value = "No contract"
+        contract_copy = "Contracts appear after SPY and structure data are ready."
+
+    return [
+        {"label": "Candle Gate", "value": candle_value, "copy": candle_copy},
+        {"label": "Chase Guard", "value": chase_value, "copy": chase_copy},
+        {"label": "Contract Guard", "value": contract_value, "copy": contract_copy},
+    ]
+
+
+def render_wait_discipline_html(decision_state=None, latest_signal=None, closest_line=None, selected_strikes=None, now_ct=None) -> str:
+    cards = []
+    for item in build_wait_discipline_items(decision_state, latest_signal, closest_line, selected_strikes, now_ct):
+        cards.append(
+            "<div class='wait-gate'>"
+            f"<div class='wait-gate-label'>{escape(item['label'])}</div>"
+            f"<div class='wait-gate-value'>{escape(item['value'])}</div>"
+            f"<div class='wait-gate-copy'>{escape(item['copy'])}</div>"
+            "</div>"
+        )
+    return f"<div class='wait-discipline'>{''.join(cards)}</div>"
+
+
 def _intel_tile(label: str, value: str, copy: str, tone: str = "blue", icon_name: str | None = None) -> str:
     icon_html = ui_icon(icon_name, tone, "mini") if icon_name else ""
     return (
@@ -1510,6 +1583,7 @@ def render_terminal_hero(
     clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
     projection_time = structure_projection_time or now_ct
     decision = _humanize(decision_state.final_decision if decision_state else "WAIT")
+    wait_discipline_html = render_wait_discipline_html(decision_state, latest_signal, closest_line, selected_strikes, now_ct)
     if decision_state and decision_state.signal_quality:
         q = decision_state.signal_quality
         decision_reason = f"Grade {_humanize(q.grade)} with score {fmt_float(q.score)}. {_humanize(q.action_label)}."
@@ -1581,6 +1655,7 @@ def render_terminal_hero(
                 {_pill('Action', action)}
                 {_pill('Signal', signal_text)}
               </div>
+              {wait_discipline_html}
             </div>
             <div class='quote-stack'>
               <div class='quote-mini'>
