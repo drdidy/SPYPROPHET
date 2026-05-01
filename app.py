@@ -852,18 +852,58 @@ def _fmt_num(v: float | None, nd: int = 2) -> str:
 def inject_global_css() -> None:
     st.markdown("""
     <style>
-    :root {--bg:#070b14;--panel:#101826cc;--panel-soft:#151f32aa;--border:#2a3b5f;--text:#e8f0ff;--muted:#8ea3c7;--call:#29d17d;--put:#ff6b8a;--neutral:#65b8ff;--warning:#ffcb6b;--danger:#ff5f6d;--glow-call:rgba(41,209,125,.35);--glow-put:rgba(255,107,138,.35);} 
-    .prophet-root{background:var(--bg);color:var(--text)} .prophet-header{padding:12px 16px;border:1px solid var(--border);border-radius:14px;background:linear-gradient(135deg,#111a2c,#0b1220)}
-    .metric-card{padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--panel)} .glow-card{box-shadow:0 0 20px rgba(101,184,255,.08)}
-    .card-title{font-size:.78rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:monospace} .small-muted{color:var(--muted);font-size:.8rem}
+    :root {
+      --bg:#070a0f;--surface:#0d131d;--surface2:#111a28;--surface3:#162235;
+      --border:#26364d;--border2:#355174;--text:#f4f7fb;--muted:#8da0b8;
+      --blue:#67b7ff;--green:#21d07a;--red:#ff5f7c;--amber:#f4c76b;
+      --cyan:#28d2c2;--shadow:0 18px 50px rgba(0,0,0,.35);
+    }
+    .block-container{padding-top:3rem;max-width:1240px}
+    [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
+    [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
+    [data-testid="stSidebar"] button{border-radius:8px}
+    div[data-baseweb="tab-list"]{gap:10px;border-bottom:1px solid var(--border);padding-bottom:0}
+    button[role="tab"]{padding:10px 0;border-bottom:2px solid transparent;color:var(--muted)}
+    button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
+    .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#0c1421,#101b2b 58%,#0b1019);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
+    .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
+    .brand-mark{font-size:.72rem;letter-spacing:.18em;color:var(--blue);text-transform:uppercase}
+    .brand-title{font-size:1.8rem;font-weight:800;color:var(--text);line-height:1.1;margin-top:4px}
+    .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
+    .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:14px;margin-top:16px}
+    .hero-price{font-family:Consolas,monospace;font-size:3rem;font-weight:800;color:var(--text);line-height:1}
+    .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .hero-sub{margin-top:8px;color:var(--muted);font-size:.86rem}
+    .decision-plate{border:1px solid var(--border);border-radius:8px;background:rgba(7,10,15,.58);padding:14px}
+    .decision-main{font-size:1.45rem;font-weight:800;line-height:1.15;color:var(--text);margin:5px 0}
+    .decision-reason{color:var(--muted);font-size:.86rem}
+    .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .pill{border:1px solid var(--border);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.78rem;background:rgba(255,255,255,.03)}
+    .pill.green{border-color:rgba(33,208,122,.55);color:var(--green)} .pill.red{border-color:rgba(255,95,124,.55);color:var(--red)} .pill.amber{border-color:rgba(244,199,107,.55);color:var(--amber)} .pill.blue{border-color:rgba(103,183,255,.55);color:var(--blue)}
+    .quote-stack{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .quote-mini{border:1px solid var(--border);border-radius:8px;padding:10px;background:rgba(255,255,255,.035)}
+    .quote-value{font-family:Consolas,monospace;font-size:1.35rem;font-weight:800;color:var(--text)}
+    .terminal-section{margin-top:14px}
+    .command-grid{display:grid;grid-template-columns:1.15fr .95fr .9fr;gap:14px}
+    .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,.18)}
+    .terminal-panel{padding:14px}
+    .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px}
+    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:8px}
+    .structure-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
+    .structure-tile{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(22,34,53,.8),rgba(13,19,29,.95));padding:12px;min-height:122px}
+    .structure-tile.closest{border-color:var(--blue);box-shadow:0 0 0 1px rgba(103,183,255,.3)}
+    .tile-name{font-size:1.1rem;font-weight:800;color:var(--text)}
+    .tile-value{font-family:Consolas,monospace;font-size:1.65rem;font-weight:800;color:var(--text);margin-top:4px}
+    .tile-meta{color:var(--muted);font-size:.78rem;margin-top:4px}
+    .tile-call{border-left:3px solid var(--green)} .tile-put{border-left:3px solid var(--red)}
     .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted)}
     .status-strip b{color:var(--text);font-weight:600}
-    .zone-call{border-color:var(--call)} .zone-put{border-color:var(--put)} .zone-neutral{border-color:var(--neutral)} .target-only{opacity:.85}
-    .signal-badge{padding:2px 10px;border-radius:999px;font-size:.78rem;border:1px solid var(--border)} .signal-call{background:rgba(41,209,125,.15)} .signal-put{background:rgba(255,107,138,.15)}
-    .signal-pending{border-color:var(--warning)} .signal-confirmed{border-color:var(--call)} .bias-card{padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft)}
-    .distance-wrap{height:8px;border-radius:99px;background:#1b2943}.distance-fill{height:8px;border-radius:99px;background:linear-gradient(90deg,#65b8ff,#29d17d)}
-    .price-pulse{animation:pulse 1.8s infinite}.ticker-scroll{white-space:nowrap;overflow:hidden}.ticker-track{display:inline-block;animation:tick 18s linear infinite}
-    @keyframes pulse{0%{opacity:1}50%{opacity:.7}100%{opacity:1}} @keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-40%)}}
+    .prophet-header{padding:16px;margin-bottom:12px}.prophet-header h3{margin:0;font-size:1.5rem}
+    .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:Consolas,monospace;color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
+    .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
+    .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
+    .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
+    @media (max-width: 1100px){.hero-grid,.command-grid{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -947,6 +987,215 @@ def render_status_strip(items) -> None:
     html = "".join(f"<span><b>{label}</b> {value if value is not None else '-'}</span>" for label, value in items)
     st.markdown(f"<div class='status-strip'>{html}</div>", unsafe_allow_html=True)
 
+
+def _tone_for_text(value: str | None) -> str:
+    text = (value or "").upper()
+    if any(word in text for word in ["CALL", "BULL", "LIVE", "CONFIRMED", "GO", "VALID"]):
+        return "green"
+    if any(word in text for word in ["PUT", "BEAR", "ERROR", "STOP", "AVOID"]):
+        return "red"
+    if any(word in text for word in ["WAIT", "PENDING", "WARN", "FALLBACK"]):
+        return "amber"
+    return "blue"
+
+
+def _humanize(value: str | None) -> str:
+    if value is None:
+        return "-"
+    return str(value).replace("_", " ")
+
+
+def _pill(label: str, value: str | None, tone: str | None = None) -> str:
+    return f"<span class='pill {tone or _tone_for_text(value)}'>{label}: {value or '-'}</span>"
+
+
+def _entry_stop_summary(signal) -> str:
+    if signal is None:
+        return ""
+    pieces = [f"Status {_humanize(signal.status)}."]
+    if signal.entry_price is not None and not pd.isna(signal.entry_price):
+        pieces.append(f"Entry {fmt_price(signal.entry_price)}.")
+    else:
+        pieces.append("Entry waits for the next candle open.")
+    if signal.stop_price is not None and not pd.isna(signal.stop_price):
+        pieces.append(f"Stop {fmt_price(signal.stop_price)}.")
+    if signal.target_line_name:
+        pieces.append(f"Target {_humanize(signal.target_line_name)} {fmt_price(signal.target_price)}.")
+    return " ".join(pieces)
+
+
+def render_terminal_hero(
+    latest_price,
+    bias_state,
+    decision_state,
+    closest_line,
+    latest_signal,
+    selected_strikes,
+    provider_status: str,
+    now_ct,
+    df: pd.DataFrame,
+    prior_day,
+) -> None:
+    latest_candle = fmt_time(df.index[-1]) if df is not None and not df.empty else "-"
+    clock = pd.Timestamp(now_ct).strftime("%I:%M:%S %p CT")
+    decision = _humanize(decision_state.final_decision if decision_state else "WAIT")
+    if decision_state and decision_state.signal_quality:
+        q = decision_state.signal_quality
+        decision_reason = f"Grade {_humanize(q.grade)} with score {fmt_float(q.score)}. {_humanize(q.action_label)}."
+    else:
+        decision_reason = bias_state.explanation if bias_state else "Waiting for enough structure to form a read."
+    grade = decision_state.signal_quality.grade if decision_state and decision_state.signal_quality else "-"
+    action = _humanize(decision_state.signal_quality.action_label) if decision_state and decision_state.signal_quality else "Monitor"
+    signal_text = f"{latest_signal.signal_type} {_humanize(latest_signal.status)}" if latest_signal else "No signal"
+    closest_value = closest_line.tradable_value_at(now_ct) if closest_line else None
+    closest_text = f"{closest_line.name} {fmt_price(closest_value)}" if closest_line else "-"
+    call_text = f"C {selected_strikes.call_strike}" if selected_strikes else "C -"
+    put_text = f"P {selected_strikes.put_strike}" if selected_strikes else "P -"
+    st.markdown(
+        f"""
+        <div class='terminal-hero'>
+          <div class='terminal-top'>
+            <div>
+              <div class='brand-mark'>SPY Prophet</div>
+              <div class='brand-title'>0DTE Structure Terminal</div>
+            </div>
+            <div class='market-clock'>
+              <div>{clock}</div>
+              <div>Prior session: {prior_day or '-'}</div>
+            </div>
+          </div>
+          <div class='hero-grid'>
+            <div>
+              <div class='hero-label'>SPY Last</div>
+              <div class='hero-price'>{fmt_price(latest_price)}</div>
+              <div class='hero-sub'>Latest candle {latest_candle}</div>
+            </div>
+            <div class='decision-plate'>
+              <div class='hero-label'>Final Decision</div>
+              <div class='decision-main'>{decision}</div>
+              <div class='decision-reason'>{decision_reason}</div>
+              <div class='pill-row'>
+                {_pill('Bias', bias_state.bias if bias_state else '-')}
+                {_pill('Grade', _humanize(grade))}
+                {_pill('Action', action)}
+                {_pill('Signal', signal_text)}
+              </div>
+            </div>
+            <div class='quote-stack'>
+              <div class='quote-mini'>
+                <div class='hero-label'>Closest</div>
+                <div class='quote-value'>{closest_text}</div>
+                <div class='hero-sub'>Primary structure</div>
+              </div>
+              <div class='quote-mini'>
+                <div class='hero-label'>0DTE</div>
+                <div class='quote-value'>{call_text}<br>{put_text}</div>
+                <div class='hero-sub'>{provider_status}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_live_command_center(
+    bias_state,
+    decision_state,
+    latest_signal,
+    selected_strikes,
+    primary_lines,
+    now_ct,
+    latest_price,
+) -> None:
+    quality = decision_state.signal_quality if decision_state else None
+    guardrail = decision_state.guardrail_state if decision_state else None
+    watch_lines = []
+    if bias_state:
+        watch_lines = bias_state.watched_call_lines + bias_state.watched_put_lines
+    signal_body = "Waiting for an hourly rejection at primary structure."
+    signal_title = "No confirmed signal"
+    if latest_signal:
+        signal_title = f"{latest_signal.signal_type} at {latest_signal.line_name}"
+        signal_body = _entry_stop_summary(latest_signal)
+
+    options_state = build_options_cockpit_state(
+        selected_strikes,
+        latest_signal=latest_signal,
+        decision_state=decision_state,
+        current_dt=now_ct,
+        all_lines=primary_lines,
+    ) if selected_strikes else None
+    call_mark = fmt_price(options_state.call_quote.mark) if options_state and options_state.call_quote else "-"
+    put_mark = fmt_price(options_state.put_quote.mark) if options_state and options_state.put_quote else "-"
+    projection = options_state.entry_target_projection if options_state else None
+    projection_text = (
+        f"Entry {_humanize(projection.entry_line_name)} at {fmt_price(projection.entry_line_value)}; "
+        f"target {_humanize(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
+        if projection else "Projection appears after a trade direction resolves."
+    )
+
+    st.markdown(
+        f"""
+        <div class='terminal-section command-grid'>
+          <div class='terminal-panel'>
+            <div class='panel-label'>Market Read</div>
+            <div class='panel-title'>{bias_state.bias if bias_state else 'Waiting for structure'}</div>
+            <div class='panel-copy'>{bias_state.explanation if bias_state else 'Load SPY candles to calculate primary structure.'}</div>
+            <div class='pill-row'>
+              {_pill('Strength', fmt_float(bias_state.strength_score) if bias_state else '-')}
+              {_pill('Watch', ', '.join(watch_lines) if watch_lines else '-')}
+              {_pill('Price', fmt_price(latest_price))}
+            </div>
+          </div>
+          <div class='terminal-panel'>
+            <div class='panel-label'>Signal Engine</div>
+            <div class='panel-title'>{signal_title}</div>
+            <div class='panel-copy'>{signal_body}</div>
+            <div class='pill-row'>
+              {_pill('Quality', _humanize(quality.grade) if quality else '-')}
+              {_pill('Score', fmt_float(quality.score) if quality else '-')}
+              {_pill('Retest', _humanize(guardrail.retest_status) if guardrail else '-')}
+            </div>
+          </div>
+          <div class='terminal-panel'>
+            <div class='panel-label'>Options Setup</div>
+            <div class='panel-title'>CALL {selected_strikes.call_strike if selected_strikes else '-'} / PUT {selected_strikes.put_strike if selected_strikes else '-'}</div>
+            <div class='panel-copy'>CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}</div>
+            <div class='pill-row'>
+              {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
+              {_pill('Provider', options_state.provider if options_state else '-')}
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) -> None:
+    tiles = []
+    for name in ["UA", "UD", "LA", "LD"]:
+        line = get_line_by_name(primary_lines, name)
+        if not line:
+            continue
+        value = line.tradable_value_at(now_ct)
+        raw_value = line.raw_value_at(now_ct)
+        distance = line.distance_from_price(latest_price, now_ct) if latest_price is not None else float("nan")
+        kind = "tile-call" if line.zone_type == "CALL_ZONE" else "tile-put" if line.zone_type == "PUT_ZONE" else ""
+        closest_cls = " closest" if closest_line is not None and closest_line.name == name else ""
+        tiles.append(
+            f"<div class='structure-tile {kind}{closest_cls}'>"
+            f"<div class='tile-label'>{line.zone_type.replace('_', ' ')}</div>"
+            f"<div class='tile-name'>{name}</div>"
+            f"<div class='tile-value'>{fmt_price(value)}</div>"
+            f"<div class='tile-meta'>raw {fmt_float(raw_value, 3)} | dist {fmt_float(distance)}</div>"
+            f"<div class='tile-meta'>{line.direction} | {line.description}</div>"
+            "</div>"
+        )
+    if tiles:
+        st.markdown(f"<div class='structure-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
 
 
 
@@ -1285,7 +1534,7 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
 
 
 def main() -> None:
-    st.set_page_config(page_title="SPY Prophet", page_icon="🔮", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
     inject_global_css()
     now_ct = datetime.now(tz=get_central_tz())
 
@@ -1297,10 +1546,6 @@ def main() -> None:
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
     provider = st.sidebar.selectbox("Provider", ["MOCK", "TASTYTRADE"], index=1 if not get_missing_tastytrade_secrets() else 0)
     st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
-
-    render_section_title("SPY Prophet", "0DTE Structure Terminal", "🔮")
-    st.caption("Where Structure Becomes Foresight")
-    st.caption("Analysis only. No order execution.")
 
     df = fetch_spy_hourly(period="10d") if (refresh or True) else pd.DataFrame()
     latest_price = None
@@ -1328,7 +1573,18 @@ def main() -> None:
                 closest = get_closest_primary_line(primary_lines, now_ct, latest_price) if latest_price is not None else None
                 decision_state = build_decision_state(signals[-1] if signals else None, primary_lines+secondary_lines, latest_price if latest_price is not None else float("nan"), pd.Timestamp(now_ct), rth_df.iloc[-1] if not rth_df.empty else None, signals_today=signals)
 
-    render_header_ticker(latest_price, bias, closest, signals[-1] if signals else None, strikes, provider_status=provider)
+    render_terminal_hero(
+        latest_price,
+        bias,
+        decision_state,
+        closest,
+        signals[-1] if signals else None,
+        strikes,
+        provider,
+        now_ct,
+        df,
+        prior_day,
+    )
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
@@ -1336,31 +1592,16 @@ def main() -> None:
 
     tabs = st.tabs(["Live Terminal","Structure Map","Prophet Chart","Signal Engine","Replay Lab","Options Cockpit","Journal Analytics","Playbook","Debug Lab"])
     with tabs[0]:
-        st.caption("Command center for live structure, decision, and options context.")
-        c1,c2,c3,c4=st.columns(4)
-        with c1: render_kpi_card("SPY Price", fmt_price(latest_price), f"Latest candle: {fmt_time(df.index[-1]) if not df.empty else '-'}", kind="neutral", badge="LIVE")
-        with c2: render_kpi_card("Bias", bias.bias if bias else "-", f"Strength {fmt_float(bias.strength_score) if bias else '-'}", kind="neutral")
-        with c3: render_kpi_card("Final Decision", decision_state.final_decision if decision_state else "WAIT", f"Grade {decision_state.signal_quality.grade if decision_state and decision_state.signal_quality else '-'}", kind="warning")
-        with c4: render_kpi_card("Closest Structure", closest.name if closest else "-", f"Dist {fmt_float((closest.distance_from_price(latest_price, now_ct) if closest and latest_price is not None else float('nan')))}", kind="neutral")
-        st.markdown("---")
-        p1,p2,p3=st.columns([1.1,1,1])
-        with p1: render_decision_panel(decision_state)
-        with p2: render_signal_card(signals[-1] if signals else None)
-        with p3:
-            if strikes:
-                ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
-                body=f"<div class='card-value'>CALL {strikes.call_strike}: {fmt_price(ostate.call_quote.mark if ostate.call_quote else None)}</div><div class='card-value'>PUT {strikes.put_strike}: {fmt_price(ostate.put_quote.mark if ostate.put_quote else None)}</div><div class='small-muted'>Provider MOCK/Fallback aware</div>"
-                render_glass_card("Options Preview", body)
-            else:
-                render_empty_state("Options Preview", "No option quote.")
-        st.markdown("---")
-        cols=st.columns(4)
-        for i,name in enumerate(["UA","UD","LA","LD"]):
-            line=get_line_by_name(primary_lines,name)
-            with cols[i]:
-                if line:
-                    render_line_card(name,line.tradable_value_at(now_ct),line.raw_value_at(now_ct),line.distance_from_price(latest_price,now_ct) if latest_price is not None else float('nan'),line.zone_type,line.direction,closest is not None and closest.name==name)
-                    render_distance_bar(name, line.distance_from_price(latest_price, now_ct) if latest_price is not None else float('nan'), zone_type=line.zone_type)
+        render_live_command_center(
+            bias,
+            decision_state,
+            signals[-1] if signals else None,
+            strikes,
+            primary_lines + secondary_lines,
+            now_ct,
+            latest_price,
+        )
+        render_structure_tiles(primary_lines, latest_price, now_ct, closest)
         if strikes:
             ostate = build_options_cockpit_state(strikes, latest_signal=signals[-1] if signals else None, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [])
             if ostate.entry_target_projection:
