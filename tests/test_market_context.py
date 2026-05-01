@@ -99,6 +99,14 @@ def test_economic_calendar_loads_and_filters(tmp_path) -> None:
     assert upcoming[0].event == "Jobs report"
 
 
+def test_economic_calendar_does_not_create_generic_events(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.get_trading_economics_credential", lambda: "")
+
+    upcoming = get_upcoming_economic_events(_ts("2026-05-01T07:00:00"), days=3, path=str(tmp_path / "missing.json"))
+
+    assert upcoming == []
+
+
 def test_trading_economics_event_mapping() -> None:
     event = economic_event_from_trading_economics({
         "Date": "2026-05-01T12:30:00",

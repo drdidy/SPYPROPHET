@@ -581,15 +581,6 @@ def fetch_trading_economics_calendar(start_iso: str, end_iso: str, credential: s
     return sorted(events, key=lambda e: (pd.Timestamp(e.event_date), e.time_label))
 
 
-def default_macro_watchlist(now_ct) -> list[EconomicEvent]:
-    today = pd.Timestamp(now_ct).date()
-    return [
-        EconomicEvent(today, "8:30 AM ET", "Check scheduled CPI, PCE, jobs, claims, GDP, retail sales releases", "High", "Macro watchlist", "These releases often change SPY option premium and first-hour direction."),
-        EconomicEvent(today, "10:00 AM ET", "Check scheduled ISM, confidence, JOLTS, housing, or inventory releases", "Medium", "Macro watchlist", "Use this as a catalyst reminder when no dated calendar file is loaded."),
-        EconomicEvent(today, "2:00 PM ET", "Check scheduled Fed, FOMC, minutes, or Treasury headlines", "High", "Macro watchlist", "Structure can fail faster around Fed-related headlines."),
-    ]
-
-
 def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicEvent]:
     today = pd.Timestamp(now_ct).date()
     end = (pd.Timestamp(today) + pd.Timedelta(days=days)).date()
@@ -599,7 +590,7 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
     live_events = fetch_trading_economics_calendar(str(today), str(end), get_trading_economics_credential())
     if live_events:
         return [event for event in live_events if today <= event.event_date <= end]
-    return default_macro_watchlist(now_ct)
+    return []
 
 
 def get_secret_or_env(name: str, default: str = "") -> str:
@@ -883,7 +874,12 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
         source_statuses.append(gamma.status)
     for group_name, rows in [("Global yfinance markets", global_context), ("Sector yfinance ETFs", sector_context)]:
         source_statuses.append(source_status(group_name, bool(rows), f"{len(rows)} instruments loaded from Yahoo Finance."))
-    source_statuses.append(source_status("Economic calendar", bool(economic_events), f"{len(economic_events)} calendar rows loaded."))
+    calendar_detail = (
+        f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
+        if economic_events
+        else "No verified calendar rows loaded from data/economic_calendar.json or Trading Economics API."
+    )
+    source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     source_statuses.append(source_status("Market news", bool(news_items), f"{len(news_items)} market headlines loaded from Yahoo Finance RSS."))
     return MorningBriefingBundle(
         pd.Timestamp.now(tz=get_central_tz()),
@@ -2197,6 +2193,19 @@ def inject_global_css() -> None:
     .evidence-step-num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;background:rgba(103,183,255,.14);color:var(--blue);font-family:var(--mono-font);font-weight:900;font-size:.72rem}
     .evidence-step-title{font-weight:850;color:var(--text);font-size:.82rem;margin-top:7px}
     .evidence-step-copy{font-size:.75rem;color:var(--muted);line-height:1.33;margin-top:4px}
+    .source-ledger{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.025);padding:13px;margin:12px 0}
+    .source-ledger-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+    .source-ledger-title{font-size:1rem;font-weight:930;color:var(--text)}
+    .source-ledger-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
+    .source-ledger-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .source-row{border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:9px}
+    .source-row-name{font-weight:850;color:var(--text);font-size:.86rem;line-height:1.25}
+    .source-row-meta{font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:4px}
+    .source-row.connected{border-color:rgba(46,204,113,.28)}.source-row.unavailable{border-color:rgba(245,196,81,.28)}.source-row.scout{border-color:rgba(103,183,255,.28)}
+    .upgrade-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+    .upgrade-card{border:1px solid rgba(103,183,255,.18);border-radius:8px;background:rgba(103,183,255,.055);padding:9px}
+    .upgrade-name{font-size:.82rem;font-weight:900;color:var(--text)}
+    .upgrade-meta{font-size:.75rem;color:var(--muted);line-height:1.35;margin-top:4px}
     .scout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
     .scout-card,.citation-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
@@ -2207,7 +2216,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.evidence-grid,.evidence-flow{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -2894,6 +2903,14 @@ def render_economic_calendar(events: list[EconomicEvent]) -> None:
             f"{notes}"
             "</div>"
         )
+    if not rows:
+        rows.append(
+            "<div class='calendar-row'>"
+            "<div class='calendar-event'>No verified economic calendar loaded</div>"
+            "<div class='calendar-meta'><span>Connect Trading Economics or add data/economic_calendar.json</span></div>"
+            "<div class='calendar-notes'>The app will not create generic CPI, jobs, or Fed reminders when no dated event source is available.</div>"
+            "</div>"
+        )
     st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
 
 
@@ -3037,7 +3054,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
               <div class='morning-subtitle'>External market context consolidated with today's SPY Prophet lines before the 0DTE session. The agent only uses loaded or verifiable data and leaves missing feeds out of the read.</div>
               <div class='morning-hero-metrics'>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>AI State</div><div class='morning-stat-value'>{escape('Connected' if ai_ready else 'Rule-based')}</div><div class='morning-stat-copy'>{escape(provider + model)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Quiet')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'No verified event')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Generated</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Central time stamp</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Verified Sources</div><div class='morning-stat-value'>{source_count}/{source_total}</div><div class='morning-stat-copy'>Loaded feeds in this briefing</div></div>
               </div>
@@ -3081,7 +3098,7 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
     action_title = "Wait for a clean trigger confirmation"
     if first_line:
         action_title = f"Primary watch: {first_line.get('name')} near {fmt_price(first_line.get('value'))}"
-    risk_note = f"First major event: {event.event} at {event.time_label}." if event else "No loaded macro time is forcing a wait window."
+    risk_note = f"First verified macro event: {event.event} at {event.time_label}." if event else "No verified economic calendar event is loaded, so the briefing will not invent CPI/Fed/jobs timing."
     option_note = f"OI magnet {fmt_price(options.max_pain)} with call wall {fmt_price(options.call_wall)} and put wall {fmt_price(options.put_wall)}."
     learning_note = f"Historical structure set: target first {fmt_pct(learning.target_first_rate * 100, 0)}, stop first {fmt_pct(learning.stop_first_rate * 100, 0)}, confidence {learning.confidence_label}."
     st.markdown(
@@ -3107,8 +3124,8 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_value = f"{event.event} at {event.time_label}" if event else "No high-impact event loaded"
-    event_copy = f"{event.impact} impact from {event.source}." if event else "The calendar card stays quiet when no dated event is loaded."
+    event_value = f"{event.event} at {event.time_label}" if event else "No verified event loaded"
+    event_copy = f"{event.impact} impact from {event.source}." if event else "Connect Trading Economics or add data/economic_calendar.json to show actual calendar events."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
     leader = bundle.sector_context[0] if bundle.sector_context else None
@@ -3160,22 +3177,6 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     st.markdown(f"<div class='morning-dashboard'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
-def render_morning_narrative(result: MorningBriefingResult) -> None:
-    tone, _ = _morning_confidence_tone(result.confidence)
-    st.markdown(
-        f"""
-        <div class='morning-narrative'>
-          <div class='morning-narrative-head'>
-            <div><div class='morning-narrative-title'>Full Briefing Narrative</div><div class='briefing-sub'>{escape(result.provider)}{f" / {escape(result.model)}" if result.model else ""}</div></div>
-            {ui_icon('contract', tone, 'md')}
-          </div>
-          <div class='morning-narrative-body'>{escape(result.text)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def _evidence_time(value) -> str:
     if value is None:
         return "as-of: current session"
@@ -3199,8 +3200,8 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_source = event.source if event else "No calendar row"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No economic event row was loaded into the bundle."
-    event_state = "watch" if event and event.source == "Macro watchlist" else "connected" if event else "watch"
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No verified economic calendar row was loaded; the app will not substitute generic CPI/Fed reminders."
+    event_state = "connected" if event else "watch"
     quote_providers = sorted({str(q.get("provider") or "quote") for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
     options_detail = f"{bundle.options_intelligence.status.detail} Selected quote source: {quote_detail}"
@@ -3244,6 +3245,57 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
           </div>
           <div class='evidence-grid'>{''.join(cards)}</div>
           <div class='evidence-flow'>{step_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _source_row_html(name: str, status: str, detail: str, as_of=None, url: str | None = None, state: str | None = None) -> str:
+    css_state = state or ("connected" if str(status).lower() == "connected" else "unavailable")
+    link = f" | {url}" if url else ""
+    return (
+        f"<div class='source-row {css_state}'>"
+        f"<div class='source-row-name'>{escape(name)} - {escape(display_state_label(status))}</div>"
+        f"<div class='source-row-meta'>{escape(detail + link)}</div>"
+        f"<div class='source-row-meta'>{escape(_evidence_time(as_of))}</div>"
+        "</div>"
+    )
+
+
+def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
+    rows = [
+        _source_row_html("SPY Prophet structure engine", "connected", f"{len(bundle.lines)} trigger lines calculated from the app's pivot engine.", bundle.generated_at, state="connected"),
+    ]
+    for status in bundle.source_statuses:
+        rows.append(_source_row_html(status.name, status.status, status.detail, status.as_of, status.url))
+    if result.citations:
+        for citation in result.citations[:8]:
+            rows.append(_source_row_html(citation.get("title") or "AI web citation", "connected", "OpenAI web search cited this source in the generated briefing.", result.generated_at, citation.get("url"), "scout"))
+    else:
+        rows.append(_source_row_html("OpenAI web citations", "unavailable", "No web citations were returned for this briefing run. The briefing is using the verified app data bundle only.", result.generated_at))
+    upgrades = [
+        ("Economic calendar", "Add TRADING_ECONOMICS_CREDENTIAL or maintain data/economic_calendar.json for real CPI/FOMC/NFP times."),
+        ("Verified social/flow feed", "Add SOCIAL_SENTIMENT_API_URL only if you have a reliable endpoint; otherwise the app will not invent social sentiment."),
+        ("AI scout sources", "Keep OPENAI_ENABLE_WEB_SEARCH=true so OpenAI can cite current public pages such as Tradytics, Reuters, CNBC, Investing.com, and ForexFactory when accessible."),
+    ]
+    upgrade_html = "".join(
+        f"<div class='upgrade-card'><div class='upgrade-name'>{escape(name)}</div><div class='upgrade-meta'>{escape(copy)}</div></div>"
+        for name, copy in upgrades
+    )
+    st.markdown(
+        f"""
+        <div class='source-ledger'>
+          <div class='source-ledger-head'>
+            <div>
+              <div class='source-ledger-title'>Sources Actually Used</div>
+              <div class='source-ledger-copy'>Green rows were loaded into this briefing. Amber rows mean the app did not have verified data for that source during this run.</div>
+            </div>
+            {ui_icon('compass', 'blue', 'md')}
+          </div>
+          <div class='source-ledger-grid'>{''.join(rows)}</div>
+          <div class='source-ledger-title' style='margin-top:12px'>How To Add More Reliable Sources</div>
+          <div class='upgrade-grid'>{upgrade_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3318,13 +3370,8 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_action_panel(bundle, result)
     render_morning_context_deck(bundle)
     render_briefing_evidence_trail(bundle, result)
-    with st.expander("External scout list the AI will try to search"):
-        render_scout_sources()
-        st.caption("Some public social pages may block automated access or require login. When that happens, the AI must omit them from the briefing rather than guessing.")
-    render_morning_narrative(result)
+    render_actual_source_ledger(bundle, result)
     render_briefing_citations(result.citations)
-    with st.expander("Source audit"):
-        render_source_statuses(result.source_statuses)
     return
     st.markdown(
         f"""
