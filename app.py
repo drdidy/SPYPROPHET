@@ -154,6 +154,7 @@ class OptionsIntelligence:
     call_wall: float
     put_wall: float
     high_open_interest: list[dict]
+    selected_quotes: list[dict] | None = None
     provider_payload: dict | None = None
 
 
@@ -733,6 +734,35 @@ def top_open_interest_rows(calls: pd.DataFrame, puts: pd.DataFrame, limit: int =
     return sorted(rows, key=lambda r: r["open_interest"], reverse=True)[:limit]
 
 
+def option_quote_summary(quote: OptionQuote | None) -> dict | None:
+    if quote is None:
+        return None
+    return {
+        "type": quote.option_type,
+        "strike": quote.strike,
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "mark": quote.mark,
+        "spread": quote.spread,
+        "delta": quote.delta,
+        "gamma": quote.gamma,
+        "iv": quote.iv,
+        "provider": quote.provider,
+        "timestamp": str(quote.timestamp) if quote.timestamp is not None else None,
+    }
+
+
+def selected_option_quote_summaries(option_state: OptionsCockpitState | None = None) -> list[dict]:
+    if option_state is None:
+        return []
+    out = []
+    for quote in [option_state.call_quote, option_state.put_quote]:
+        summary = option_quote_summary(quote)
+        if summary is not None:
+            out.append(summary)
+    return out
+
+
 def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> tuple[dict | None, SourceStatus]:
     url = get_secret_or_env(url_key)
     if not url:
@@ -763,12 +793,13 @@ def filter_near_spy_strikes(calls: pd.DataFrame, puts: pd.DataFrame, underlying_
     return near_calls, near_puts
 
 
-def build_options_intelligence(expiration_date, underlying_price: float | None = None) -> OptionsIntelligence:
+def build_options_intelligence(expiration_date, underlying_price: float | None = None, option_state: OptionsCockpitState | None = None) -> OptionsIntelligence:
     provider_payload, provider_status = fetch_external_json_payload("OPTIONS_FLOW_API_URL", "OPTIONS_FLOW_API_KEY")
+    selected_quotes = selected_option_quote_summaries(option_state)
     calls, puts, chain_status = option_chain_for_expiration(expiration_date)
     calls, puts = filter_near_spy_strikes(calls, puts, underlying_price)
     if calls.empty or puts.empty:
-        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], provider_payload)
+        return OptionsIntelligence(chain_status, float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [], selected_quotes, provider_payload)
     call_oi = float(calls.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     put_oi = float(puts.get("openInterest", pd.Series(dtype="float64")).fillna(0).sum())
     call_vol = float(calls.get("volume", pd.Series(dtype="float64")).fillna(0).sum())
@@ -786,11 +817,15 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
         call_wall,
         put_wall,
         top_open_interest_rows(calls, puts),
+        selected_quotes,
         provider_payload,
     )
 
 
 def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExposureInsight:
+    if not get_secret_or_env("GEX_API_URL"):
+        magnets = [x for x in [options_intel.put_wall, options_intel.max_pain, options_intel.call_wall] if x is not None and not pd.isna(x)]
+        return GammaExposureInsight(source_status("OI magnet proxy", True, "Near-SPY option open interest proxy from available option chain."), None, "OI proxy", magnets, "Near-SPY open-interest magnets from the option chain.", None)
     payload, status = fetch_external_json_payload("GEX_API_URL", "GEX_API_KEY")
     if payload:
         gamma_flip = _finite_float(payload.get("gamma_flip") or payload.get("gammaFlip") or payload.get("flip"))
@@ -800,8 +835,7 @@ def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExp
         notes = str(payload.get("notes") or "True GEX supplied by configured provider.")
         return GammaExposureInsight(source_status("Gamma exposure", True, "Configured GEX provider returned data.", pd.Timestamp.now(tz=get_central_tz()), status.url), gamma_flip if not pd.isna(gamma_flip) else None, tone, magnets, notes, payload)
     magnets = [x for x in [options_intel.put_wall, options_intel.max_pain, options_intel.call_wall] if x is not None and not pd.isna(x)]
-    notes = "True dealer GEX is not available without GEX_API_URL. Showing delayed open-interest magnet proxy only."
-    return GammaExposureInsight(source_status("Gamma exposure", False, "GEX_API_URL is not configured; using OI magnet proxy."), None, "Proxy only", magnets, notes, None)
+    return GammaExposureInsight(source_status("OI magnet proxy", True, "GEX provider did not return data; using near-SPY option open interest proxy."), None, "OI proxy", magnets, "Near-SPY open-interest magnets from the option chain.", None)
 
 
 def score_headline_sentiment(news_items: list[NewsItem]) -> SentimentContext:
@@ -839,17 +873,19 @@ def structure_lines_for_briefing(primary_lines: list[DynamicLine], projection_ti
     return rows
 
 
-def build_morning_briefing_bundle(primary_lines, projection_time, economic_events, news_items, learning_profile, latest_price, selected_strikes=None) -> MorningBriefingBundle:
+def build_morning_briefing_bundle(primary_lines, projection_time, economic_events, news_items, learning_profile, latest_price, selected_strikes=None, option_state=None) -> MorningBriefingBundle:
     global_context = fetch_global_context()
     sector_context = fetch_sector_context()
     daily = fetch_spy_daily("1y")
     technical = build_technical_context(daily, latest_price)
     expiration = selected_strikes.expiration_date if selected_strikes else pd.Timestamp(projection_time).date()
-    options_intel = build_options_intelligence(expiration, latest_price)
+    options_intel = build_options_intelligence(expiration, latest_price, option_state)
     gamma = build_gamma_exposure_insight(options_intel)
     sentiment = score_headline_sentiment(news_items)
     macro_context = [move for move in global_context if move.label in {"Dollar Index", "10Y yield", "5Y yield"}]
-    source_statuses = [technical.status, options_intel.status, gamma.status, sentiment.status]
+    source_statuses = [technical.status, options_intel.status, sentiment.status]
+    if gamma.provider_payload:
+        source_statuses.append(gamma.status)
     for group_name, rows in [("Global yfinance markets", global_context), ("Sector yfinance ETFs", sector_context)]:
         source_statuses.append(source_status(group_name, bool(rows), f"{len(rows)} instruments loaded from Yahoo Finance."))
     source_statuses.append(source_status("Economic calendar", bool(economic_events), f"{len(economic_events)} calendar rows loaded."))
@@ -880,7 +916,8 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
         "You are the Morning Briefing Agent inside SPY Prophet. Produce a concise premium premarket briefing for 0DTE SPY options.\n"
-        "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, GEX, social, or news. "
+        "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
+        "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
         "Tie every recommendation back to SPY Prophet lines and external context. "
@@ -970,7 +1007,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     high_events = [event for event in bundle.economic_events if str(event.impact).lower() == "high"]
     risk_score = 45
     risk_score += min(len(high_events) * 8, 24)
-    if bundle.gamma_insight.status.status != "connected":
+    if bundle.gamma_insight.provider_payload is None and str(bundle.gamma_insight.dealer_tone).upper() != "OI PROXY":
         risk_score -= 5
     if bundle.sentiment.label.startswith("Bullish"):
         risk_score += 6
@@ -988,9 +1025,15 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     recommendation = "Wait for a clean hourly rejection at one of the SPY Prophet triggers before choosing direction."
     if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.lines:
         recommendation = f"Favor the nearest valid trigger only after confirmation; historical target-first rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
-    gamma_line = f"- Gamma exposure: {gamma.dealer_tone}. {gamma.notes}\n" if gamma.status.status == "connected" else ""
+    gamma_line = f"- Gamma exposure: {gamma.dealer_tone}. {gamma.notes}\n" if gamma.provider_payload else ""
     oi_magnets = ", ".join(fmt_price(x) for x in gamma.magnet_strikes) if gamma.magnet_strikes else "Unavailable"
     social_text = "connected" if bundle.sentiment.social_payload else "headline-only"
+    selected_quote_lines = ""
+    if options.selected_quotes:
+        selected_quote_lines = "\n".join(
+            f"- {quote.get('provider')} {quote.get('type')} {quote.get('strike')}: mark {fmt_price(quote.get('mark'))}, bid/ask {fmt_price(quote.get('bid'))}/{fmt_price(quote.get('ask'))}, delta {fmt_float(quote.get('delta'))}, spread {fmt_price(quote.get('spread'))}."
+            for quote in options.selected_quotes
+        )
     risk_items = []
     for event in high_events[:3]:
         risk_items.append(f"{event.event} at {event.time_label}: avoid fresh entries immediately before the release and wait for post-release structure.")
@@ -1006,6 +1049,7 @@ EXTERNAL FACTORS AFFECTING THESE LINES:
 {event_lines}
 - Options OI put/call ratio: {fmt_float(options.put_call_open_interest_ratio)}; volume put/call ratio: {fmt_float(options.put_call_volume_ratio)}.
 - Max pain/OI magnet proxy: {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.
+{selected_quote_lines}
 {gamma_line}- OI magnets: {oi_magnets}.
 - Global tone: {global_lines}
 - Sector leadership: {top_sectors}. Laggards: {weak_sectors}.
@@ -2812,6 +2856,8 @@ def render_market_context_tab(profile: StructureLearningProfile, news_items: lis
 def render_source_statuses(statuses: list[SourceStatus]) -> None:
     cards = []
     for status in statuses:
+        if status.status == "skipped":
+            continue
         cls = "connected" if status.status == "connected" else "unavailable"
         cards.append(
             f"<div class='source-card {cls}'>"
@@ -2827,12 +2873,16 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
     event = bundle.economic_events[0] if bundle.economic_events else None
     leader = bundle.sector_context[0] if bundle.sector_context else None
     laggard = bundle.sector_context[-1] if bundle.sector_context else None
-    gamma_label = "GEX" if bundle.gamma_insight.status.status == "connected" else "OI Magnet"
-    gamma_copy = bundle.gamma_insight.notes[:80] if bundle.gamma_insight.status.status == "connected" else "Near-SPY open interest magnet proxy"
+    gamma_label = "Dealer GEX" if bundle.gamma_insight.provider_payload else "OI Magnet"
+    gamma_copy = bundle.gamma_insight.notes[:80]
+    quote = bundle.options_intelligence.selected_quotes[0] if bundle.options_intelligence.selected_quotes else None
+    quote_value = f"{quote.get('type')} {quote.get('strike')}" if quote else "Waiting"
+    quote_copy = f"{quote.get('provider')} mark {fmt_price(quote.get('mark'))} delta {fmt_float(quote.get('delta'))}" if quote else "Live Tastytrade or delayed yfinance"
     mini = [
         ("Macro Event", event.event if event else "None loaded", event.time_label if event else "Calendar connector"),
         ("Put/Call OI", fmt_float(bundle.options_intelligence.put_call_open_interest_ratio), "Delayed yfinance proxy"),
         (gamma_label, bundle.gamma_insight.dealer_tone, gamma_copy),
+        ("Option Quote", quote_value, quote_copy),
         ("Sentiment", bundle.sentiment.label, f"Score {bundle.sentiment.headline_score}"),
         ("Sector Leader", leader.label if leader else "-", fmt_float(leader.change_pct) + "%" if leader else "-"),
         ("Sector Laggard", laggard.label if laggard else "-", fmt_float(laggard.change_pct) + "%" if laggard else "-"),
@@ -2891,13 +2941,15 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         st.caption("Some public social pages may block automated access or require login. When that happens, the AI must omit them from the briefing rather than guessing.")
     if not ai_ready:
         render_data_notice("AI web briefing is not connected. Add OPENAI_API_KEY in Streamlit secrets or environment variables. The verified rule-based briefing below still uses only loaded data.", tone="warn")
-    with st.expander("How to connect the ChatGPT/OpenAI API"):
-        st.markdown(
-            "Create an OpenAI API key, then add it to Streamlit secrets as `OPENAI_API_KEY`. "
-            "Your regular ChatGPT subscription is separate from API billing. Optional: set `OPENAI_MODEL = \"gpt-4.1-mini\"` and `OPENAI_ENABLE_WEB_SEARCH = \"true\"`."
-        )
+        with st.expander("How to connect the ChatGPT/OpenAI API"):
+            st.markdown(
+                "Create an OpenAI API key, then add it to Streamlit secrets as `OPENAI_API_KEY`. "
+                "Your regular ChatGPT subscription is separate from API billing. Optional: set `OPENAI_MODEL = \"gpt-4.1-mini\"` and `OPENAI_ENABLE_WEB_SEARCH = \"true\"`."
+            )
+    else:
+        render_data_notice("AI web briefing is connected. Click Generate to let the agent scout current public sources and synthesize them with SPY Prophet structure.")
     use_ai = st.toggle("Use OpenAI synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
-    if st.button("Generate morning briefing", type="primary", key="generate_morning_briefing"):
+    if st.button("Generate AI web briefing" if ai_ready else "Generate morning briefing", type="primary", key="generate_morning_briefing"):
         result = generate_morning_briefing(bundle, use_ai=use_ai)
         save_morning_briefing(result)
         st.session_state["morning_briefing_result"] = result
@@ -2920,8 +2972,8 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         unsafe_allow_html=True,
     )
     render_briefing_citations(result.citations)
-    st.markdown("**Source Truth Table**")
-    render_source_statuses(result.source_statuses)
+    with st.expander("Source audit"):
+        render_source_statuses(result.source_statuses)
 
 
 
@@ -3922,7 +3974,7 @@ def main() -> None:
     learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
     news_items = fetch_market_news(limit=8)
     economic_events = get_upcoming_economic_events(now_ct, days=7)
-    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes)
+    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
 
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
