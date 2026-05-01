@@ -4099,7 +4099,6 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
         ("Put/Call OI", fmt_float(bundle.options_intelligence.put_call_open_interest_ratio), "Delayed yfinance proxy"),
         (gamma_label, bundle.gamma_insight.dealer_tone, gamma_copy),
         ("Option Quote", quote_value, quote_copy),
-        ("Sentiment", bundle.sentiment.label, f"Score {bundle.sentiment.headline_score}"),
         ("Sector Leader", leader.label if leader else "-", fmt_float(leader.change_pct) + "%" if leader else "-"),
         ("Sector Laggard", laggard.label if laggard else "-", fmt_float(laggard.change_pct) + "%" if laggard else "-"),
         ("Prior Close", fmt_price(bundle.technical_context.prior_close), f"Gap {fmt_price(bundle.technical_context.gap_from_prior_close)}"),
@@ -4415,9 +4414,6 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
     technical = bundle.technical_context
-    headline_sources = sorted({item.source for item in bundle.news_items})
-    headline_value = f"{len(bundle.news_items)} catalyst headlines" if bundle.news_items else "No catalyst headlines"
-    headline_copy = f"Catalyst filter from {', '.join(headline_sources[:3])}; not an entry signal." if headline_sources else "Only same-day or previous-day market headlines are allowed."
     gap_tone = "green" if technical.gap_from_prior_close and technical.gap_from_prior_close > 0 else "red" if technical.gap_from_prior_close and technical.gap_from_prior_close < 0 else "blue"
     cards = []
     whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(options)
@@ -4447,7 +4443,6 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
             "peak",
             gap_tone,
         ),
-        _morning_card_html("Headline Risk", headline_value, headline_copy, "spark", "blue"),
         _morning_card_html(
             "Structure Learning",
             bundle.learning_profile.confidence_label,
@@ -4507,7 +4502,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("Flow Pressure", "Connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
-        _evidence_card("Headline Risk", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded as a catalyst filter.", news_asof, "connected" if bundle.news_items else "watch"),
+        _evidence_card("Headline Scan", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines checked in the background for current-source context.", news_asof, "connected" if bundle.news_items else "watch"),
         _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
         _evidence_card("Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
