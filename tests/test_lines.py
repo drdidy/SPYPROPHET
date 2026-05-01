@@ -10,7 +10,9 @@ from app import (
     Pivot,
     SecondaryPivot,
     build_primary_lines,
+    build_pivot_source_table,
     build_secondary_lines,
+    build_structure_projection_table,
     calculate_slope_from_observed,
     get_central_tz,
     get_closest_primary_line,
@@ -98,6 +100,36 @@ def test_project_lines_and_closest() -> None:
 
     closest = get_closest_primary_line(prim + sec, now, 712.50)
     assert closest is not None and closest.is_primary
+
+
+def test_structure_tables_explain_source_and_projection() -> None:
+    idx = pd.DatetimeIndex([
+        _ts("2026-04-28T08:30:00"),
+        _ts("2026-04-28T09:30:00"),
+        _ts("2026-04-28T14:30:00"),
+    ])
+    candles = pd.DataFrame({
+        "Open": [100.0, 102.0, 105.0],
+        "High": [103.0, 104.0, 110.0],
+        "Low": [99.0, 98.0, 104.0],
+        "Close": [102.0, 103.0, 106.0],
+    }, index=idx)
+
+    source = build_pivot_source_table(candles)
+
+    assert list(source["Pivot"]) == ["High Pivot", "Low Pivot"]
+    assert source.iloc[0]["Source"] == "Yahoo SPY 60m RTH"
+    assert source.iloc[0]["Pivot Price"] == 110.0
+    assert source.iloc[1]["Pivot Price"] == 98.0
+
+    hp = Pivot("HIGH_PIVOT", 110.0, _ts("2026-04-28T15:00:00"), "session_high", "green", False)
+    lp = Pivot("LOW_PIVOT", 98.0, _ts("2026-04-28T10:30:00"), "session_low", "red", False)
+    projection = build_structure_projection_table(build_primary_lines(hp, lp), _ts("2026-04-29T09:00:00"), 112.0, idx[0].date(), idx[0].date())
+
+    assert "UA" not in set(projection["Trigger"])
+    assert "Upper Put Trigger" in set(projection["Trigger"])
+    assert "Formula" in projection.columns
+    assert projection[projection["Trigger"] == "Upper Call Trigger"].iloc[0]["Based On"] == "High Pivot"
 
 
 def test_invalid_anchor_handling() -> None:

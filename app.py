@@ -334,6 +334,68 @@ def project_lines(lines: list[DynamicLine], current_dt: datetime, current_price:
     return pd.DataFrame(records)
 
 
+def build_pivot_source_table(rth_df: pd.DataFrame) -> pd.DataFrame:
+    if rth_df is None or rth_df.empty:
+        return pd.DataFrame()
+    df = rth_df.sort_index()
+    rows = []
+    for label, price_col, idx in [
+        ("High Pivot", "High", df["High"].idxmax()),
+        ("Low Pivot", "Low", df["Low"].idxmin()),
+    ]:
+        candle = df.loc[idx]
+        close_time = get_hourly_candle_close_time(df, idx)
+        rows.append({
+            "Pivot": label,
+            "Source": "Yahoo SPY 60m RTH",
+            "Candle Starts": idx,
+            "Candle Closes": close_time,
+            "Pivot Price": float(candle[price_col]),
+            "Open": float(candle["Open"]),
+            "High": float(candle["High"]),
+            "Low": float(candle["Low"]),
+            "Close": float(candle["Close"]),
+        })
+    return pd.DataFrame(rows)
+
+
+def zone_side_label(zone_type: str | None) -> str:
+    if zone_type == "CALL_ZONE":
+        return "Call Trigger"
+    if zone_type == "PUT_ZONE":
+        return "Put Trigger"
+    return "Target"
+
+
+def build_structure_projection_table(primary_lines: list[DynamicLine], current_dt: datetime, current_price: float | None, structure_day: date | None, signal_day: date | None) -> pd.DataFrame:
+    rows = []
+    for line in primary_lines or []:
+        pivot_name = "High Pivot" if line.source == "PRIMARY_HIGH" else "Low Pivot" if line.source == "PRIMARY_LOW" else _humanize(line.source)
+        raw = line.raw_value_at(current_dt)
+        tradable = line.tradable_value_at(current_dt)
+        distance = line.distance_from_price(current_price, current_dt) if current_price is not None else float("nan")
+        sign = "+" if line.direction == "ascending" else "-"
+        hours = line.hours_since(current_dt)
+        rows.append({
+            "Trigger": display_line_name(line.name),
+            "Type": zone_side_label(line.zone_type),
+            "Based On": pivot_name,
+            "Yahoo Structure Day": structure_day,
+            "Signal Day": signal_day,
+            "Pivot Price": line.anchor_price,
+            "Pivot Candle Closes": line.anchor_time,
+            "Projection Time": pd.Timestamp(current_dt),
+            "Hours From Pivot": hours,
+            "Slope / Hour": line.slope_per_hour,
+            "Formula": f"{line.anchor_price:.2f} {sign} ({line.slope_per_hour:.3f} x {hours:.2f}h)" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
+            "Projected SPY Level": tradable,
+            "Raw Projection": raw,
+            "Current SPY": current_price,
+            "Distance From SPY": distance,
+        })
+    return pd.DataFrame(rows)
+
+
 def get_closest_primary_line(lines: list[DynamicLine], current_dt: datetime, current_price: float) -> DynamicLine | None:
     candidates: list[tuple[float, DynamicLine]] = []
     for line in lines:
@@ -1050,7 +1112,7 @@ def render_metric_card(title, value, subtitle=None, accent="neutral", extra_html
 
 def render_line_card(line_name, tradable_value, raw_value, distance, zone_type, direction, is_closest=False):
     accent = "call" if zone_type=="CALL_ZONE" else "put" if zone_type=="PUT_ZONE" else "neutral"
-    render_metric_card(f"{line_name}{' ★' if is_closest else ''}", _fmt_num(tradable_value), f"raw {_fmt_num(raw_value,3)} | {direction} | dist {_fmt_num(distance)}", accent=accent)
+    render_metric_card(f"{line_name}{' *' if is_closest else ''}", _fmt_num(tradable_value), f"{zone_side_label(zone_type)} | {direction} | distance {_fmt_num(distance)}", accent=accent)
 
 
 def render_bias_card(bias_state):
@@ -1361,7 +1423,7 @@ def render_live_command_center(
     )
 
 
-def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) -> None:
+def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line, structure_day=None) -> None:
     tiles = []
     for name in ["UA", "UD", "LA", "LD"]:
         line = get_line_by_name(primary_lines, name)
@@ -1373,11 +1435,11 @@ def render_structure_tiles(primary_lines, latest_price, now_ct, closest_line) ->
         closest_cls = " closest" if closest_line is not None and closest_line.name == name else ""
         tiles.append(
             f"<div class='structure-tile {kind}{closest_cls}'>"
-            f"<div class='tile-label'>{line.zone_type.replace('_', ' ')}</div>"
+            f"<div class='tile-label'>{zone_side_label(line.zone_type)}</div>"
             f"<div class='tile-name'>{display_line_name(name)}</div>"
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
-            f"<div class='tile-meta'>{display_line_description(name)}</div>"
+            f"<div class='tile-meta'>Yahoo structure day {structure_day or '-'}</div>"
             "</div>"
         )
     if tiles:
@@ -1863,7 +1925,7 @@ def main() -> None:
     latest_price = None
     prior_day = None
     signal_day = None
-    rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
+    rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); pivots={}; secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
     bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None
     option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
@@ -1925,7 +1987,7 @@ def main() -> None:
             option_state,
             latest_price,
         )
-        render_structure_tiles(primary_lines, latest_price, now_ct, closest)
+        render_structure_tiles(primary_lines, latest_price, now_ct, closest, prior_day)
         if option_state:
             if option_state.entry_target_projection:
                 render_status_strip([
@@ -2090,13 +2152,17 @@ def main() -> None:
 
     if show_debug:
         with tabs["Structure Details"]:
-            st.caption("Advanced structure table for validating calculated levels.")
-            render_section_title("Structure Details", "Projected triggers and targets")
+            st.caption("Advanced structure table for validating Yahoo candle inputs and calculated trigger levels.")
+            render_section_title("Structure Details", "Yahoo pivots and calculated trigger levels")
             if not proj_df.empty:
-                primary_view = proj_df[proj_df['is_primary']==True][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
+                st.markdown("**Yahoo Pivot Source**")
+                st.dataframe(build_pivot_source_table(rth_df), use_container_width=True)
+                st.markdown("**Calculated Trigger Levels**")
+                st.dataframe(build_structure_projection_table(primary_lines, now_ct, latest_price, prior_day, signal_day), use_container_width=True)
                 secondary_view = proj_df[proj_df['is_primary']==False][["level","tradable_value","distance","role","direction","anchor_price","anchor_time"]].rename(columns={"level":"level_name"})
-                st.dataframe(primary_view, use_container_width=True)
-                st.dataframe(secondary_view, use_container_width=True)
+                if not secondary_view.empty:
+                    st.markdown("**Intermediate Targets**")
+                    st.dataframe(secondary_view, use_container_width=True)
             else:
                 st.info("No projected structure available yet.")
 
