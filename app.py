@@ -27,6 +27,7 @@ CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.103
 TARGET_OTM_STRIKE_DISTANCE = 2.0
+FLOW_STRIKE_MAX_OTM_DISTANCE = 3.0
 SPY_STRIKE_INCREMENT = 1
 EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
@@ -1421,7 +1422,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
-        else "Calendar pending. Generate Foresight or connect a calendar source for dated macro events."
+        else "No dated macro event is loaded yet; Foresight can scan current calendar sources before trading."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
@@ -2338,6 +2339,164 @@ def get_contract_watch_price(current_price: float, current_dt: datetime, active_
 def select_watch_contracts(current_price: float, current_dt: datetime, active_signal=None, all_lines=None) -> SelectedStrikes:
     reference_price = get_contract_watch_price(current_price, current_dt, active_signal, all_lines)
     return select_0dte_strikes(reference_price, current_dt)
+
+
+def premium_flow_payload(options_intel: OptionsIntelligence | None) -> dict:
+    whales = getattr(options_intel, "unusual_whales", None) or {}
+    return whales if isinstance(whales, dict) else {}
+
+
+def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
+    whales = premium_flow_payload(options_intel)
+    flow = whales.get("flow_alerts") or {}
+    tide = whales.get("market_tide") or {}
+    volume = whales.get("options_volume") or {}
+    gex = whales.get("gex") or {}
+    score = 0
+    reasons: list[str] = []
+
+    bias = str(flow.get("flow_bias") or "")
+    if "bull" in bias.lower():
+        score += 2
+        reasons.append("SPY 0DTE flow leans call-side")
+    elif "bear" in bias.lower():
+        score -= 2
+        reasons.append("SPY 0DTE flow leans put-side")
+    elif bias:
+        reasons.append("SPY 0DTE flow is mixed")
+
+    tide_tone = str(tide.get("tone") or "")
+    if "risk-on" in tide_tone.lower():
+        score += 1
+        reasons.append("market tide is risk-on")
+    elif "risk-off" in tide_tone.lower():
+        score -= 1
+        reasons.append("market tide is risk-off")
+
+    pc_ratio = _finite_float(volume.get("put_call_volume_ratio"))
+    if not pd.isna(pc_ratio):
+        if pc_ratio >= 1.25:
+            score -= 1
+            reasons.append(f"volume put/call is elevated at {fmt_float(pc_ratio)}")
+        elif pc_ratio <= 0.80:
+            score += 1
+            reasons.append(f"volume put/call is call-heavy at {fmt_float(pc_ratio)}")
+
+    net_gex = _finite_float(gex.get("net_gex"))
+    gamma_note = ""
+    if not pd.isna(net_gex):
+        gamma_note = "positive gamma may dampen moves" if net_gex > 0 else "negative gamma can amplify breaks" if net_gex < 0 else "gamma is balanced"
+        reasons.append(gamma_note)
+
+    if score >= 2:
+        side = "CALL"
+        label = "Call pressure"
+    elif score <= -2:
+        side = "PUT"
+        label = "Put pressure"
+    elif whales:
+        side = "MIXED"
+        label = "Mixed pressure"
+    else:
+        side = None
+        label = "No flow read"
+
+    return {
+        "side": side,
+        "label": label,
+        "score": score,
+        "reasons": reasons[:4],
+        "flow_bias": bias or None,
+        "tide": tide_tone or None,
+        "gamma_note": gamma_note or None,
+    }
+
+
+def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side: str | None = None) -> dict:
+    read = premium_flow_direction(options_intel)
+    side = read.get("side")
+    if not side:
+        return {"state": "unavailable", "title": "Flow Pressure", "copy": "No current flow context is loaded yet.", **read}
+    if not watch_side or side == "MIXED":
+        title = str(read.get("label") or "Mixed pressure")
+        copy = "; ".join(read.get("reasons") or ["Flow is loaded, but not directional enough to overrule structure."])
+        return {"state": "neutral", "title": title, "copy": copy, **read}
+    aligned = side == watch_side
+    if aligned:
+        title = f"Supports {watch_side}"
+        copy = "Flow agrees with the current structure watch. Still wait for SPY Prophet confirmation at the line."
+        state = "aligned"
+    else:
+        title = f"Fights {watch_side}"
+        copy = "Flow is leaning the other way, so require a cleaner rejection or wait."
+        state = "opposes"
+    reason_text = "; ".join(read.get("reasons") or [])
+    if reason_text:
+        copy = f"{copy} {reason_text}."
+    return {"state": state, "title": title, "copy": copy, **read}
+
+
+def premium_flow_tags(options_intel: OptionsIntelligence | None) -> list[str]:
+    read = premium_flow_direction(options_intel)
+    tags = []
+    side = read.get("side")
+    if side in {"CALL", "PUT", "MIXED"}:
+        tags.append(f"FLOW_{side}")
+    tide = str(read.get("tide") or "").upper().replace("-", "_").replace(" ", "_")
+    if tide:
+        tags.append(tide)
+    gamma = str(read.get("gamma_note") or "").upper().replace(" ", "_")
+    if gamma:
+        tags.append(gamma[:40])
+    return tags
+
+
+def premium_flow_strike_candidates(options_intel: OptionsIntelligence | None, option_type: str, reference_price: float) -> list[tuple[float, float]]:
+    whales = premium_flow_payload(options_intel)
+    flow = whales.get("flow_alerts") or {}
+    if not isinstance(flow, dict) or reference_price is None or pd.isna(reference_price):
+        return []
+    option_type = str(option_type).upper()
+    candidates: list[tuple[float, float]] = []
+    for row in flow.get("largest_alerts") or []:
+        if not isinstance(row, dict) or str(row.get("type") or "").upper() != option_type:
+            continue
+        strike = _strike_key(row.get("strike"))
+        if strike is not None:
+            candidates.append((strike, _finite_float(row.get("premium"), 0.0)))
+    for row in flow.get("key_strikes") or []:
+        if not isinstance(row, dict):
+            continue
+        strike = _strike_key(row.get("strike"))
+        if strike is None:
+            continue
+        call_premium = _finite_float(row.get("call_premium"), 0.0)
+        put_premium = _finite_float(row.get("put_premium"), 0.0)
+        if option_type == "CALL" and call_premium >= put_premium and call_premium > 0:
+            candidates.append((strike, call_premium))
+        if option_type == "PUT" and put_premium > call_premium and put_premium > 0:
+            candidates.append((strike, put_premium))
+
+    valid = []
+    for strike, premium in candidates:
+        distance = strike - float(reference_price) if option_type == "CALL" else float(reference_price) - strike
+        if 0 < distance <= FLOW_STRIKE_MAX_OTM_DISTANCE:
+            valid.append((strike, premium))
+    return sorted(valid, key=lambda item: (abs(abs(item[0] - float(reference_price)) - TARGET_OTM_STRIKE_DISTANCE), -item[1]))
+
+
+def select_flow_aware_watch_contracts(current_price: float, current_dt: datetime, active_signal=None, all_lines=None, options_intel: OptionsIntelligence | None = None) -> SelectedStrikes:
+    base = select_watch_contracts(current_price, current_dt, active_signal, all_lines)
+    if base.warning:
+        return base
+    reference_price = base.underlying_price
+    call_candidates = premium_flow_strike_candidates(options_intel, "CALL", reference_price)
+    put_candidates = premium_flow_strike_candidates(options_intel, "PUT", reference_price)
+    call_strike = int(round(call_candidates[0][0])) if call_candidates else base.call_strike
+    put_strike = int(round(put_candidates[0][0])) if put_candidates else base.put_strike
+    if call_strike == base.call_strike and put_strike == base.put_strike:
+        return base
+    return replace(base, call_strike=call_strike, put_strike=put_strike)
 
 
 def get_watch_option_type(active_signal=None, bias_state=None) -> str | None:
@@ -3610,6 +3769,7 @@ def render_live_command_center(
     selected_strikes,
     options_state,
     latest_price,
+    options_intel: OptionsIntelligence | None = None,
 ) -> None:
     quality = decision_state.signal_quality if decision_state else None
     guardrail = decision_state.guardrail_state if decision_state else None
@@ -3637,6 +3797,14 @@ def render_live_command_center(
     direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
     setup_tone = _tone_for_text(signal_title)
     options_tone = "green" if options_live else "amber"
+    watch_side = get_watch_option_type(latest_signal, bias_state)
+    flow_alignment = premium_flow_alignment(options_intel, watch_side)
+    flow_tone = (
+        "green" if flow_alignment.get("state") == "aligned"
+        else "red" if flow_alignment.get("state") == "opposes"
+        else "amber" if flow_alignment.get("state") == "neutral"
+        else "blue"
+    )
 
     st.markdown(
         f"""
@@ -3669,6 +3837,20 @@ def render_live_command_center(
               {_pill('Action', display_state_label(quality_label(quality)))}
               {_pill('Score', fmt_float(quality.score) if quality else '-')}
               {_pill('Retest', display_state_label(guardrail.retest_status) if guardrail else '-')}
+            </div>
+          </div>
+          <div class='terminal-panel'>
+            <div class='panel-head'>
+              <div>
+                <div class='panel-label'>Flow Pressure</div>
+                <div class='panel-title'>{escape(str(flow_alignment.get('title') or 'Flow Pressure'))}</div>
+              </div>
+              {ui_icon('pulse', flow_tone, 'md')}
+            </div>
+            <div class='panel-copy'>{escape(str(flow_alignment.get('copy') or 'No current flow context is loaded yet.'))}</div>
+            <div class='pill-row'>
+              {_pill('Side', display_state_label(flow_alignment.get('side') or 'Neutral'))}
+              {_pill('Tide', display_state_label(flow_alignment.get('tide') or '-'))}
             </div>
           </div>
           <div class='terminal-panel'>
@@ -3799,9 +3981,9 @@ def render_economic_calendar(events: list[EconomicEvent]) -> None:
     if not rows:
         rows.append(
             "<div class='calendar-row'>"
-            "<div class='calendar-event'>Calendar pending</div>"
-            "<div class='calendar-meta'><span>Generate the AI briefing or connect a calendar source</span></div>"
-            "<div class='calendar-notes'>Only dated, sourced macro events appear here.</div>"
+            "<div class='calendar-event'>No timed catalyst loaded</div>"
+            "<div class='calendar-meta'><span>Run Foresight or connect a structured calendar source</span></div>"
+            "<div class='calendar-notes'>Only dated, sourced macro events appear here. The app will leave this blank before it invents CPI, Fed, or jobs timing.</div>"
             "</div>"
         )
     st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
@@ -4010,7 +4192,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
               <div class='morning-subtitle'>A clear premarket read that blends structure, flow, macro, volatility, and current market tone into one 0DTE decision map.</div>
               <div class='morning-hero-metrics'>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Foresight</div><div class='morning-stat-value'>{escape('Live' if ai_ready else 'Rules')}</div><div class='morning-stat-copy'>{escape(provider)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Macro Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Calendar pending')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Catalyst Watch</div><div class='morning-stat-value'>{escape(event.impact if event else 'Scan needed')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Generated</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Central time stamp</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Verified Sources</div><div class='morning-stat-value'>{source_count}/{source_total}</div><div class='morning-stat-copy'>Loaded feeds in this briefing</div></div>
               </div>
@@ -4165,14 +4347,14 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
 
 def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_value = f"{event.event} at {event.time_label}" if event else "Calendar pending"
-    event_copy = f"{event.impact} impact event on today's calendar." if event else "Generate Foresight to fill today's macro timing."
+    event_value = f"{event.event} at {event.time_label}" if event else "No timed catalyst loaded"
+    event_copy = f"{event.impact} impact event on today's calendar." if event else "Use the Foresight scan before trading; the app will not invent macro times."
     options = bundle.options_intelligence
     quote_value, quote_copy, quote_chips = _first_quote_label(options)
     technical = bundle.technical_context
     headline_sources = sorted({item.source for item in bundle.news_items})
-    headline_value = f"{len(bundle.news_items)} fresh headlines" if bundle.news_items else "No fresh headlines"
-    headline_copy = f"Loaded from {', '.join(headline_sources[:3])}." if headline_sources else "Only same-day or previous-day market headlines are allowed."
+    headline_value = f"{len(bundle.news_items)} catalyst headlines" if bundle.news_items else "No catalyst headlines"
+    headline_copy = f"Catalyst filter from {', '.join(headline_sources[:3])}; not an entry signal." if headline_sources else "Only same-day or previous-day market headlines are allowed."
     gap_tone = "green" if technical.gap_from_prior_close and technical.gap_from_prior_close > 0 else "red" if technical.gap_from_prior_close and technical.gap_from_prior_close < 0 else "blue"
     cards = []
     whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(options)
@@ -4183,9 +4365,9 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
         gex_value, gex_copy, gex_chips, gex_tone = gex_card
         cards.append(_morning_card_html("Dealer Gamma", gex_value, gex_copy, "gauge", gex_tone, gex_chips))
     cards.extend([
-        _morning_card_html("Macro Timing", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"),
+        _morning_card_html("Catalyst Clock", event_value, event_copy, "clock", "amber" if event and str(event.impact).lower() == "high" else "blue"),
         _morning_card_html(
-            "Options Positioning",
+            "OI Map",
             f"Put/Call OI {fmt_float(options.put_call_open_interest_ratio)}",
             f"Max pain {fmt_price(options.max_pain)}; call wall {fmt_price(options.call_wall)}; put wall {fmt_price(options.put_wall)}.",
             "target",
@@ -4193,8 +4375,8 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
             [f"Volume P/C {fmt_float(options.put_call_volume_ratio)}"],
         ),
         _morning_card_html("Contract Watch", quote_value, quote_copy, "contract", "green", quote_chips),
-        _morning_card_html("Global Tape", _joined_moves(bundle.global_context, 3), "Overnight and global instruments from yfinance context.", "compass", "blue"),
-        _morning_card_html("Macro Pulse", _joined_moves(bundle.macro_context, 3), "Dollar and yield pressure that can change how cleanly the lines react.", "pulse", "amber"),
+        _morning_card_html("Overnight Tone", _joined_moves(bundle.global_context, 3), "Premarket risk-on/risk-off context; useful before the open, secondary after cash trading starts.", "compass", "blue"),
+        _morning_card_html("Rates/Dollar Pressure", _joined_moves(bundle.macro_context, 3), "10Y yields and the dollar can help or fight SPY line reactions.", "pulse", "amber"),
         _morning_card_html(
             "Technical Map",
             f"Prior {fmt_price(technical.prior_high)} / {fmt_price(technical.prior_low)}",
@@ -4202,7 +4384,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
             "peak",
             gap_tone,
         ),
-        _morning_card_html("Fresh Headlines", headline_value, headline_copy, "spark", "blue"),
+        _morning_card_html("Headline Risk", headline_value, headline_copy, "spark", "blue"),
         _morning_card_html(
             "Structure Learning",
             bundle.learning_profile.confidence_label,
@@ -4236,8 +4418,8 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
-    event_source = "Macro Calendar" if event else "Calendar pending"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No dated macro row is loaded for this run. Generate Foresight to scan current calendar sources."
+    event_source = "Macro Calendar" if event else "No timed catalyst loaded"
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No dated macro row is loaded for this run. Run Foresight to scan current calendar sources."
     event_state = "connected" if event else "watch"
     quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded yet."
@@ -4262,7 +4444,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("Flow Pressure", "Connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
-        _evidence_card("Fresh Headlines", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded for catalyst context.", news_asof, "connected" if bundle.news_items else "watch"),
+        _evidence_card("Headline Risk", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines loaded as a catalyst filter.", news_asof, "connected" if bundle.news_items else "watch"),
         _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
         _evidence_card("Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
@@ -5351,7 +5533,7 @@ def best_learning_context(entries: list[JournalEntry]) -> str | None:
     return f"Best {label}: {display_key} ({fmt_pct(win_rate * 100, 0)} target-first across {count} samples)"
 
 
-def build_structure_learning_profile(entries: list[JournalEntry], active_signal=None, bias_state=None, closest_line=None) -> StructureLearningProfile:
+def build_structure_learning_profile(entries: list[JournalEntry], active_signal=None, bias_state=None, closest_line=None, flow_tags: list[str] | None = None) -> StructureLearningProfile:
     all_complete = completed_learning_entries(dedupe_learning_entries(entries))
     signal_type, line_name, direction = infer_current_learning_filter(active_signal, bias_state, closest_line)
     matching = all_complete
@@ -5361,6 +5543,12 @@ def build_structure_learning_profile(entries: list[JournalEntry], active_signal=
         same_line = [entry for entry in matching if entry.line_name == line_name]
         if same_line:
             matching = same_line
+    if flow_tags:
+        flow_tag_set = set(flow_tags)
+        same_flow = [entry for entry in matching if flow_tag_set.intersection(set(entry.tags or []))]
+        if len(same_flow) >= 5:
+            matching = same_flow
+            direction = f"{direction} with current flow pressure"
     sample = matching or all_complete
     n = len(sample)
     if n == 0:
@@ -5395,12 +5583,12 @@ def generate_journal_insights(a):
             out.append(f"Best {name} so far: {best[0]} (win_rate={best[1]['win_rate']:.2f}, {note}).")
     return out
 
-def auto_journal_live_signals(signals, decision_state, bias_state, options_cockpit_state, existing_entries, path='data/signal_journal.json', enabled=False):
+def auto_journal_live_signals(signals, decision_state, bias_state, options_cockpit_state, existing_entries, path='data/signal_journal.json', enabled=False, flow_tags=None):
     if not enabled: return existing_entries, AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
     saved=updated=skipped=0; latest=None
     entries=list(existing_entries)
     for sg in signals or []:
-        entry=build_journal_entry_from_live_state(sg,decision_state,bias_state,options_cockpit_state,source='LIVE_AUTO')
+        entry=build_journal_entry_from_live_state(sg,decision_state,bias_state,options_cockpit_state,source='LIVE_AUTO',tags=flow_tags or [])
         entries,act=upsert_journal_entry(entries,entry)
         if act=='inserted': saved+=1; latest=sg.signal_id
         elif act=='updated': updated+=1; latest=sg.signal_id
@@ -5469,6 +5657,32 @@ def main() -> None:
     news_items = fetch_market_news(limit=8)
     economic_events = get_upcoming_economic_events(now_ct, days=0)
     morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
+    flow_tags_for_learning = premium_flow_tags(morning_bundle.options_intelligence)
+    if flow_tags_for_learning:
+        flow_learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest, flow_tags_for_learning)
+        if flow_learning_profile.matching_sample_size != learning_profile.matching_sample_size or flow_learning_profile.expected_direction != learning_profile.expected_direction:
+            learning_profile = flow_learning_profile
+            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
+    if strikes and morning_bundle.options_intelligence.status.status != "skipped":
+        flow_strikes = select_flow_aware_watch_contracts(
+            latest_price if latest_price is not None else float("nan"),
+            now_ct,
+            active_signal,
+            primary_lines + secondary_lines if primary_lines else [],
+            morning_bundle.options_intelligence,
+        )
+        if flow_strikes and (flow_strikes.call_strike != strikes.call_strike or flow_strikes.put_strike != strikes.put_strike):
+            strikes = flow_strikes
+            option_state = build_options_cockpit_state_with_fallback(
+                strikes,
+                latest_signal=active_signal,
+                decision_state=decision_state,
+                provider=option_provider,
+                current_dt=now_ct,
+                all_lines=primary_lines + secondary_lines if primary_lines else [],
+                projection_time=get_default_projection_time(now_ct),
+            )
+            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
 
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
@@ -5504,6 +5718,7 @@ def main() -> None:
             strikes,
             option_state,
             latest_price,
+            morning_bundle.options_intelligence,
         )
         render_status_strip([
             ("Learning", learning_profile.confidence_label),
@@ -5638,7 +5853,8 @@ def main() -> None:
         entries = load_signal_journal(journal_path)
         auto_status = AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
         opt_state = option_state if strikes else None
-        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on)
+        current_flow_tags = premium_flow_tags(morning_bundle.options_intelligence)
+        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on, flow_tags=current_flow_tags)
         render_status_strip([
             ("Auto journal", "On" if auto_status.enabled else "Off"),
             ("Saved", auto_status.saved_count),
@@ -5649,7 +5865,8 @@ def main() -> None:
         tags_text = st.text_input("Tags (comma-separated)", "")
         cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
         if cja.button("Save live signal") and active_signal:
-            e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=[t.strip() for t in tags_text.split(',') if t.strip()])
+            user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
+            e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
             entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
         if cjb.button("Save replay signals") and 'rs' in locals():
             for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)

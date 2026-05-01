@@ -12,6 +12,10 @@ from app import (
     get_contract_watch_price,
     get_central_tz,
     get_line_by_name,
+    OptionsIntelligence,
+    SourceStatus,
+    premium_flow_alignment,
+    select_flow_aware_watch_contracts,
     select_watch_contracts,
     select_0dte_strikes,
     TradeSignal,
@@ -131,3 +135,49 @@ def test_watch_contracts_use_confirmed_signal_entry_price() -> None:
     assert s.underlying_price == 101.2
     assert s.call_strike == 103
     assert format_watch_contract(s, sig) == "WATCH CALL 103"
+
+
+def test_flow_aware_contracts_use_nearby_otm_flow_not_far_chase() -> None:
+    options = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", ""),
+        1,
+        1,
+        718,
+        724,
+        715,
+        [],
+        unusual_whales={
+            "flow_alerts": {
+                "flow_bias": "Bullish flow",
+                "largest_alerts": [
+                    {"type": "CALL", "strike": 724, "premium": 900000},
+                    {"type": "CALL", "strike": 720, "premium": 250000},
+                    {"type": "PUT", "strike": 716, "premium": 220000},
+                ],
+                "key_strikes": [],
+            }
+        },
+    )
+
+    s = select_flow_aware_watch_contracts(717.85, _ts("2026-04-29T09:00:00"), options_intel=options)
+
+    assert s.call_strike == 720
+    assert s.put_strike == 716
+
+
+def test_flow_alignment_warns_when_pressure_fights_watch_side() -> None:
+    options = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", ""),
+        1,
+        1,
+        718,
+        724,
+        715,
+        [],
+        unusual_whales={"flow_alerts": {"flow_bias": "Bearish flow"}, "market_tide": {"tone": "Risk-off options tide"}},
+    )
+
+    read = premium_flow_alignment(options, "CALL")
+
+    assert read["state"] == "opposes"
+    assert "Fights CALL" in read["title"]
