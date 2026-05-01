@@ -1051,14 +1051,37 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
-        "You are the Morning Briefing Agent inside SPY Prophet. Produce a concise premium premarket briefing for 0DTE SPY options.\n"
+        "You are the Morning Briefing Agent inside SPY Prophet. Produce an actionable, structured briefing for a novice 0DTE SPY options trader.\n"
         "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
         "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
         "Tie every recommendation back to SPY Prophet lines and external context. "
-        "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, but cite only pages you actually used.\n\n"
+        "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, but cite only pages you actually used. "
+        "Return ONLY valid JSON. No Markdown, no bullets outside JSON, no long narrative. "
+        "If there is no clean trade, make the stance WAIT and explain the exact condition that would change it.\n\n"
+        "JSON_OUTPUT_SCHEMA:\n"
+        "{\n"
+        "  \"stance\": \"WAIT | WATCH_CALL | WATCH_PUT | NO_TRADE\",\n"
+        "  \"headline\": \"One plain-English sentence saying what to do now.\",\n"
+        "  \"primary_trade\": {\n"
+        "    \"label\": \"Primary setup name or Wait\",\n"
+        "    \"trigger_line\": \"SPY Prophet line name\",\n"
+        "    \"trigger_price\": \"price or '-'\",\n"
+        "    \"contract\": \"specific 0DTE contract or '-'\",\n"
+        "    \"entry_timing\": \"exact time/candle rule\",\n"
+        "    \"entry_rule\": \"what must happen before entry\",\n"
+        "    \"stop\": \"invalidating price/candle rule\",\n"
+        "    \"target\": \"target line/price\",\n"
+        "    \"confidence\": 0\n"
+        "  },\n"
+        "  \"why\": [\"3 to 5 concrete reasons, each tied to loaded data\"],\n"
+        "  \"avoid\": [{\"label\":\"what to avoid\", \"reason\":\"why\"}],\n"
+        "  \"risk_flags\": [\"specific timing/news/liquidity risks\"],\n"
+        "  \"source_notes\": [\"short source note, not URLs\"],\n"
+        "  \"novice_summary\": \"One sentence a beginner can act on.\"\n"
+        "}\n\n"
         f"SCOUT_LIST_JSON:\n{curated}\n\n"
         f"VERIFIED_DATA_JSON:\n{json.dumps(payload, default=str, indent=2)}"
     )
@@ -1076,6 +1099,23 @@ def extract_openai_text(payload: dict) -> str:
     return "\n".join(pieces).strip()
 
 
+def normalize_citation_url(url: str | None) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    text = text.split("#", 1)[0].rstrip("/")
+    return text
+
+
+def citation_title(citation: dict) -> str:
+    title = str(citation.get("title") or "").strip()
+    url = normalize_citation_url(citation.get("url"))
+    if title and title != url:
+        return title
+    match = re.match(r"https?://(?:www\.)?([^/]+)", url)
+    return match.group(1) if match else (title or url or "AI source")
+
+
 def extract_openai_citations(payload: dict) -> list[dict]:
     citations = []
     seen = set()
@@ -1083,13 +1123,13 @@ def extract_openai_citations(payload: dict) -> list[dict]:
         if isinstance(item, dict) and item.get("type") == "web_search_call":
             action = item.get("action") or {}
             for source in action.get("sources") or []:
-                url = source.get("url") if isinstance(source, dict) else None
+                url = normalize_citation_url(source.get("url") if isinstance(source, dict) else None)
                 if url and url not in seen:
                     seen.add(url)
                     citations.append({"url": url, "title": source.get("title") or url})
         for content in item.get("content", []) if isinstance(item, dict) else []:
             for ann in content.get("annotations", []) if isinstance(content, dict) else []:
-                url = ann.get("url") if isinstance(ann, dict) else None
+                url = normalize_citation_url(ann.get("url") if isinstance(ann, dict) else None)
                 if url and url not in seen:
                     seen.add(url)
                     citations.append({"url": url, "title": ann.get("title") or url})
@@ -1259,18 +1299,77 @@ def merge_citations(primary: list[dict] | None, extra: list[dict] | None) -> lis
     for citation in list(primary or []) + list(extra or []):
         if not isinstance(citation, dict):
             continue
-        url = citation.get("url")
+        url = normalize_citation_url(citation.get("url"))
         key = url or citation.get("title")
         if not key or key in seen:
             continue
         seen.add(key)
-        merged.append(citation)
+        merged.append({**citation, "url": url} if url else citation)
     return merged
 
 
 def result_with_extra_citations(result: MorningBriefingResult, extra: list[dict]) -> MorningBriefingResult:
     merged = merge_citations(result.citations, extra)
     return replace(result, citations=merged)
+
+
+def morning_decision_from_result(result: MorningBriefingResult | None) -> dict | None:
+    if result is None:
+        return None
+    data = extract_json_payload_from_text(result.text)
+    if not isinstance(data, dict):
+        return None
+    trade = data.get("primary_trade")
+    if not isinstance(trade, dict):
+        trade = {}
+    data["primary_trade"] = trade
+    for key in ["why", "risk_flags", "source_notes"]:
+        if not isinstance(data.get(key), list):
+            data[key] = []
+    if not isinstance(data.get("avoid"), list):
+        data["avoid"] = []
+    return data
+
+
+def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None) -> dict:
+    event = _first_high_impact_event(bundle.economic_events)
+    first_line = bundle.lines[0] if bundle.lines else {}
+    quote_value, _, _ = _first_quote_label(bundle.options_intelligence)
+    role_text = str(first_line.get("role") or "").upper()
+    desired_type = "PUT" if "PUT" in role_text else "CALL" if "CALL" in role_text else ""
+    for quote in bundle.options_intelligence.selected_quotes or []:
+        if desired_type and str(quote.get("type") or "").upper() == desired_type:
+            quote_value = f"{desired_type} {fmt_price(quote.get('strike'), 0)}"
+            break
+    confidence = int(result.confidence if result else 45)
+    return {
+        "stance": "WAIT",
+        "headline": "Wait for a confirmed hourly rejection before choosing a 0DTE contract.",
+        "primary_trade": {
+            "label": "Structure confirmation required",
+            "trigger_line": first_line.get("name") or "-",
+            "trigger_price": fmt_price(first_line.get("value")),
+            "contract": quote_value if quote_value != "No contract loaded" else "-",
+            "entry_timing": "Next candle open after confirmation",
+            "entry_rule": "Price must reject the trigger line and the next candle must confirm direction.",
+            "stop": "Invalid if SPY closes back through the trigger after entry.",
+            "target": "Nearest valid SPY Prophet target line",
+            "confidence": confidence,
+        },
+        "why": [
+            f"Structure learning is {bundle.learning_profile.confidence_label} with target-first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
+            f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}.",
+            f"Macro timing: {event.event} at {event.time_label}." if event else "Macro timing is not loaded yet.",
+        ],
+        "avoid": [
+            {"label": "Chasing between lines", "reason": "Your edge is at the structure trigger, not in the middle of the channel."},
+        ],
+        "risk_flags": [
+            f"High-impact macro event: {event.event} at {event.time_label}." if event else "Calendar scout should run before assuming there is no catalyst.",
+        ],
+        "source_notes": ["Rule-based summary from the loaded SPY Prophet data bundle."],
+        "novice_summary": "Do nothing until the line rejection confirms; then use the nearest valid OTM contract.",
+    }
 
 
 def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
@@ -1371,7 +1470,18 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
         if ai_text:
             base = rule_based_morning_briefing(bundle)
             provider = "OpenAI Responses API + web search" if openai_web_search_enabled() else "OpenAI Responses API"
-            return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, base.confidence, base.warnings, bundle.source_statuses, citations)
+            decision = extract_json_payload_from_text(ai_text)
+            confidence = base.confidence
+            if isinstance(decision, dict):
+                trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+                try:
+                    confidence = int(trade.get("confidence") or confidence)
+                except Exception:
+                    confidence = base.confidence
+            warnings = list(base.warnings)
+            if not isinstance(decision, dict):
+                warnings.insert(0, "OpenAI returned narrative text instead of the structured decision schema.")
+            return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, confidence, warnings, bundle.source_statuses, citations)
         return rule_based_morning_briefing(bundle, warning)
     return rule_based_morning_briefing(bundle)
 
@@ -2479,6 +2589,22 @@ def inject_global_css() -> None:
     .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px}
     .morning-chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .morning-chip{border:1px solid rgba(141,160,184,.18);border-radius:999px;background:rgba(255,255,255,.045);padding:4px 8px;font-size:.72rem;color:var(--text)}
+    .action-brief{border:1px solid rgba(46,204,113,.34);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.10),rgba(78,168,222,.08),rgba(8,13,18,.98));padding:15px;margin:12px 0}
+    .action-brief.wait{border-color:rgba(245,196,81,.4);background:linear-gradient(135deg,rgba(245,196,81,.12),rgba(78,168,222,.07),rgba(8,13,18,.98))}
+    .action-brief.put{border-color:rgba(244,93,117,.38);background:linear-gradient(135deg,rgba(244,93,117,.11),rgba(78,168,222,.06),rgba(8,13,18,.98))}
+    .action-brief-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px;margin-bottom:12px}
+    .action-kicker{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:900}
+    .action-headline{font-size:1.38rem;font-weight:950;color:var(--text);line-height:1.14;margin-top:5px}
+    .action-summary{font-size:.86rem;color:var(--muted);line-height:1.4;margin-top:6px}
+    .action-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:10px}
+    .action-ticket{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.04);padding:11px}
+    .action-ticket-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
+    .action-ticket-value{font-size:1.02rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:5px}
+    .action-ticket-copy{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px}
+    .action-reasons{display:grid;gap:7px}
+    .action-reason{display:flex;gap:8px;border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:8px;color:var(--muted);font-size:.8rem;line-height:1.33}
+    .action-reason-dot{width:7px;height:7px;border-radius:99px;background:var(--green);flex:0 0 7px;margin-top:5px}
+    .action-risk .action-reason-dot{background:var(--red)}
     .morning-action{border:1px solid rgba(245,196,81,.34);border-radius:8px;background:linear-gradient(135deg,rgba(245,196,81,.12),rgba(103,183,255,.08),rgba(8,13,18,.96));padding:14px;margin:12px 0}
     .morning-action-grid{display:grid;grid-template-columns:.82fr 1.18fr;gap:14px;align-items:center}
     .morning-action-label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:850}
@@ -2540,7 +2666,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -3330,6 +3456,19 @@ def _first_quote_label(options: OptionsIntelligence) -> tuple[str, str, list[str
     quotes = options.selected_quotes or []
     if not quotes:
         return "No contract loaded", "Tastytrade/yfinance quote will appear when the option chain is available.", []
+    call_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "CALL"), None)
+    put_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "PUT"), None)
+    if call_quote and put_quote:
+        value = f"CALL {fmt_price(call_quote.get('strike'), 0)} / PUT {fmt_price(put_quote.get('strike'), 0)}"
+        copy = (
+            f"CALL mark {fmt_price(call_quote.get('mark'))}; PUT mark {fmt_price(put_quote.get('mark'))}. "
+            "Action Brief selects the active side."
+        )
+        chips = [
+            f"CALL spread {fmt_price(call_quote.get('spread'))}",
+            f"PUT spread {fmt_price(put_quote.get('spread'))}",
+        ]
+        return value, copy, chips
     primary = quotes[0]
     value = f"{str(primary.get('type') or '').upper()} {primary.get('strike')}"
     copy = (
@@ -3418,29 +3557,57 @@ def render_morning_lines_deck(bundle: MorningBriefingBundle) -> None:
 
 
 def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
-    event = _first_high_impact_event(bundle.economic_events)
-    options = bundle.options_intelligence
-    learning = bundle.learning_profile
-    first_line = bundle.lines[0] if bundle.lines else None
-    action_title = "Wait for a clean trigger confirmation"
-    if first_line:
-        action_title = f"Primary watch: {first_line.get('name')} near {fmt_price(first_line.get('value'))}"
-    risk_note = f"First macro catalyst: {event.event} at {event.time_label}." if event else "Calendar pending: run the AI briefing or connect a calendar source before treating the session as catalyst-free."
-    option_note = f"OI magnet {fmt_price(options.max_pain)} with call wall {fmt_price(options.call_wall)} and put wall {fmt_price(options.put_wall)}."
-    learning_note = f"Historical structure set: target first {fmt_pct(learning.target_first_rate * 100, 0)}, stop first {fmt_pct(learning.stop_first_rate * 100, 0)}, confidence {learning.confidence_label}."
+    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    stance = str(decision.get("stance") or "WAIT").upper()
+    tone = "put" if "PUT" in stance else "green" if "CALL" in stance else "wait" if stance == "WAIT" else "blue"
+    headline = str(decision.get("headline") or "Wait for a confirmed structure trigger.")
+    novice = str(decision.get("novice_summary") or "Let the structure line confirm before choosing direction.")
+    confidence = trade.get("confidence", result.confidence)
+    tickets = [
+        ("Stance", display_state_label(stance), novice),
+        ("Trigger", str(trade.get("trigger_line") or "-"), f"Trigger price {trade.get('trigger_price') or '-'}"),
+        ("Contract", str(trade.get("contract") or "-"), "Use only the listed OTM contract after the entry rule confirms."),
+        ("Entry Rule", str(trade.get("entry_timing") or "-"), str(trade.get("entry_rule") or "-")),
+        ("Invalidation", str(trade.get("stop") or "-"), "If this happens, the setup is no longer valid."),
+        ("Target", str(trade.get("target") or "-"), f"Confidence {fmt_float(confidence, 0)}%"),
+    ]
+    ticket_html = "".join(
+        "<div class='action-ticket'>"
+        f"<div class='action-ticket-label'>{escape(label)}</div>"
+        f"<div class='action-ticket-value'>{escape(value)}</div>"
+        f"<div class='action-ticket-copy'>{escape(copy)}</div>"
+        "</div>"
+        for label, value, copy in tickets
+    )
+    reasons = [str(item) for item in decision.get("why", []) if str(item).strip()][:5]
+    risks = [str(item) for item in decision.get("risk_flags", []) if str(item).strip()][:4]
+    avoid = []
+    for row in decision.get("avoid", [])[:3]:
+        if isinstance(row, dict):
+            avoid.append(f"{row.get('label')}: {row.get('reason')}")
+        else:
+            avoid.append(str(row))
+    reason_html = "".join(f"<div class='action-reason'><span class='action-reason-dot'></span><span>{escape(item)}</span></div>" for item in reasons or ["No extra reason supplied by the briefing agent."])
+    risk_html = "".join(f"<div class='action-reason action-risk'><span class='action-reason-dot'></span><span>{escape(item)}</span></div>" for item in (risks + avoid)[:5] or ["No specific risk flag loaded beyond normal 0DTE discipline."])
     st.markdown(
         f"""
-        <div class='morning-action'>
-          <div class='morning-action-grid'>
+        <div class='action-brief {tone}'>
+          <div class='action-brief-head'>
             <div>
-              <div class='morning-action-label'>Session Plan</div>
-              <div class='morning-action-title'>{escape(action_title)}</div>
-              <div class='morning-action-copy'>Use the Morning Briefing as context, then let SPY Prophet structure decide the actual entry. No trade is better than taking a line before confirmation.</div>
+              <div class='action-kicker'>Action Brief</div>
+              <div class='action-headline'>{escape(headline)}</div>
+              <div class='action-summary'>{escape(str(trade.get('label') or 'SPY Prophet structure plan'))}</div>
             </div>
-            <div class='morning-action-list'>
-              <div class='morning-action-item'><span class='morning-action-dot'></span><span>{escape(risk_note)}</span></div>
-              <div class='morning-action-item'><span class='morning-action-dot'></span><span>{escape(option_note)}</span></div>
-              <div class='morning-action-item'><span class='morning-action-dot'></span><span>{escape(learning_note)}</span></div>
+            {ui_icon('compass', 'green' if tone == 'green' else 'red' if tone == 'put' else 'amber', 'md')}
+          </div>
+          <div class='action-grid'>
+            <div class='action-grid'>{ticket_html}</div>
+            <div>
+              <div class='action-kicker'>Why This Matters</div>
+              <div class='action-reasons'>{reason_html}</div>
+              <div class='action-kicker' style='margin-top:10px'>Avoid / Risk</div>
+              <div class='action-reasons'>{risk_html}</div>
             </div>
           </div>
         </div>
@@ -3462,6 +3629,7 @@ def _ai_verify_card(label: str, value: str, note: str, state: str = "info") -> s
 def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, use_ai: bool) -> None:
     used_openai = bool(result.model)
     web_enabled = openai_web_search_enabled()
+    citation_count = len(merge_citations(result.citations, None))
     cards = [
         _ai_verify_card(
             "API Key",
@@ -3484,8 +3652,8 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         _ai_verify_card(
             "Web Search",
             "Enabled" if web_enabled else "Off",
-            f"{len(result.citations or [])} citations returned in this run.",
-            "good" if web_enabled and result.citations else "info" if web_enabled else "warn",
+            f"{citation_count} unique citations returned in this run.",
+            "good" if web_enabled and citation_count else "info" if web_enabled else "warn",
         ),
     ]
     st.markdown(
@@ -3579,7 +3747,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     news_asof = bundle.news_items[0].published if bundle.news_items else None
     global_asof = bundle.global_context[0].as_of if bundle.global_context else None
     ai_detail = (
-        f"{result.provider}. Web search citations returned: {len(result.citations or [])}. "
+        f"{result.provider}. Unique web citations returned: {len(merge_citations(result.citations, None))}. "
         f"Model: {result.model or 'rule-based engine'}."
     )
     cards = [
@@ -3638,9 +3806,10 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
     ]
     for status in bundle.source_statuses:
         rows.append(_source_row_html(status.name, status.status, status.detail, status.as_of, status.url))
-    if result.citations:
-        for citation in result.citations[:8]:
-            rows.append(_source_row_html(citation.get("title") or "AI web citation", "connected", "OpenAI web search cited this source in the generated briefing.", result.generated_at, citation.get("url"), "scout"))
+    citations = merge_citations(result.citations, None)
+    if citations:
+        for citation in citations[:4]:
+            rows.append(_source_row_html(citation_title(citation), "connected", "AI web search cited this source in the generated briefing.", result.generated_at, citation.get("url"), "scout"))
     else:
         rows.append(_source_row_html("OpenAI web citations", "not used", "No AI web search citations were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
@@ -3685,19 +3854,20 @@ def render_scout_sources() -> None:
 
 
 def render_briefing_citations(citations: list[dict] | None) -> None:
+    citations = merge_citations(citations, None)
     if not citations:
         return
     cards = []
-    for citation in citations[:10]:
+    for citation in citations[:6]:
         url = citation.get("url") or ""
-        title = citation.get("title") or url
+        title = citation_title(citation)
         cards.append(
             "<div class='citation-card'>"
             f"<a class='citation-title' href='{escape(url)}' target='_blank'>{escape(title)}</a>"
             f"<div class='citation-url'>{escape(url)}</div>"
             "</div>"
         )
-    st.markdown("**Sources Used By AI Search**")
+    st.markdown("**Key AI Sources**")
     st.markdown(f"<div class='citation-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
@@ -3750,13 +3920,14 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     if result is None:
         result = generate_morning_briefing(active_bundle, use_ai=False)
     render_morning_briefing_hero(active_bundle, result, ai_ready)
-    render_ai_verification_panel(result, ai_ready, use_ai)
-    render_morning_lines_deck(active_bundle)
     render_morning_action_panel(active_bundle, result)
+    render_morning_lines_deck(active_bundle)
     render_morning_context_deck(active_bundle)
-    render_briefing_evidence_trail(active_bundle, result)
-    render_actual_source_ledger(active_bundle, result)
-    render_briefing_citations(result.citations)
+    with st.expander("Evidence, AI verification, and sources"):
+        render_ai_verification_panel(result, ai_ready, use_ai)
+        render_briefing_evidence_trail(active_bundle, result)
+        render_actual_source_ledger(active_bundle, result)
+        render_briefing_citations(result.citations)
     return
     st.markdown(
         f"""

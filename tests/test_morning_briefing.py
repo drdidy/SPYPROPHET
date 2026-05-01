@@ -7,6 +7,7 @@ from app import (
     GammaExposureInsight,
     MarketMove,
     MorningBriefingBundle,
+    MorningBriefingResult,
     OptionsIntelligence,
     SentimentContext,
     SourceStatus,
@@ -17,6 +18,9 @@ from app import (
     build_morning_briefing_prompt,
     economic_event_from_ai_calendar_dict,
     extract_json_payload_from_text,
+    fallback_morning_decision,
+    merge_citations,
+    morning_decision_from_result,
     calculate_max_pain,
     filter_near_spy_strikes,
     rule_based_morning_briefing,
@@ -93,6 +97,8 @@ def test_prompt_carries_truthful_source_statuses() -> None:
     prompt = build_morning_briefing_prompt(_bundle())
 
     assert "Do not invent unavailable options flow" in prompt
+    assert "Return ONLY valid JSON" in prompt
+    assert '"primary_trade"' in prompt
     assert "SCOUT_LIST_JSON" in prompt
     assert "Tradytics" in prompt
     assert "GEX_API_URL is not configured" in prompt
@@ -132,6 +138,67 @@ def test_extract_json_payload_from_text_handles_markdown_fences() -> None:
     text = '```json\n{"events":[{"event":"NFP","impact":"High"}]}\n```'
 
     assert extract_json_payload_from_text(text) == {"events": [{"event": "NFP", "impact": "High"}]}
+
+
+def test_morning_decision_parser_reads_structured_ai_output() -> None:
+    result = MorningBriefingResult(
+        pd.Timestamp("2026-05-01 06:45", tz="America/Chicago"),
+        "OpenAI",
+        "gpt-5.2",
+        '{"stance":"WATCH_PUT","headline":"Wait for Upper Put Trigger rejection.","primary_trade":{"trigger_line":"Upper Put Trigger","trigger_price":"722.42","contract":"PUT 718","confidence":61},"why":["ISM at 9:00 AM CT"],"avoid":[{"label":"Chase","reason":"Between lines"}],"risk_flags":["0DTE spread risk"],"source_notes":[],"novice_summary":"Wait for confirmation."}',
+        61,
+        [],
+        [],
+        [],
+    )
+
+    decision = morning_decision_from_result(result)
+
+    assert decision is not None
+    assert decision["stance"] == "WATCH_PUT"
+    assert decision["primary_trade"]["contract"] == "PUT 718"
+    assert decision["avoid"][0]["label"] == "Chase"
+
+
+def test_merge_citations_dedupes_normalized_urls() -> None:
+    citations = merge_citations(
+        [{"url": "https://example.com/a/", "title": "A"}, {"url": "https://example.com/a#section", "title": "A again"}],
+        [{"url": "https://example.com/b", "title": "B"}],
+    )
+
+    assert [row["url"] for row in citations] == ["https://example.com/a", "https://example.com/b"]
+
+
+def test_fallback_decision_matches_contract_to_trigger_side() -> None:
+    bundle = _bundle()
+    bundle = MorningBriefingBundle(
+        bundle.generated_at,
+        [{"code": "UA", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 722.42, "anchor_price": 719.79, "anchor_time": "2026-04-30 15:00 CDT"}],
+        bundle.economic_events,
+        bundle.global_context,
+        bundle.macro_context,
+        bundle.sector_context,
+        OptionsIntelligence(
+            bundle.options_intelligence.status,
+            bundle.options_intelligence.put_call_open_interest_ratio,
+            bundle.options_intelligence.put_call_volume_ratio,
+            bundle.options_intelligence.max_pain,
+            bundle.options_intelligence.call_wall,
+            bundle.options_intelligence.put_wall,
+            [],
+            [{"type": "CALL", "strike": 724.0}, {"type": "PUT", "strike": 720.0}],
+        ),
+        bundle.gamma_insight,
+        bundle.sentiment,
+        bundle.technical_context,
+        bundle.news_items,
+        bundle.learning_profile,
+        bundle.source_statuses,
+    )
+
+    decision = fallback_morning_decision(bundle)
+
+    assert decision["primary_trade"]["contract"] == "PUT 720"
 
 
 def test_ai_calendar_event_requires_exact_date_time_and_source() -> None:
