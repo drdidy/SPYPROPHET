@@ -1,4 +1,4 @@
-from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, ui_icon
+from app import DynamicLine, display_anchor_source, display_line_description, display_line_list, display_line_name, fmt_price, fmt_nan, safe_to_dict, render_badge, render_brand_logo, ui_icon
 
 
 def test_fmt_helpers():
@@ -22,10 +22,10 @@ def test_ui_icon_markup():
     assert "<svg" in m and "aria-hidden='true'" in m
 
 
-def test_brand_icon_has_unique_mark_class():
-    m = ui_icon('prophet', 'blue', 'lg')
-    assert "brand-mark" in m
-    assert "M3 12s3.2-5.5" in m
+def test_brand_logo_is_animated_spy_mark():
+    m = render_brand_logo()
+    assert "brand-logo" in m
+    assert "brand-path" in m and ">SPY<" in m
 
 
 def test_display_anchor_source_uses_pivot_price():
