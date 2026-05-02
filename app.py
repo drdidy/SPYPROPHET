@@ -3631,6 +3631,19 @@ def inject_global_css() -> None:
     .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px;flex:1}
     .morning-chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .morning-chip{border:1px solid rgba(141,160,184,.18);border-radius:999px;background:rgba(255,255,255,.045);padding:4px 8px;font-size:.72rem;color:var(--text)}
+    .flow-board{border:1px solid rgba(103,183,255,.26);border-radius:8px;background:linear-gradient(135deg,rgba(9,16,26,.98),rgba(12,22,34,.96));padding:14px;margin:12px 0}
+    .flow-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .flow-board-title{font-size:1.12rem;font-weight:950;color:var(--text)}
+    .flow-board-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
+    .flow-board-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .flow-card{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:164px}
+    .flow-card.darkpool{border-color:rgba(180,124,255,.32)}.flow-card.bull{border-color:rgba(46,204,113,.32)}.flow-card.bear{border-color:rgba(244,93,117,.32)}
+    .flow-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
+    .flow-value{font-size:1.04rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:7px}
+    .flow-copy{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:6px}
+    .flow-levels{display:grid;gap:5px;margin-top:9px}
+    .flow-level{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid rgba(141,160,184,.13);padding-top:5px;font-family:var(--mono-font);font-size:.78rem;color:var(--text)}
+    .flow-level span:last-child{color:var(--blue)}
     .action-brief{border:1px solid rgba(46,204,113,.34);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.10),rgba(78,168,222,.08),rgba(8,13,18,.98));padding:15px;margin:12px 0}
     .action-brief.wait{border-color:rgba(245,196,81,.4);background:linear-gradient(135deg,rgba(245,196,81,.12),rgba(78,168,222,.07),rgba(8,13,18,.98))}
     .action-brief.put{border-color:rgba(244,93,117,.38);background:linear-gradient(135deg,rgba(244,93,117,.11),rgba(78,168,222,.06),rgba(8,13,18,.98))}
@@ -3708,7 +3721,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -4632,6 +4645,118 @@ def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str
     return value, copy, chips, tone
 
 
+def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
+    whales = options.unusual_whales or {}
+    if not isinstance(whales, dict) or not whales:
+        return []
+    cards: list[dict] = []
+    flow = whales.get("flow_alerts") or {}
+    if isinstance(flow, dict) and (flow.get("alert_count") or flow.get("flow_bias")):
+        key_levels = []
+        for row in (flow.get("key_strikes") or [])[:4]:
+            if not isinstance(row, dict):
+                continue
+            key_levels.append({
+                "label": f"{fmt_price(row.get('strike'), 0)}",
+                "value": f"{fmt_money_short(row.get('net_pressure'))}",
+            })
+        cards.append({
+            "title": "0DTE Flow Alerts",
+            "value": str(flow.get("flow_bias") or "Flow alerts loaded"),
+            "copy": f"{flow.get('alert_count', 0)} OTM SPY alerts; net pressure {fmt_money_short(flow.get('net_premium_pressure'))}.",
+            "levels": key_levels,
+            "tone": "bull" if "bull" in str(flow.get("flow_bias", "")).lower() else "bear" if "bear" in str(flow.get("flow_bias", "")).lower() else "",
+        })
+    recent = whales.get("recent_flow") or {}
+    if isinstance(recent, dict) and (recent.get("trade_count") or recent.get("tone")):
+        levels = []
+        for row in (recent.get("top_strikes") or [])[:4]:
+            if not isinstance(row, dict):
+                continue
+            levels.append({
+                "label": f"{fmt_price(row.get('strike'), 0)}",
+                "value": f"{fmt_money_short(row.get('net_pressure'))}",
+            })
+        cards.append({
+            "title": "Recent Tape",
+            "value": str(recent.get("tone") or "Recent flow loaded"),
+            "copy": f"{recent.get('trade_count', 0)} SPY prints; pressure {fmt_money_short(recent.get('net_pressure'))}.",
+            "levels": levels,
+            "tone": "bull" if "call" in str(recent.get("tone", "")).lower() else "bear" if "put" in str(recent.get("tone", "")).lower() else "",
+        })
+    tide = whales.get("market_tide") or {}
+    premium = whales.get("net_premium_ticks") or {}
+    volume = whales.get("options_volume") or {}
+    if any(isinstance(row, dict) and row for row in [tide, premium, volume]):
+        cards.append({
+            "title": "Market Tide",
+            "value": str(tide.get("tone") or premium.get("tone") or "Premium tape loaded"),
+            "copy": f"Net premium {fmt_money_short(premium.get('net_premium'))}; volume P/C {fmt_float(volume.get('put_call_volume_ratio'))}.",
+            "levels": [
+                {"label": "Call net", "value": fmt_money_short(premium.get("net_call_premium") or tide.get("net_call_premium"))},
+                {"label": "Put net", "value": fmt_money_short(premium.get("net_put_premium") or tide.get("net_put_premium"))},
+            ],
+            "tone": "bull" if "call" in str(premium.get("tone", "")).lower() or "risk-on" in str(tide.get("tone", "")).lower() else "bear" if "put" in str(premium.get("tone", "")).lower() or "risk-off" in str(tide.get("tone", "")).lower() else "",
+        })
+    darkpool = whales.get("darkpool") or {}
+    if isinstance(darkpool, dict) and (darkpool.get("print_count") or darkpool.get("key_levels")):
+        levels = [
+            {"label": fmt_price(row.get("price")), "value": fmt_money_short(row.get("premium"))}
+            for row in (darkpool.get("key_levels") or [])[:5]
+            if isinstance(row, dict)
+        ]
+        if not levels:
+            levels = [
+                {"label": fmt_price(row.get("price")), "value": fmt_money_short(row.get("premium"))}
+                for row in (darkpool.get("largest_prints") or [])[:3]
+                if isinstance(row, dict)
+            ]
+        cards.append({
+            "title": "Dark Pool Levels",
+            "value": f"{darkpool.get('print_count', 0)} prints",
+            "copy": f"{fmt_money_short(darkpool.get('total_premium'))} notional; watch clustered levels as possible liquidity magnets.",
+            "levels": levels,
+            "tone": "darkpool",
+        })
+    return cards
+
+
+def _order_flow_card_html(card: dict) -> str:
+    levels = "".join(
+        f"<div class='flow-level'><span>{escape(str(row.get('label') or '-'))}</span><span>{escape(str(row.get('value') or '-'))}</span></div>"
+        for row in (card.get("levels") or [])[:5]
+    )
+    return (
+        f"<div class='flow-card {escape(str(card.get('tone') or ''))}'>"
+        f"<div class='flow-label'>{escape(str(card.get('title') or 'Order Flow'))}</div>"
+        f"<div class='flow-value'>{escape(str(card.get('value') or '-'))}</div>"
+        f"<div class='flow-copy'>{escape(str(card.get('copy') or ''))}</div>"
+        f"<div class='flow-levels'>{levels}</div>"
+        "</div>"
+    )
+
+
+def render_order_flow_board(options: OptionsIntelligence) -> None:
+    cards = order_flow_board_cards(options)
+    if not cards:
+        return
+    st.markdown(
+        f"""
+        <div class='flow-board'>
+          <div class='flow-board-head'>
+            <div>
+              <div class='flow-board-title'>Order Flow Board</div>
+              <div class='flow-board-copy'>Paid options-flow context from the live feed: OTM SPY alerts, recent tape, market tide, and dark-pool levels.</div>
+            </div>
+            {ui_icon('pulse', 'blue', 'md')}
+          </div>
+          <div class='flow-board-grid'>{''.join(_order_flow_card_html(card) for card in cards)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _morning_card_html(title: str, value: str, copy: str, icon: str, tone: str = "blue", chips: list[str] | None = None) -> str:
     chip_html = ""
     if chips:
@@ -5310,6 +5435,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_action_panel(active_bundle, result)
     render_morning_lines_deck(active_bundle)
     render_morning_context_deck(active_bundle)
+    render_order_flow_board(active_bundle.options_intelligence)
     render_morning_report_export(active_bundle, result)
     if is_admin_diagnostics_enabled():
         with st.expander("Foresight health and inputs"):

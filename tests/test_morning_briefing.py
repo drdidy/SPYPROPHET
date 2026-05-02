@@ -21,6 +21,7 @@ from app import (
     economic_event_from_ai_calendar_dict,
     extract_json_payload_from_text,
     fallback_morning_decision,
+    order_flow_board_cards,
     summarize_unusual_whales_flow_alerts,
     summarize_unusual_whales_gex,
     summarize_unusual_whales_greeks,
@@ -388,3 +389,43 @@ def test_unusual_whales_card_only_appears_when_paid_data_loaded() -> None:
     assert "718" in copy
     assert "3 flow alerts" in chips
     assert tone == "red"
+
+
+def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
+    options = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", ""),
+        1,
+        1,
+        710,
+        712,
+        708,
+        [],
+        unusual_whales={
+            "flow_alerts": {
+                "flow_bias": "Bullish flow",
+                "alert_count": 4,
+                "net_premium_pressure": 450000,
+                "key_strikes": [{"strike": 720, "net_pressure": 300000}],
+            },
+            "recent_flow": {
+                "tone": "Recent call buying",
+                "trade_count": 8,
+                "net_pressure": 600000,
+                "top_strikes": [{"strike": 721, "net_pressure": 250000}],
+            },
+            "market_tide": {"tone": "Risk-on options tide", "net_call_premium": 1200000, "net_put_premium": -300000},
+            "net_premium_ticks": {"tone": "Call premium building", "net_premium": 900000, "net_call_premium": 1200000, "net_put_premium": -300000},
+            "options_volume": {"put_call_volume_ratio": 0.8},
+            "darkpool": {
+                "print_count": 12,
+                "total_premium": 88_000_000,
+                "key_levels": [{"price": 719.5, "premium": 32_000_000}],
+            },
+        },
+    )
+
+    cards = order_flow_board_cards(options)
+
+    assert {card["title"] for card in cards} >= {"0DTE Flow Alerts", "Recent Tape", "Market Tide", "Dark Pool Levels"}
+    darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
+    assert darkpool["levels"][0]["label"] == "719.50"
