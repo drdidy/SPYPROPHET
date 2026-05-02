@@ -16,6 +16,8 @@ from app import (
     build_openai_calendar_prompt,
     build_openai_request_payload,
     build_morning_briefing_prompt,
+    build_morning_briefing_report_pdf,
+    build_morning_briefing_report_png,
     economic_event_from_ai_calendar_dict,
     extract_json_payload_from_text,
     fallback_morning_decision,
@@ -120,6 +122,19 @@ def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
     assert "True dealer GEX is not available" not in result.text
     assert any("GEX_API_URL is not configured" in warning for warning in result.warnings)
     assert "CPI at 8:30 AM ET / 7:30 AM CT" in result.text
+
+
+def test_morning_briefing_report_exports_png_and_pdf() -> None:
+    bundle = _bundle()
+    result = rule_based_morning_briefing(bundle)
+
+    png = build_morning_briefing_report_png(bundle, result)
+    pdf = build_morning_briefing_report_pdf(bundle, result)
+
+    assert png.startswith(b"\x89PNG")
+    assert pdf.startswith(b"%PDF")
+    assert len(png) > 20_000
+    assert len(pdf) > 20_000
 
 
 def test_openai_request_payload_enables_web_search() -> None:
