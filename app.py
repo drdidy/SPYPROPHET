@@ -28,6 +28,9 @@ CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.20
 TP1_TARGET_FRACTION = 0.50
 TP2_TARGET_FRACTION = 0.75
+APP_UI_FONT = '"Manrope","Aptos","Segoe UI",system-ui,sans-serif'
+APP_DISPLAY_FONT = '"Space Grotesk","Manrope","Aptos","Segoe UI",system-ui,sans-serif'
+APP_MONO_FONT = '"Roboto Mono","Cascadia Mono","Consolas",monospace'
 STRUCTURE_CALIBRATION_KEYS = ("SPYPROPHET_STRUCTURE_CALIBRATION", "SPYPROPHET_SLOPE_PER_HOUR")
 TARGET_OTM_STRIKE_DISTANCE = 2.0
 FLOW_STRIKE_MAX_OTM_DISTANCE = 3.0
@@ -3680,16 +3683,20 @@ def _fmt_num(v: float | None, nd: int = 2) -> str:
 def inject_global_css() -> None:
     st.markdown("""
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
     :root {
       --bg:#080d12;--surface:#111821;--surface2:#151f2b;--surface3:#1a2633;
       --border:#243244;--border2:#314357;--text:#f4f7fb;--muted:#9aa7b5;
       --blue:#4ea8de;--green:#2ecc71;--red:#f45d75;--amber:#f5c451;
       --cyan:#28d2c2;--shadow:0 14px 34px rgba(0,0,0,.26);
-      --ui-font:"Aptos","Segoe UI Variable","Segoe UI",Candara,Calibri,system-ui,sans-serif;
-      --mono-font:"Cascadia Mono","Aptos Mono","Consolas","Courier New",monospace;
+      --ui-font:"Manrope","Aptos","Segoe UI",system-ui,sans-serif;
+      --display-font:"Space Grotesk","Manrope","Aptos","Segoe UI",system-ui,sans-serif;
+      --mono-font:"Roboto Mono","Cascadia Mono","Consolas",monospace;
     }
     html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
     .stMarkdown,.stText,.stCaption,.stDataFrame,p,span,button,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
+    [data-testid],[data-baseweb],.stDataFrame,.stDataFrame *,.ag-root,.ag-root *,.dash-table-container,.dash-table-container *{font-family:var(--ui-font)}
+    h1,h2,h3,.brand-title,.morning-title,.section-title,.prophet-header h3,.flow-board-title,.action-headline,.decision-main{font-family:var(--display-font)}
     .block-container{padding-top:2.25rem;max-width:1240px}
     [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
     [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
@@ -5709,7 +5716,7 @@ def add_decision_overlay(fig, decision_state):
     if decision_state and decision_state.signal_quality:
         w = decision_state.signal_quality.warnings[0] if decision_state.signal_quality.warnings else 'Clean rejection'
         txt = f"{decision_state.final_decision} | {decision_state.signal_quality.grade} | {decision_state.signal_quality.action_label} | {w}"
-    fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.99, text=txt, showarrow=False, align='left', bgcolor='rgba(8,13,22,0.75)', bordercolor='#334155', font=dict(color='#e2e8f0',size=11))
+    fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.99, text=txt, showarrow=False, align='left', bgcolor='rgba(8,13,22,0.75)', bordercolor='#334155', font=dict(family=APP_UI_FONT,color='#e2e8f0',size=11))
 
 
 def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, low_pivot, secondary_pivots, signals, decision_state, current_price, current_dt, show_secondary=True, show_signals=True, show_trade_overlays=True, show_pivots=True, secondary_mode='nearest 12'):
@@ -5747,12 +5754,12 @@ def build_prophet_chart(candles_df, primary_lines, secondary_lines, high_pivot, 
         fig.add_hline(y=current_price,line_dash='dot',line_color='#cbd5e1',annotation_text=f"SPY {current_price:.2f}")
     if closest:
         cv = closest.tradable_value_at(current_dt); d = current_price-cv if current_price is not None and not pd.isna(cv) else float('nan')
-        fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {display_line_name(closest.name)} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(color='#e2e8f0',size=11),align='right')
+        fig.add_annotation(xref='paper',yref='paper',x=0.99,y=0.99,text=f"Closest Structure: {display_line_name(closest.name)} @ {cv:.2f} (Δ {d:.2f})",showarrow=False,font=dict(family=APP_UI_FONT,color='#e2e8f0',size=11),align='right')
     add_decision_overlay(fig, decision_state)
-    fig.update_layout(height=820, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=150), legend=dict(orientation='h', x=0, y=-0.18, xanchor='left', yanchor='top', font=dict(size=10), bgcolor='rgba(8,13,22,0.72)', bordercolor='rgba(148,163,184,0.25)', borderwidth=1))
+    fig.update_layout(height=820, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0b1220', font=dict(family=APP_UI_FONT,color='#cbd5e1'), xaxis_title='Central Time', yaxis_title='SPY', hovermode='x unified', xaxis_rangeslider_visible=False, margin=dict(l=20,r=20,t=30,b=150), legend=dict(orientation='h', x=0, y=-0.18, xanchor='left', yanchor='top', font=dict(family=APP_UI_FONT,size=10), bgcolor='rgba(8,13,22,0.72)', bordercolor='rgba(148,163,184,0.25)', borderwidth=1))
     fig.update_xaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)'); fig.update_yaxes(showgrid=True, gridcolor='rgba(148,163,184,0.12)')
     if show_secondary and secondary_mode!='all' and len(secondary_lines)>len(plotted_secondary):
-        fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.02,text='Showing nearest secondary target lines.',showarrow=False,font=dict(size=10,color='#94a3b8'))
+        fig.add_annotation(xref='paper',yref='paper',x=0.01,y=0.02,text='Showing nearest secondary target lines.',showarrow=False,font=dict(family=APP_UI_FONT,size=10,color='#94a3b8'))
     return fig
 
 
@@ -5804,7 +5811,7 @@ def build_structure_path_chart(candles_df, primary_lines, secondary_lines, signa
     title = "Price path with decision zones"
     if decision_state:
         title = f"{_humanize(decision_state.final_decision)}: {title}"
-    fig.update_layout(height=700, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0b1220", font=dict(color="#cbd5e1"), title=dict(text=title, x=0.01, font=dict(size=16)), margin=dict(l=20, r=20, t=48, b=135), hovermode="x unified", legend=dict(orientation="h", x=0, y=-0.18, xanchor="left", yanchor="top", font=dict(size=10), bgcolor="rgba(8,13,22,0.72)", bordercolor="rgba(148,163,184,0.25)", borderwidth=1), xaxis_title="Central Time", yaxis_title="SPY")
+    fig.update_layout(height=700, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0b1220", font=dict(family=APP_UI_FONT,color="#cbd5e1"), title=dict(text=title, x=0.01, font=dict(family=APP_DISPLAY_FONT,size=16)), margin=dict(l=20, r=20, t=48, b=135), hovermode="x unified", legend=dict(orientation="h", x=0, y=-0.18, xanchor="left", yanchor="top", font=dict(family=APP_UI_FONT,size=10), bgcolor="rgba(8,13,22,0.72)", bordercolor="rgba(148,163,184,0.25)", borderwidth=1), xaxis_title="Central Time", yaxis_title="SPY")
     fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)", rangeslider_visible=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.10)")
     return fig
@@ -5982,10 +5989,10 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
 
     return f"""
     <style>
-      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Aptos,"Segoe UI Variable","Segoe UI",Candara,Calibri,system-ui,sans-serif;color:#f4f7fb}}
+      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Manrope,Aptos,"Segoe UI",system-ui,sans-serif;color:#f4f7fb}}
       .svg-map-shell svg{{display:block;width:100%;height:auto}}
       .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
-      .svg-map-title h3{{margin:0;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
+      .svg-map-title h3{{margin:0;font-family:"Space Grotesk",Manrope,Aptos,"Segoe UI",system-ui,sans-serif;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
       .svg-map-title p{{margin:4px 0 0;color:#9aa7b5;font-size:13px}}
       .svg-map-badge{{border:1px solid #314357;border-radius:999px;padding:7px 11px;color:#b9dcfb;background:#151f2b;font-size:12px;font-weight:750;white-space:nowrap}}
       .grid-line{{stroke:#243244;stroke-width:1;opacity:.72}}
