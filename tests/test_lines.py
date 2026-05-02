@@ -75,6 +75,15 @@ def test_friday_close_to_monday_morning_counts_chart_reopen_window() -> None:
     assert line.tradable_value_at(monday_projection) == 726.67
 
 
+def test_friday_two_pm_anchor_projects_to_monday_nine_am_tradingview_level() -> None:
+    friday_two_pm = _ts("2026-05-01T14:00:00")
+    monday_projection = _ts("2026-05-04T09:00:00")
+    line = DynamicLine("LD", 720.47, friday_two_pm, DEFAULT_SLOPE_PER_HOUR, "descending", "CALL_ZONE", "PRIMARY_LOW", True, "")
+
+    assert market_hours_between(friday_two_pm, monday_projection) == 10
+    assert line.tradable_value_at(monday_projection) == 718.47
+
+
 def test_calibration_helper() -> None:
     s_desc = calculate_slope_from_observed(714.46, 712.61, 18, "descending")
     assert abs(s_desc - 0.1027777778) < 1e-7

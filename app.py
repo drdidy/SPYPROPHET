@@ -2461,12 +2461,16 @@ def normalize_tradingview_anchor_time(value) -> pd.Timestamp:
     return ts
 
 
+def get_tradingview_anchor_time(candle_time: pd.Timestamp) -> pd.Timestamp:
+    return normalize_tradingview_anchor_time(candle_time)
+
+
 def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
     if rth_df is None or rth_df.empty:
         return _empty_pivot("HIGH_PIVOT")
     df = rth_df.sort_index()
     high_ts = df["High"].idxmax()
-    anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, high_ts))
+    anchor_ts = get_tradingview_anchor_time(high_ts)
     return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), anchor_ts, "session_high", candle_color(df.loc[high_ts]), False)
 
 
@@ -2475,7 +2479,7 @@ def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
         return _empty_pivot("LOW_PIVOT")
     df = rth_df.sort_index()
     low_ts = df["Low"].idxmin()
-    anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, low_ts))
+    anchor_ts = get_tradingview_anchor_time(low_ts)
     return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), anchor_ts, "session_low", candle_color(df.loc[low_ts]), False)
 
 
@@ -2490,7 +2494,7 @@ def find_secondary_pivots(rth_df: pd.DataFrame) -> list[SecondaryPivot]:
     out: list[SecondaryPivot] = []
     for i in range(len(df) - 1):
         cur_color, nxt_color = candle_color(df.iloc[i]), candle_color(df.iloc[i + 1])
-        anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, df.index[i]))
+        anchor_ts = get_tradingview_anchor_time(df.index[i])
         if cur_color == "red" and nxt_color == "green":
             out.append(SecondaryPivot("SECONDARY_DESCENDING", float(df.iloc[i]["Low"]), anchor_ts, "descending", "secondary_transition"))
         elif cur_color == "green" and nxt_color == "red":
@@ -2605,7 +2609,7 @@ def build_structure_projection_table(primary_lines: list[DynamicLine], current_d
             "Yahoo Structure Day": structure_day,
             "Signal Day": signal_day,
             "Pivot Price": line.anchor_price,
-            "Pivot Candle Closes": line.anchor_time,
+            "Anchor Candle": line.anchor_time,
             "Projection Time": pd.Timestamp(current_dt),
             "Projection Method": "Protected TradingView active-hours calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
             "Active Chart Hours Since Anchor": hours,
@@ -4730,7 +4734,7 @@ def render_structure_tiles(primary_lines, latest_price, projection_time, closest
             f"<div class='tile-value'>{fmt_price(value)}</div>"
             f"<div class='tile-meta'>Distance from SPY {fmt_float(distance)}</div>"
             f"<div class='tile-meta'>{display_anchor_source(line)}</div>"
-            f"<div class='tile-meta'>Anchor close {fmt_time(line.anchor_time)}</div>"
+            f"<div class='tile-meta'>Anchor candle {fmt_time(line.anchor_time)}</div>"
             "</div>"
         )
     if tiles:
