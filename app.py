@@ -1760,15 +1760,15 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
-        "You are the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a novice 0DTE SPY options trader.\n"
-        "Rules: use the verified JSON facts plus live web search facts you can cite. Do not invent unavailable options flow, social, or news. "
+        "Act as the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a novice 0DTE SPY options trader.\n"
+        "Rules: use the verified JSON facts plus live web search facts with citations. Do not invent unavailable options flow, social, or news. "
         "If premium order-flow data is present, treat it as the primary paid options-flow source and explicitly weigh SPY 0DTE OTM flow alerts, recent tape, net premium ticks, market tide, key strikes, near-strike Greeks, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
         "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
         "Tie every recommendation back to SPY Prophet lines and external context. "
-        "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, but cite only pages you actually used. "
+        "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, and cite only pages actually used. "
         "Return ONLY valid JSON. No Markdown, no bullets outside JSON, no long narrative. "
         "If there is no clean trade, make the stance WAIT and explain the exact condition that would change it.\n\n"
         "JSON_OUTPUT_SCHEMA:\n"
@@ -1909,7 +1909,7 @@ def build_openai_calendar_prompt(now_ct, days: int = 0) -> str:
     end = (pd.Timestamp(start) + pd.Timedelta(days=days)).date()
     date_label = str(start) if start == end else f"{start} through {end}"
     return (
-        "You are the SPY Prophet economic-calendar scout for a 0DTE SPY options trader.\n"
+        "Act as the SPY Prophet economic-calendar scout for a 0DTE SPY options trader.\n"
         f"Find verified United States economic calendar events scheduled for {date_label}. "
         "Use current public web sources only, such as Investing.com Economic Calendar, ForexFactory Calendar, "
         "MarketWatch Economic Calendar, Nasdaq Economic Calendar, Trading Economics public calendar, Federal Reserve, "
@@ -2078,7 +2078,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             f"Macro timing: {event.event} at {event.time_label}." if event else "Macro timing is not loaded yet.",
         ],
         "avoid": [
-            {"label": "Chasing between lines", "reason": "Your edge is at the structure trigger, not in the middle of the channel."},
+            {"label": "Chasing between lines", "reason": "The edge is at the structure trigger, not in the middle of the channel."},
         ],
         "risk_flags": [
             f"High-impact macro event: {event.event} at {event.time_label}." if event else "Calendar scout should run before assuming there is no catalyst.",
@@ -2177,9 +2177,9 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     if isinstance(flow, dict) and flow.get("flow_bias") in {"Bearish flow", "Bullish flow"}:
         risk_items.append(f"Flow pressure is {flow.get('flow_bias').lower()}; do not take the opposite side unless SPY Prophet confirms a rejection.")
     risk_text = "\n".join(f"- {item}" for item in risk_items) if risk_items else "- No major risk flags from the loaded sources."
-    text = f"""Good morning. Here is what you need to know for SPY trading today.
+    text = f"""Good morning. Key context for SPY trading today.
 
-YOUR LINES TODAY:
+SPY PROPHET LINES TODAY:
 {lines}
 
 EXTERNAL FACTORS AFFECTING THESE LINES:
@@ -4714,7 +4714,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "title": "0DTE Flow Alerts",
             "value": str(flow.get("flow_bias") or "Flow alerts loaded"),
             "copy": f"{flow.get('alert_count', 0)} OTM SPY alerts; net pressure {fmt_money_short(flow.get('net_premium_pressure'))}.",
-            "means": "This shows aggressive same-day option trades. Bullish flow supports call setups; bearish flow supports put setups. Mixed flow means wait for your line.",
+            "means": "This shows aggressive same-day option trades. Bullish flow supports call setups; bearish flow supports put setups. Mixed flow means wait for the structure line.",
             "levels": key_levels,
             "tone": "bull" if "bull" in str(flow.get("flow_bias", "")).lower() else "bear" if "bear" in str(flow.get("flow_bias", "")).lower() else "",
         })
@@ -4985,7 +4985,7 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         _ai_verify_card(
             "Reasoning Core",
             "Ready" if ai_ready else "Standby",
-            "Used only when you generate a fresh Foresight read.",
+            "Used only when a fresh Foresight read is generated.",
             "info",
         ),
         _ai_verify_card(
@@ -5086,7 +5086,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         f"Model: {result.model or 'rule-based engine'}."
     )
     cards = [
-        _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from your pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
+        _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from the pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
         _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
         _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
         _evidence_card("Flow Pressure", "Connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),

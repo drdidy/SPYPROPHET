@@ -81,7 +81,7 @@ def test_parse_rss_items_and_relevance() -> None:
     assert classify_news_relevance("VIX jumps as Treasury yields rise") == "Volatility watch"
     assert is_market_news_relevant("VIX jumps as Treasury yields rise")
     assert is_market_news_relevant("S&P 500 futures slip as yields rise before CPI")
-    assert not is_market_news_relevant("Why paying off your mortgage could cost more than investing")
+    assert not is_market_news_relevant("Why paying off a mortgage could cost more than investing")
     assert not is_market_news_relevant("If I had invested my Social Security in the S&P 500")
     assert not is_market_news_relevant("Spirit Airlines shuts down routes after bankruptcy filing")
     assert not is_market_news_relevant("Gold faces headwinds from higher yields and fading fear")
