@@ -21,6 +21,9 @@ from app import (
     fallback_morning_decision,
     summarize_unusual_whales_flow_alerts,
     summarize_unusual_whales_gex,
+    summarize_unusual_whales_greeks,
+    summarize_unusual_whales_net_premium_ticks,
+    summarize_unusual_whales_recent_flow,
     unusual_whales_card_data,
     merge_citations,
     morning_decision_from_result,
@@ -274,6 +277,72 @@ def test_unusual_whales_gex_finds_flip_and_levels() -> None:
 
     assert summary["gamma_flip"] == 719.0
     assert summary["levels"][0]["strike"] in {718.0, 720.0}
+
+
+def test_unusual_whales_recent_flow_summarizes_current_tape() -> None:
+    now = pd.Timestamp("2026-05-01 09:45", tz="America/Chicago")
+    summary = summarize_unusual_whales_recent_flow(
+        {
+            "data": [
+                {
+                    "ticker": "SPY",
+                    "option_type": "call",
+                    "strike": "720",
+                    "executed_at": "2026-05-01T14:44:00Z",
+                    "premium": "180000",
+                    "side": "ask",
+                },
+                {
+                    "ticker": "SPY",
+                    "option_type": "put",
+                    "strike": "715",
+                    "executed_at": "2026-04-20T14:44:00Z",
+                    "premium": "999999",
+                    "side": "ask",
+                },
+            ]
+        },
+        now,
+        latest_price=718.0,
+    )
+
+    assert summary is not None
+    assert summary["trade_count"] == 1
+    assert summary["tone"] == "Recent call buying"
+    assert summary["top_strikes"][0]["strike"] == 720.0
+
+
+def test_unusual_whales_net_premium_ticks_reads_direction() -> None:
+    now = pd.Timestamp("2026-05-01 09:45", tz="America/Chicago")
+    summary = summarize_unusual_whales_net_premium_ticks(
+        {
+            "data": [
+                {"timestamp": "2026-05-01T14:30:00Z", "net_call_premium": "200000", "net_put_premium": "-100000"},
+                {"timestamp": "2026-05-01T14:45:00Z", "net_call_premium": "1200000", "net_put_premium": "-100000"},
+            ]
+        },
+        now,
+    )
+
+    assert summary is not None
+    assert summary["tone"] == "Call premium building"
+    assert summary["net_premium"] == 1100000.0
+
+
+def test_unusual_whales_greeks_keeps_nearby_strikes() -> None:
+    summary = summarize_unusual_whales_greeks(
+        {
+            "data": [
+                {"strike": "720", "call_delta": "0.38", "put_delta": "-0.42", "call_gamma": "0.05"},
+                {"strike": "740", "call_delta": "0.05", "put_delta": "-0.95"},
+            ]
+        },
+        latest_price=719.0,
+    )
+
+    assert summary is not None
+    assert summary["nearest"]["strike"] == 720.0
+    assert len(summary["levels"]) == 1
 
 
 def test_unusual_whales_card_only_appears_when_paid_data_loaded() -> None:
