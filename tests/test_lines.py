@@ -18,6 +18,7 @@ from app import (
     get_closest_primary_line,
     get_primary_anchor_summary,
     get_structure_calibration,
+    market_hours_between,
     project_lines,
 )
 
@@ -35,16 +36,26 @@ def test_structure_calibration_reads_env_without_ui(monkeypatch) -> None:
     assert get_structure_calibration() == 0.111
 
 
-def test_hours_since_and_default_projection_examples() -> None:
+def test_hours_since_counts_only_market_hours() -> None:
     line_desc = DynamicLine("X", 714.46, _ts("2026-04-28T14:00:00"), 0.103, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
     line_asc = DynamicLine("Y", 714.46, _ts("2026-04-28T14:00:00"), 0.103, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
     now = _ts("2026-04-29T08:00:00")
 
-    assert line_desc.hours_since(now) == 18
-    assert abs(line_desc.raw_value_at(now) - 712.606) < 1e-9
-    assert line_desc.tradable_value_at(now) == 712.61
-    assert abs(line_asc.raw_value_at(now) - 716.314) < 1e-9
-    assert line_asc.tradable_value_at(now) == 716.31
+    assert line_desc.hours_since(now) == 1
+    assert abs(line_desc.raw_value_at(now) - 714.357) < 1e-9
+    assert line_desc.tradable_value_at(now) == 714.36
+    assert abs(line_asc.raw_value_at(now) - 714.563) < 1e-9
+    assert line_asc.tradable_value_at(now) == 714.56
+
+
+def test_weekend_projection_does_not_add_closed_hours() -> None:
+    friday_anchor = _ts("2026-05-01T09:00:00")
+    monday_projection = _ts("2026-05-04T09:00:00")
+    line = DynamicLine("UA", 724.87, friday_anchor, 0.103, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+
+    assert market_hours_between(friday_anchor, monday_projection) == 6.5
+    assert line.hours_since(monday_projection) == 6.5
+    assert line.tradable_value_at(monday_projection) == 725.54
 
 
 def test_calibration_helper() -> None:
