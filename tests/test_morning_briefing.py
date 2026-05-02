@@ -110,6 +110,15 @@ def test_external_context_verdicts_support_and_refute_entry() -> None:
     assert by_source["Catalyst Clock"]["state"] == "risk"
 
 
+def test_external_verdict_opposing_title_names_active_setup_side() -> None:
+    verdicts = external_context_verdicts(_bundle(), "PUT", 587.42, "Upper Put Trigger", 587.42)
+    by_source = {row["source"]: row for row in verdicts}
+
+    assert by_source["Technicals"]["state"] == "opposes"
+    assert by_source["Technicals"]["title"] == "Conflicts with put setup"
+    assert "SPY above" in by_source["Technicals"]["copy"]
+
+
 def test_calculate_max_pain_uses_open_interest() -> None:
     calls = pd.DataFrame({"strike": [100, 101, 102], "openInterest": [10, 100, 10]})
     puts = pd.DataFrame({"strike": [100, 101, 102], "openInterest": [10, 100, 10]})

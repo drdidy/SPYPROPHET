@@ -2917,11 +2917,12 @@ def alignment_state_for_side(direction: str | None, watch_side: str | None) -> s
     return "aligned" if direction == watch_side else "opposes"
 
 
-def alignment_title(state: str, label: str, direction: str | None = None) -> str:
+def alignment_title(state: str, label: str, direction: str | None = None, watch_side: str | None = None) -> str:
+    setup_side = watch_side or direction
     if state == "aligned":
-        return f"Supports {display_state_label(direction).lower()} setup" if direction else "Supports setup"
+        return f"Supports {display_state_label(setup_side).lower()} setup" if setup_side else "Supports setup"
     if state == "opposes":
-        return f"Against {display_state_label(direction).lower()} setup" if direction else "Against setup"
+        return f"Conflicts with {display_state_label(watch_side).lower()} setup" if watch_side else "Conflicts with setup"
     if state == "risk":
         return "Timing Risk"
     return label
@@ -3082,7 +3083,7 @@ def external_context_verdicts(
     ]:
         direction, copy = direction_func(*args)
         state = alignment_state_for_side(direction, side)
-        verdicts.append({"source": source, "state": state, "title": alignment_title(state, source, direction), "copy": copy})
+        verdicts.append({"source": source, "state": state, "title": alignment_title(state, source, direction, side), "copy": copy})
 
     order = {"opposes": 0, "risk": 1, "aligned": 2, "neutral": 3, "unavailable": 4}
     return sorted(verdicts, key=lambda row: order.get(str(row.get("state")), 5))
