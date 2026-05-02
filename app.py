@@ -4825,6 +4825,40 @@ def _report_card(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill
     draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=2)
 
 
+def _draw_centered(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, font, fill: str) -> None:
+    label = _report_text(text)
+    max_width = max(0, box[2] - box[0])
+    if max_width and draw.textlength(label, font=font) > max_width:
+        while label and draw.textlength(label + "...", font=font) > max_width:
+            label = label[:-1].rstrip()
+        label = f"{label}..." if label else "..."
+    bbox = draw.textbbox((0, 0), label, font=font)
+    x = box[0] + ((box[2] - box[0]) - (bbox[2] - bbox[0])) / 2
+    y = box[1] + ((box[3] - box[1]) - (bbox[3] - bbox[1])) / 2
+    draw.text((x, y), label, font=font, fill=fill)
+
+
+def _draw_report_bullets(
+    draw: ImageDraw.ImageDraw,
+    bullets: list[str],
+    xy: tuple[int, int],
+    width: int,
+    bottom: int,
+    font,
+    fill: str,
+    accent: str,
+    max_lines: int = 2,
+) -> None:
+    yy = xy[1]
+    clean_bullets = [str(bullet) for bullet in bullets if str(bullet).strip()]
+    for bullet in (clean_bullets or ["Context unavailable for this run."])[:4]:
+        if yy + 34 > bottom:
+            break
+        draw.ellipse((xy[0], yy + 7, xy[0] + 10, yy + 17), fill=accent)
+        next_y = _draw_wrapped(draw, bullet, (xy[0] + 22, yy), width, font, fill, max_lines, 4)
+        yy = next_y + 9
+
+
 def _report_safe_confidence(value) -> int:
     try:
         if value is None or pd.isna(value):
@@ -4835,10 +4869,7 @@ def _report_safe_confidence(value) -> int:
 
 
 def _report_line_rows(bundle: MorningBriefingBundle) -> list[dict]:
-    rows = list(bundle.lines or [])[:4]
-    while len(rows) < 4:
-        rows.append({"name": "Trigger pending", "role": "-", "value": float("nan"), "anchor_price": float("nan"), "anchor_time": "-"})
-    return rows
+    return list(bundle.lines or [])[:4]
 
 
 def _report_bullets(decision: dict, bundle: MorningBriefingBundle) -> list[str]:
@@ -4867,7 +4898,7 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
     confidence = _report_safe_confidence(trade.get("confidence", result.confidence))
-    stance = display_state_label(str(decision.get("stance") or "WAIT").upper())
+    stance = display_state_label(str(decision.get("stance") or "WAIT").upper()).upper()
     tone, label = _morning_confidence_tone(confidence)
     tone_color = {"green": "#167a3a", "blue": "#0f4c94", "amber": "#a76600", "red": "#a81420"}.get(tone, "#0f4c94")
     generated = pd.Timestamp(result.generated_at).tz_convert(get_central_tz()) if pd.Timestamp(result.generated_at).tzinfo else pd.Timestamp(result.generated_at, tz=get_central_tz())
@@ -4875,6 +4906,8 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
     whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(bundle.options_intelligence)
     gex_card = unusual_whales_gex_card_data(bundle.options_intelligence)
     quote_value, quote_copy, quote_chips = _first_quote_label(bundle.options_intelligence)
+    whales_payload = bundle.options_intelligence.unusual_whales if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
+    darkpool = whales_payload.get("darkpool") if isinstance(whales_payload, dict) else None
     lines = _report_line_rows(bundle)
 
     img = Image.new("RGB", (1200, 1800), "#06101a")
@@ -4884,6 +4917,7 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
     h3 = _report_font(20, True)
     body = _report_font(18)
     body_bold = _report_font(18, True)
+    panel_body = _report_font(16)
     small = _report_font(15)
     tiny = _report_font(13)
     mono = _report_font(30, True)
@@ -4943,32 +4977,43 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
 
     _report_card(draw, (18, 752, 1182, 1122), "#f5f7fb", "#b9c8da", 12)
     draw.text((48, 782), "SPY PROPHET TRIGGER LINES", font=h3, fill="#0d2d62")
-    card_w = 262
-    x = 42
-    for line in lines:
+    display_lines = lines or [{"name": "Structure lines unavailable", "role": "Load candles", "value": float("nan"), "anchor_price": float("nan"), "anchor_time": "Refresh SPY data to calculate today's trigger deck."}]
+    gap = 20
+    left, right = 42, 1150
+    card_w = int((right - left - gap * (len(display_lines) - 1)) / len(display_lines))
+    x = left
+    for line in display_lines:
         role = str(line.get("role") or "")
-        is_pending = str(line.get("name") or "").lower() == "trigger pending"
+        is_pending = pd.isna(fmt_nan(line.get("value"), None))
         is_call = "call" in role.lower()
         color = "#6b7280" if is_pending else "#166534" if is_call else "#b91c1c"
         _report_card(draw, (x, 836, x + card_w, 1098), "#fbfdff", color, 10)
-        draw.text((x + 22, 860), _report_text(line.get("name") or "-").upper(), font=small, fill=color)
-        draw.text((x + 78, 922), _report_text(role).upper(), font=body_bold, fill="#111827")
-        draw.text((x + 54, 964), fmt_price(line.get("value")), font=mono, fill=color)
-        draw.line((x + 34, 1018, x + card_w - 34, 1018), fill="#4b5563", width=2)
-        draw.text((x + 96, 1032), "ANCHOR", font=small, fill="#111827")
-        draw.text((x + 94, 1054), fmt_price(line.get("anchor_price")), font=body_bold, fill="#111827")
-        _draw_wrapped(draw, line.get("anchor_time") or "-", (x + 28, 1076), card_w - 56, tiny, "#111827", 1)
-        x += card_w + 20
+        _draw_centered(draw, (x + 18, 854, x + card_w - 18, 886), _report_text(line.get("name") or "-").upper(), small, color)
+        _draw_centered(draw, (x + 18, 914, x + card_w - 18, 946), _report_text(role).upper(), body_bold, "#111827")
+        _draw_centered(draw, (x + 18, 958, x + card_w - 18, 1000), fmt_price(line.get("value")), mono, color)
+        draw.line((x + 34, 1014, x + card_w - 34, 1014), fill="#4b5563", width=2)
+        _draw_centered(draw, (x + 18, 1028, x + card_w - 18, 1050), "ANCHOR", small, "#111827")
+        _draw_centered(draw, (x + 18, 1054, x + card_w - 18, 1076), fmt_price(line.get("anchor_price")), body_bold, "#111827")
+        _draw_centered(draw, (x + 18, 1074, x + card_w - 18, 1094), line.get("anchor_time") or "-", tiny, "#111827")
+        x += card_w + gap
 
     panel_y = 1140
     panel_h = 250
+    if isinstance(darkpool, dict) and (darkpool.get("key_levels") or darkpool.get("largest_prints")):
+        darkpool_bullets = [f"{darkpool.get('print_count', 0)} prints, {fmt_money_short(darkpool.get('total_premium'))} notional"]
+        for row in (darkpool.get("key_levels") or darkpool.get("largest_prints") or [])[:3]:
+            if isinstance(row, dict):
+                darkpool_bullets.append(f"{fmt_price(row.get('price'))} level, {fmt_money_short(row.get('premium'))}")
+        final_panel = ("DARK POOL LEVELS", darkpool_bullets, "#b47cff")
+    else:
+        final_panel = ("CONTRACT WATCH", [quote_value, quote_copy] + quote_chips[:2], "#67b7ff")
     panels = [
         ("WHY THIS MATTERS", _report_bullets(decision, bundle), "#67b7ff"),
         ("CATALYST CLOCK", [f"{event.event} at {event.time_label}" if event else "No timed catalyst loaded", event.notes or event.source if event else "Structure and flow must do the work."], "#b47cff"),
         ("FLOW PRESSURE", [whale_value or "No premium flow loaded", whale_copy] + whale_chips[:2], "#75b65a"),
         ("DEALER GAMMA", [gex_card[0], gex_card[1]] + gex_card[2][:2] if gex_card else [bundle.gamma_insight.dealer_tone, bundle.gamma_insight.notes], "#f4c76b"),
         ("AVOID / RISK", _report_risks(decision, bundle), "#ff9f2f"),
-        ("CONTRACT WATCH", [quote_value, quote_copy] + quote_chips[:2], "#67b7ff"),
+        final_panel,
     ]
     for i, (heading, bullets, color) in enumerate(panels):
         col = i % 3
@@ -4977,11 +5022,7 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
         py = panel_y + row * (panel_h + 16)
         _report_card(draw, (px, py, px + 372, py + panel_h), "#07121f", "#314357", 12)
         draw.text((px + 28, py + 24), heading, font=h3, fill=color)
-        yy = py + 72
-        clean_bullets = [str(bullet) for bullet in bullets if str(bullet).strip()]
-        for bullet in (clean_bullets or ["Context unavailable for this run."])[:4]:
-            draw.ellipse((px + 30, yy + 8, px + 40, yy + 18), fill=color)
-            yy = _draw_wrapped(draw, bullet, (px + 52, yy), 292, body, "#f2f6fb", 2, 5) + 8
+        _draw_report_bullets(draw, bullets, (px + 30, py + 74), 296, py + panel_h - 22, panel_body, "#f2f6fb", color, 2)
 
     _report_card(draw, (18, 1690, 1182, 1778), "#07121f", "#314357", 12)
     draw.text((48, 1718), "Discipline at the trigger. Patience for the edge. Let structure lead.", font=h3, fill="#f8fbff")
