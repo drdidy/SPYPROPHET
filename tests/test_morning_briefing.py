@@ -20,6 +20,7 @@ from app import (
     extract_json_payload_from_text,
     fallback_morning_decision,
     order_flow_board_cards,
+    order_flow_plain_english,
     summarize_unusual_whales_flow_alerts,
     summarize_unusual_whales_gex,
     summarize_unusual_whales_greeks,
@@ -410,7 +411,13 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     )
 
     cards = order_flow_board_cards(options)
+    read = order_flow_plain_english(options)
 
     assert {card["title"] for card in cards} >= {"0DTE Flow Alerts", "Recent Tape", "Market Tide", "Dark Pool Levels"}
+    flow_card = next(card for card in cards if card["title"] == "0DTE Flow Alerts")
+    assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
     assert darkpool["levels"][0]["label"] == "719.50"
+    assert "not call or put signals" in darkpool["means"]
+    assert read["label"] == "Calls have the flow tailwind"
+    assert read["tone"] == "call"

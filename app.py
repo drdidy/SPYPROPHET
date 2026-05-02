@@ -3633,12 +3633,23 @@ def inject_global_css() -> None:
     .flow-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
     .flow-board-title{font-size:1.12rem;font-weight:950;color:var(--text)}
     .flow-board-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
+    .flow-read{display:grid;grid-template-columns:minmax(180px,.28fr) 1fr;gap:12px;margin-bottom:12px}
+    .flow-read-main{border:1px solid rgba(103,183,255,.24);border-radius:8px;background:rgba(103,183,255,.07);padding:12px}
+    .flow-read-main.call{border-color:rgba(46,204,113,.34);background:rgba(46,204,113,.09)}
+    .flow-read-main.put{border-color:rgba(244,93,117,.34);background:rgba(244,93,117,.09)}
+    .flow-read-main.wait{border-color:rgba(245,196,81,.38);background:rgba(245,196,81,.09)}
+    .flow-read-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:900}
+    .flow-read-value{font-size:1.18rem;line-height:1.18;font-weight:950;color:var(--text);margin-top:5px}
+    .flow-read-copy{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:12px;color:var(--muted);font-size:.83rem;line-height:1.42}
+    .flow-read-bullets{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+    .flow-read-bullets span{border:1px solid rgba(141,160,184,.18);border-radius:999px;padding:4px 8px;color:var(--text);font-size:.72rem;background:rgba(255,255,255,.045)}
     .flow-board-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .flow-card{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:164px}
+    .flow-card{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:210px}
     .flow-card.darkpool{border-color:rgba(180,124,255,.32)}.flow-card.bull{border-color:rgba(46,204,113,.32)}.flow-card.bear{border-color:rgba(244,93,117,.32)}
     .flow-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
     .flow-value{font-size:1.04rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:7px}
     .flow-copy{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:6px}
+    .flow-means{font-size:.76rem;line-height:1.34;color:var(--text);border-left:2px solid rgba(103,183,255,.45);padding-left:8px;margin-top:9px}
     .flow-levels{display:grid;gap:5px;margin-top:9px}
     .flow-level{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid rgba(141,160,184,.13);padding-top:5px;font-family:var(--mono-font);font-size:.78rem;color:var(--text)}
     .flow-level span:last-child{color:var(--blue)}
@@ -4643,6 +4654,47 @@ def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str
     return value, copy, chips, tone
 
 
+def order_flow_plain_english(options: OptionsIntelligence) -> dict:
+    read = premium_flow_direction(options)
+    side = read.get("side")
+    score = int(read.get("score") or 0)
+    if side == "CALL":
+        label = "Calls have the flow tailwind"
+        action = "Call setups get extra support, but only after SPY Prophet confirms at a trigger."
+        tone = "call"
+    elif side == "PUT":
+        label = "Puts have the flow tailwind"
+        action = "Put setups get extra support, but only after SPY Prophet confirms at a trigger."
+        tone = "put"
+    elif side == "MIXED":
+        label = "Flow is mixed"
+        action = "Do not force direction from flow. Let the structure trigger decide and demand a clean rejection."
+        tone = "wait"
+    else:
+        label = "Flow read unavailable"
+        action = "No paid flow read is loaded yet, so trade from structure and confirmed price behavior only."
+        tone = "wait"
+    reasons = [str(reason) for reason in (read.get("reasons") or []) if str(reason).strip()]
+    if score >= 3:
+        strength = "Strong"
+    elif score <= -3:
+        strength = "Strong"
+    elif abs(score) == 2:
+        strength = "Moderate"
+    elif abs(score) == 1:
+        strength = "Light"
+    else:
+        strength = "Neutral"
+    return {
+        "label": label,
+        "action": action,
+        "tone": tone,
+        "strength": strength,
+        "score": score,
+        "reasons": reasons[:4],
+    }
+
+
 def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
     whales = options.unusual_whales or {}
     if not isinstance(whales, dict) or not whales:
@@ -4662,6 +4714,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "title": "0DTE Flow Alerts",
             "value": str(flow.get("flow_bias") or "Flow alerts loaded"),
             "copy": f"{flow.get('alert_count', 0)} OTM SPY alerts; net pressure {fmt_money_short(flow.get('net_premium_pressure'))}.",
+            "means": "This shows aggressive same-day option trades. Bullish flow supports call setups; bearish flow supports put setups. Mixed flow means wait for your line.",
             "levels": key_levels,
             "tone": "bull" if "bull" in str(flow.get("flow_bias", "")).lower() else "bear" if "bear" in str(flow.get("flow_bias", "")).lower() else "",
         })
@@ -4679,6 +4732,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "title": "Recent Tape",
             "value": str(recent.get("tone") or "Recent flow loaded"),
             "copy": f"{recent.get('trade_count', 0)} SPY prints; pressure {fmt_money_short(recent.get('net_pressure'))}.",
+            "means": "This is the freshest SPY option tape. If it agrees with the alert flow, the read is cleaner. If it disagrees, wait for confirmation.",
             "levels": levels,
             "tone": "bull" if "call" in str(recent.get("tone", "")).lower() else "bear" if "put" in str(recent.get("tone", "")).lower() else "",
         })
@@ -4690,6 +4744,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "title": "Market Tide",
             "value": str(tide.get("tone") or premium.get("tone") or "Premium tape loaded"),
             "copy": f"Net premium {fmt_money_short(premium.get('net_premium'))}; volume P/C {fmt_float(volume.get('put_call_volume_ratio'))}.",
+            "means": "This is broader options pressure. Risk-on or call premium helps calls. Risk-off, put premium, or high put/call warns against weak call entries.",
             "levels": [
                 {"label": "Call net", "value": fmt_money_short(premium.get("net_call_premium") or tide.get("net_call_premium"))},
                 {"label": "Put net", "value": fmt_money_short(premium.get("net_put_premium") or tide.get("net_put_premium"))},
@@ -4713,6 +4768,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "title": "Dark Pool Levels",
             "value": f"{darkpool.get('print_count', 0)} prints",
             "copy": f"{fmt_money_short(darkpool.get('total_premium'))} notional; watch clustered levels as possible liquidity magnets.",
+            "means": "Dark-pool levels are not call or put signals by themselves. Treat them as prices where SPY may pause, reject, or get pulled toward.",
             "levels": levels,
             "tone": "darkpool",
         })
@@ -4724,11 +4780,13 @@ def _order_flow_card_html(card: dict) -> str:
         f"<div class='flow-level'><span>{escape(str(row.get('label') or '-'))}</span><span>{escape(str(row.get('value') or '-'))}</span></div>"
         for row in (card.get("levels") or [])[:5]
     )
+    means = f"<div class='flow-means'>{escape(str(card.get('means') or ''))}</div>" if card.get("means") else ""
     return (
         f"<div class='flow-card {escape(str(card.get('tone') or ''))}'>"
         f"<div class='flow-label'>{escape(str(card.get('title') or 'Order Flow'))}</div>"
         f"<div class='flow-value'>{escape(str(card.get('value') or '-'))}</div>"
         f"<div class='flow-copy'>{escape(str(card.get('copy') or ''))}</div>"
+        f"{means}"
         f"<div class='flow-levels'>{levels}</div>"
         "</div>"
     )
@@ -4738,6 +4796,8 @@ def render_order_flow_board(options: OptionsIntelligence) -> None:
     cards = order_flow_board_cards(options)
     if not cards:
         return
+    read = order_flow_plain_english(options)
+    reason_html = "".join(f"<span>{escape(reason)}</span>" for reason in read.get("reasons", [])[:4])
     st.markdown(
         f"""
         <div class='flow-board'>
@@ -4747,6 +4807,17 @@ def render_order_flow_board(options: OptionsIntelligence) -> None:
               <div class='flow-board-copy'>Paid options-flow context from the live feed: OTM SPY alerts, recent tape, market tide, and dark-pool levels.</div>
             </div>
             {ui_icon('pulse', 'blue', 'md')}
+          </div>
+          <div class='flow-read'>
+            <div class='flow-read-main {escape(str(read.get('tone') or 'wait'))}'>
+              <div class='flow-read-label'>Plain-English Read</div>
+              <div class='flow-read-value'>{escape(str(read.get('label') or 'Flow read unavailable'))}</div>
+              <div class='flow-read-label' style='margin-top:8px'>Strength: {escape(str(read.get('strength') or 'Neutral'))}</div>
+            </div>
+            <div class='flow-read-copy'>
+              {escape(str(read.get('action') or 'Use flow as context, not as an entry by itself.'))}
+              <div class='flow-read-bullets'>{reason_html}</div>
+            </div>
           </div>
           <div class='flow-board-grid'>{''.join(_order_flow_card_html(card) for card in cards)}</div>
         </div>
