@@ -4100,6 +4100,15 @@ def inject_global_css() -> None:
     .morning-line-card.neutral{--wash:rgba(103,183,255,.16)}
     .morning-dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
     .decision-stack-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:12px}
+    .decision-summary{border:1px solid rgba(103,183,255,.24);border-radius:8px;background:linear-gradient(135deg,rgba(18,28,42,.86),rgba(8,13,18,.96));padding:12px;margin:12px 0}
+    .decision-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .decision-summary-title{font-size:1rem;font-weight:800;color:var(--text);line-height:1.2}
+    .decision-summary-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
+    .decision-summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
+    .decision-summary-chip{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:70px}
+    .decision-summary-chip.green{border-color:rgba(46,204,113,.35)}.decision-summary-chip.red{border-color:rgba(244,93,117,.35)}.decision-summary-chip.amber{border-color:rgba(245,196,81,.38)}.decision-summary-chip.blue{border-color:rgba(103,183,255,.32)}
+    .decision-summary-label{font-size:.72rem;font-weight:700;color:#aeb9c6;line-height:1.25}
+    .decision-summary-value{font-size:.98rem;font-weight:780;color:var(--text);line-height:1.2;margin-top:5px}
     .morning-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(18,28,42,.9),rgba(9,14,21,.96));padding:14px;min-height:168px;display:flex;flex-direction:column}
     .morning-card.green{border-color:rgba(46,204,113,.34)}.morning-card.red{border-color:rgba(255,95,124,.34)}.morning-card.amber{border-color:rgba(245,196,81,.36)}.morning-card.blue{border-color:rgba(103,183,255,.34)}
     .morning-card-head{display:flex;align-items:center;gap:10px}
@@ -4204,8 +4213,8 @@ def inject_global_css() -> None:
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
     .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
     .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
-    .morning-control,.morning-hero,.morning-line-card,.morning-card,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
-    .morning-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
+    .morning-control,.morning-hero,.morning-line-card,.morning-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
+    .morning-title,.decision-summary-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
     .morning-title{font-size:1.9rem}
     .action-headline{font-size:1.22rem}
     .flow-board-title,.evidence-title{font-size:1.06rem}
@@ -4229,7 +4238,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.decision-stack-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -5670,6 +5679,23 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     st.markdown(f"<div class='morning-dashboard'>{''.join(cards[:4])}</div>", unsafe_allow_html=True)
 
 
+def decision_stack_summary_label(row: dict) -> str:
+    desk = str(row.get("desk") or "")
+    state = str(row.get("state") or "neutral")
+    title = str(row.get("title") or "").strip()
+    if desk == "Execution" and title:
+        return title
+    if desk == "Catalyst" and state == "neutral":
+        return "Clear"
+    if state == "aligned":
+        return "Supports"
+    if state == "opposes":
+        return "Cautions"
+    if state == "risk":
+        return "Caution"
+    return "Neutral"
+
+
 def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     reviews = build_foresight_desk_reviews(bundle, decision)
@@ -5677,6 +5703,32 @@ def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: Morni
         return
     tone_map = {"aligned": "green", "opposes": "red", "risk": "amber", "neutral": "blue", "unavailable": "blue"}
     icon_map = {"Structure": "compass", "Order Flow": "pulse", "Catalyst": "clock", "Risk": "shield", "Execution": "target"}
+    summary_html = "".join(
+        "<div class='decision-summary-chip {tone}'>"
+        "<div class='decision-summary-label'>{desk}</div>"
+        "<div class='decision-summary-value'>{value}</div>"
+        "</div>".format(
+            tone=escape(tone_map.get(str(row.get("state") or "neutral"), "blue")),
+            desk=escape(str(row.get("desk") or "Read")),
+            value=escape(decision_stack_summary_label(row)),
+        )
+        for row in reviews[:5]
+    )
+    st.markdown(
+        f"""
+        <div class='decision-summary'>
+          <div class='decision-summary-head'>
+            <div>
+              <div class='decision-summary-title'>Decision Evidence</div>
+              <div class='decision-summary-copy'>Compact support check behind the Action Brief.</div>
+            </div>
+            {ui_icon('shield', 'blue', 'sm')}
+          </div>
+          <div class='decision-summary-grid'>{summary_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     cards = [
         _morning_card_html(
             str(row.get("desk") or "Read"),
@@ -5687,8 +5739,8 @@ def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: Morni
         )
         for row in reviews[:5]
     ]
-    st.markdown("<div class='section-kicker'>Decision Stack</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='decision-stack-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+    with st.expander("Why This Read", expanded=False):
+        st.markdown(f"<div class='decision-stack-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
 def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
