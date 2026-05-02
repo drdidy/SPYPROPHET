@@ -17,6 +17,8 @@ from app import (
     build_openai_request_payload,
     build_morning_briefing_prompt,
     economic_event_from_ai_calendar_dict,
+    darkpool_entry_read,
+    darkpool_ranked_levels,
     extract_json_payload_from_text,
     fallback_morning_decision,
     order_flow_board_cards,
@@ -33,6 +35,34 @@ from app import (
     filter_near_spy_strikes,
     rule_based_morning_briefing,
 )
+
+
+def test_darkpool_levels_rank_by_largest_premium() -> None:
+    darkpool = {
+        "key_levels": [
+            {"price": 718.0, "premium": 4_000_000},
+            {"price": 722.0, "premium": 12_000_000},
+            {"price": 720.0, "premium": 7_000_000},
+        ]
+    }
+
+    levels = darkpool_ranked_levels(darkpool, 3)
+
+    assert [row["price"] for row in levels] == [722.0, 720.0, 718.0]
+
+
+def test_darkpool_entry_read_supports_near_trigger() -> None:
+    darkpool = {
+        "key_levels": [
+            {"price": 724.0, "premium": 11_000_000},
+            {"price": 722.2, "premium": 9_000_000},
+        ]
+    }
+
+    read = darkpool_entry_read(darkpool, entry_price=722.42, watch_side="PUT", entry_label="Upper Put Trigger")
+
+    assert read["state"] == "aligned"
+    assert "Upper Put Trigger" in read["copy"]
 
 
 def test_calculate_max_pain_uses_open_interest() -> None:
@@ -418,6 +448,6 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
     assert darkpool["levels"][0]["label"] == "719.50"
-    assert "not call or put signals" in darkpool["means"]
+    assert "support or refute an entry" in darkpool["means"]
     assert read["label"] == "Calls have the flow tailwind"
     assert read["tone"] == "call"

@@ -2046,11 +2046,17 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     first_line = bundle.lines[0] if bundle.lines else {}
     confidence = int(result.confidence if result else 45)
     flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
+    whales = bundle.options_intelligence.unusual_whales or {}
+    darkpool = whales.get("darkpool", {}) if isinstance(whales, dict) else {}
+    role_text = str(first_line.get("role") or "").upper()
+    watch_side = "PUT" if "PUT" in role_text else "CALL" if "CALL" in role_text else None
+    darkpool_read = darkpool_entry_read(darkpool, first_line.get("value"), watch_side, first_line.get("name")) if isinstance(darkpool, dict) else {}
     flow_reason = (
         f"Flow pressure reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}."
         if isinstance(flow, dict) and flow.get("flow_bias")
         else f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}."
     )
+    darkpool_reason = str(darkpool_read.get("copy") or "")
     return {
         "stance": "WAIT",
         "headline": "Wait for a confirmed hourly rejection before choosing a same-day contract.",
@@ -2068,6 +2074,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
         "why": [
             f"Structure learning is {bundle.learning_profile.confidence_label} with target-first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
             flow_reason,
+            darkpool_reason if darkpool_reason else "No large dark-pool level loaded near the active trigger.",
             f"Macro timing: {event.event} at {event.time_label}." if event else "No sourced catalyst loaded for this session.",
         ],
         "avoid": [
@@ -2150,6 +2157,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     tide = whales.get("market_tide") if isinstance(whales, dict) else None
     net_premium = whales.get("net_premium_ticks") if isinstance(whales, dict) else None
     greeks = whales.get("greeks") if isinstance(whales, dict) else None
+    darkpool = whales.get("darkpool") if isinstance(whales, dict) else None
     flow_line = ""
     if flow:
         first_strike = (flow.get("key_strikes") or [{}])[0]
@@ -2166,6 +2174,13 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     if isinstance(greeks, dict) and isinstance(greeks.get("nearest"), dict):
         nearest = greeks["nearest"]
         flow_line += f"- Near-strike Greeks: {fmt_price(nearest.get('strike'), 0)} strike loaded for delta/gamma context.\n"
+    if isinstance(darkpool, dict):
+        first_line = bundle.lines[0] if bundle.lines else {}
+        role_text = str(first_line.get("role") or "").upper()
+        watch_side = "PUT" if "PUT" in role_text else "CALL" if "CALL" in role_text else None
+        darkpool_read = darkpool_entry_read(darkpool, first_line.get("value"), watch_side, first_line.get("name"))
+        if darkpool_read.get("copy"):
+            flow_line += f"- Dark-pool alignment: {darkpool_read.get('copy')}\n"
     risk_items = []
     for event in high_events[:3]:
         risk_items.append(f"{event.event} at {event.time_label}: avoid fresh entries immediately before the release and wait for post-release structure.")
@@ -4244,32 +4259,100 @@ def render_terminal_hero(
     )
 
 
-def darkpool_context_label(options: OptionsIntelligence | None, current_price: float | None = None) -> dict:
+def darkpool_ranked_levels(darkpool: dict | None, limit: int = 5) -> list[dict]:
+    if not isinstance(darkpool, dict):
+        return []
+    rows = darkpool.get("key_levels") or darkpool.get("largest_prints") or []
+    ranked = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        price = _finite_float(row.get("price"))
+        if pd.isna(price):
+            continue
+        premium = _finite_float(row.get("premium") or row.get("notional"), 0.0)
+        ranked.append({"price": price, "premium": premium, "size": _finite_float(row.get("size"), 0.0)})
+    return sorted(ranked, key=lambda row: row["premium"], reverse=True)[:limit]
+
+
+def darkpool_entry_read(
+    darkpool: dict | None,
+    entry_price: float | None = None,
+    watch_side: str | None = None,
+    entry_label: str | None = None,
+    current_price: float | None = None,
+) -> dict:
+    levels = darkpool_ranked_levels(darkpool, 5)
+    if not levels:
+        return {"state": "unavailable", "title": "Dark Pool", "copy": "Dark-pool levels unavailable for this run.", "levels": []}
+    anchor = _finite_float(entry_price)
+    if pd.isna(anchor):
+        anchor = _finite_float(current_price)
+    largest = levels[0]
+    if pd.isna(anchor):
+        level_text = ", ".join(f"{fmt_price(row['price'])} ({fmt_money_short(row['premium'])})" for row in levels[:3])
+        return {
+            "state": "neutral",
+            "title": f"Largest level {fmt_price(largest['price'])}",
+            "copy": f"Largest dark-pool levels: {level_text}. Use them as liquidity magnets, not standalone entries.",
+            "levels": levels,
+        }
+    nearest = min(levels, key=lambda row: abs(row["price"] - anchor))
+    distance = abs(nearest["price"] - anchor)
+    side = str(watch_side or "").upper()
+    label = entry_label or "active entry"
+    threshold = 1.25
+    if distance <= threshold:
+        state = "aligned"
+        title = f"Supports {display_state_label(side) if side else 'entry'}"
+        copy = (
+            f"Large dark-pool liquidity sits near {label}: {fmt_price(nearest['price'])} "
+            f"({fmt_money_short(nearest['premium'])}), {fmt_price(distance)} from the trigger. "
+            "This can improve the read if price rejects cleanly there."
+        )
+    elif side == "CALL" and nearest["price"] > anchor:
+        state = "aligned"
+        title = "Upside magnet"
+        copy = f"Largest relevant dark-pool level above the call entry is {fmt_price(nearest['price'])}; it can support upside follow-through if structure confirms."
+    elif side == "PUT" and nearest["price"] < anchor:
+        state = "aligned"
+        title = "Downside magnet"
+        copy = f"Largest relevant dark-pool level below the put entry is {fmt_price(nearest['price'])}; it can support downside follow-through if structure confirms."
+    elif side in {"CALL", "PUT"}:
+        state = "opposes"
+        direction = "below" if nearest["price"] < anchor else "above"
+        copy = f"Nearest large dark-pool level is {direction} the {display_state_label(side).lower()} entry at {fmt_price(nearest['price'])}; treat it as a pullback/chop risk unless rejection is strong."
+        title = f"Fights {display_state_label(side)}"
+    else:
+        state = "neutral"
+        title = f"Largest level {fmt_price(largest['price'])}"
+        copy = f"Largest dark-pool level is {fmt_price(largest['price'])} with {fmt_money_short(largest['premium'])} notional; no confirmed entry side is active yet."
+    return {"state": state, "title": title, "copy": copy, "levels": levels, "nearest": nearest}
+
+
+def darkpool_context_label(
+    options: OptionsIntelligence | None,
+    current_price: float | None = None,
+    entry_price: float | None = None,
+    watch_side: str | None = None,
+    entry_label: str | None = None,
+) -> dict:
     whales = options.unusual_whales if options else {}
     darkpool = whales.get("darkpool") if isinstance(whales, dict) else {}
     if not isinstance(darkpool, dict) or not darkpool:
         return {"value": "-", "copy": "Dark-pool levels unavailable for this run."}
-    rows = [row for row in (darkpool.get("key_levels") or darkpool.get("largest_prints") or []) if isinstance(row, dict)]
-    if not rows:
+    read = darkpool_entry_read(darkpool, entry_price, watch_side, entry_label, current_price)
+    levels = read.get("levels") or []
+    if not levels:
         return {"value": "Loaded", "copy": f"{darkpool.get('print_count', 0)} dark-pool prints loaded."}
-    price = _finite_float(current_price)
-    def row_price(row):
-        return _finite_float(row.get("price"))
-    nearest = rows[0]
-    if not pd.isna(price):
-        priced_rows = [row for row in rows if not pd.isna(row_price(row))]
-        if priced_rows:
-            nearest = min(priced_rows, key=lambda row: abs(row_price(row) - price))
-    nearest_price = row_price(nearest)
-    distance = abs(nearest_price - price) if not pd.isna(price) and not pd.isna(nearest_price) else float("nan")
-    premium = nearest.get("premium") or nearest.get("notional") or darkpool.get("total_premium")
-    if not pd.isna(distance):
-        value = f"Near {fmt_price(nearest_price)}" if distance <= 1.0 else fmt_price(nearest_price)
-        copy = f"Nearest dark-pool liquidity level is {fmt_price(distance)} from SPY; notional {fmt_money_short(premium)}."
-    else:
-        value = fmt_price(nearest_price)
-        copy = f"Dark-pool liquidity level loaded; notional {fmt_money_short(premium)}."
-    return {"value": value, "copy": copy}
+    largest = levels[0]
+    return {
+        "value": f"{fmt_price(largest['price'])} {fmt_money_short(largest['premium'])}",
+        "copy": str(read.get("copy") or ""),
+        "state": read.get("state"),
+        "title": read.get("title"),
+        "levels": levels,
+    }
 
 
 def render_live_command_center(
@@ -4315,7 +4398,15 @@ def render_live_command_center(
         else "amber" if flow_alignment.get("state") == "neutral"
         else "blue"
     )
-    darkpool_alignment = darkpool_context_label(options_intel, latest_price)
+    entry_price = None
+    entry_label = None
+    if projection is not None:
+        entry_price = projection.entry_line_value
+        entry_label = display_line_name(projection.entry_line_name)
+    elif latest_signal is not None and latest_signal.entry_price is not None and not pd.isna(latest_signal.entry_price):
+        entry_price = latest_signal.entry_price
+        entry_label = display_line_name(latest_signal.line_name)
+    darkpool_alignment = darkpool_context_label(options_intel, latest_price, entry_price, watch_side, entry_label)
 
     st.markdown(
         f"""
@@ -4654,7 +4745,11 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
         side = "call" if _finite_float(first_strike.get("call_premium"), 0) >= _finite_float(first_strike.get("put_premium"), 0) else "put"
         copy = f"Most active nearby institutional strike: {fmt_price(first_strike.get('strike'), 0)} {side.upper()} pressure."
     elif darkpool:
-        copy = f"Dark-pool prints loaded: {darkpool.get('print_count', 0)} prints, {fmt_money_short(darkpool.get('total_premium'))} notional."
+        ranked = darkpool_ranked_levels(darkpool, 1)
+        if ranked:
+            copy = f"Largest dark-pool level: {fmt_price(ranked[0].get('price'))} with {fmt_money_short(ranked[0].get('premium'))} notional."
+        else:
+            copy = f"Dark-pool prints loaded: {darkpool.get('print_count', 0)} prints, {fmt_money_short(darkpool.get('total_premium'))} notional."
     chips = []
     if isinstance(flow, dict) and flow.get("alert_count"):
         chips.append(f"{flow.get('alert_count')} flow alerts")
@@ -4666,9 +4761,10 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
         chips.append(str(tide.get("tone")))
     if isinstance(volume, dict) and not pd.isna(_finite_float(volume.get("put_call_volume_ratio"))):
         chips.append(f"Vol P/C {fmt_float(volume.get('put_call_volume_ratio'))}")
-    if isinstance(darkpool, dict) and darkpool.get("key_levels"):
-        level = darkpool["key_levels"][0]
-        chips.append(f"DP level {fmt_price(level.get('price'))}")
+    if isinstance(darkpool, dict) and (darkpool.get("key_levels") or darkpool.get("largest_prints")):
+        ranked = darkpool_ranked_levels(darkpool, 1)
+        if ranked:
+            chips.append(f"Largest DP {fmt_price(ranked[0].get('price'))}")
     tone = "green" if "bull" in bias.lower() or "risk-on" in bias.lower() else "red" if "bear" in bias.lower() or "risk-off" in bias.lower() else "amber"
     return value, copy, chips[:4], tone
 
@@ -4792,20 +4888,17 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
     if isinstance(darkpool, dict) and (darkpool.get("print_count") or darkpool.get("key_levels")):
         levels = [
             {"label": fmt_price(row.get("price")), "value": fmt_money_short(row.get("premium"))}
-            for row in (darkpool.get("key_levels") or [])[:5]
-            if isinstance(row, dict)
+            for row in darkpool_ranked_levels(darkpool, 5)
         ]
-        if not levels:
-            levels = [
-                {"label": fmt_price(row.get("price")), "value": fmt_money_short(row.get("premium"))}
-                for row in (darkpool.get("largest_prints") or [])[:3]
-                if isinstance(row, dict)
-            ]
+        largest = darkpool_ranked_levels(darkpool, 1)
+        largest_copy = ""
+        if largest:
+            largest_copy = f" Largest level {fmt_price(largest[0].get('price'))} with {fmt_money_short(largest[0].get('premium'))}."
         cards.append({
             "title": "Dark Pool Levels",
             "value": f"{darkpool.get('print_count', 0)} prints",
-            "copy": f"{fmt_money_short(darkpool.get('total_premium'))} notional; watch clustered levels as possible liquidity magnets.",
-            "means": "Dark-pool levels are not call or put signals by themselves. Treat them as prices where SPY may pause, reject, or get pulled toward.",
+            "copy": f"{fmt_money_short(darkpool.get('total_premium'))} notional ranked by largest clustered levels.{largest_copy}",
+            "means": "Dark-pool levels support or refute an entry only by location: near the trigger can strengthen confirmation; opposite-side liquidity can warn of chop or pullback.",
             "levels": levels,
             "tone": "darkpool",
         })
