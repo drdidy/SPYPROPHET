@@ -5417,7 +5417,6 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         {signal_marker}
         <text x='{x0}' y='{height - 132}' class='map-muted'>{_svg_text(first_label)}</text>
         <text x='{x1}' y='{height - 132}' text-anchor='end' class='map-muted'>{_svg_text(latest_label)}</text>
-        <circle r='5' fill='#f4c76b'><animateMotion dur='7s' repeatCount='indefinite' path='{spy_path}'/></circle>
       </svg>
       <div class='svg-map-cards'>{card_html}</div>
     </div>
