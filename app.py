@@ -2258,6 +2258,68 @@ def get_live_signal_day(df: pd.DataFrame, current_dt: datetime) -> Optional[date
     return latest_day
 
 
+def next_weekday(day_value) -> date:
+    day = pd.Timestamp(day_value).date()
+    while day.weekday() >= 5:
+        day = (pd.Timestamp(day) + pd.Timedelta(days=1)).date()
+    return day
+
+
+def next_session_date(day_value) -> date:
+    day = pd.Timestamp(day_value).date()
+    if day.weekday() == 5:
+        return (pd.Timestamp(day) + pd.Timedelta(days=2)).date()
+    if day.weekday() == 6:
+        return (pd.Timestamp(day) + pd.Timedelta(days=1)).date()
+    return day
+
+
+def next_session_after(day_value) -> date:
+    day = (pd.Timestamp(day_value) + pd.Timedelta(days=1)).date()
+    return next_weekday(day)
+
+
+def default_session_date(df: pd.DataFrame, current_dt: datetime) -> date:
+    current_day = pd.Timestamp(current_dt).date()
+    if current_day.weekday() >= 5:
+        return next_session_date(current_day)
+    available = get_available_trading_days(df)
+    if current_day in available or not available:
+        return current_day
+    return current_day
+
+
+def resolve_session_clock(df: pd.DataFrame, session_day: date, current_dt: datetime) -> pd.Timestamp:
+    ct = get_central_tz()
+    now = pd.Timestamp(current_dt)
+    now = now.tz_localize(ct) if now.tzinfo is None else now.tz_convert(ct)
+    if session_day == now.date():
+        return now
+    session_df = df[df.index.date == session_day].sort_index() if df is not None and not df.empty else pd.DataFrame()
+    rth_session = filter_rth_session(df, session_day) if df is not None and not df.empty else pd.DataFrame()
+    def _to_ct(value) -> pd.Timestamp:
+        ts = pd.Timestamp(value)
+        return ts.tz_localize(ct) if ts.tzinfo is None else ts.tz_convert(ct)
+    if not rth_session.empty:
+        return _to_ct(rth_session.index[-1])
+    if not session_df.empty:
+        return _to_ct(session_df.index[-1])
+    return pd.Timestamp(session_day, tz=ct) + pd.Timedelta(hours=9)
+
+
+def latest_price_for_session(df: pd.DataFrame, session_day: date, current_dt: datetime) -> float | None:
+    if df is None or df.empty or "Close" not in df:
+        return None
+    rth_df = filter_rth_session(df, session_day)
+    if not rth_df.empty and not rth_df["Close"].dropna().empty:
+        return float(rth_df["Close"].dropna().iloc[-1])
+    day_df = df[df.index.date == session_day].sort_index()
+    if not day_df.empty and not day_df["Close"].dropna().empty:
+        return float(day_df["Close"].dropna().iloc[-1])
+    close_series = df.get("Close", pd.Series(dtype="float64")).dropna()
+    return float(close_series.iloc[-1]) if not close_series.empty else None
+
+
 def filter_rth_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -5922,8 +5984,7 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
 def main() -> None:
     st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
     inject_global_css()
-    now_ct = datetime.now(tz=get_central_tz())
-    structure_projection_time = get_structure_projection_time(now_ct)
+    real_now_ct = datetime.now(tz=get_central_tz())
 
     st.sidebar.header("SPY Prophet Controls")
     st.sidebar.button("Refresh data")
@@ -5932,12 +5993,33 @@ def main() -> None:
     auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
     slope = get_structure_calibration()
     provider = "TASTYTRADE"
+    df = fetch_spy_hourly(period="60d")
+    available_session_days = get_available_trading_days(df)
+    preview_max_day = next_session_after(real_now_ct.date())
+    date_min = available_session_days[0] if available_session_days else (real_now_ct - pd.Timedelta(days=60)).date()
+    date_max = max([preview_max_day, real_now_ct.date()] + available_session_days) if available_session_days else preview_max_day
+    selected_session_day = st.sidebar.date_input(
+        "Session date",
+        value=default_session_date(df, real_now_ct),
+        min_value=date_min,
+        max_value=date_max,
+        help="Choose the trading session to preview. Future sessions use the most recent completed session as structure until new candles arrive.",
+    )
+    selected_session_day = pd.Timestamp(selected_session_day).date()
+    now_ct = resolve_session_clock(df, selected_session_day, real_now_ct).to_pydatetime()
+    structure_projection_time = get_structure_projection_time(now_ct)
+    session_has_candles = selected_session_day in available_session_days
+    is_live_session = selected_session_day == real_now_ct.date()
     st.sidebar.caption("Provider: TASTYTRADE")
     st.sidebar.caption("Structure calibration: Protected")
-    st.sidebar.caption(f"Current CT: {now_ct.strftime('%H:%M:%S %Z')}")
+    st.sidebar.caption(f"Actual CT: {real_now_ct.strftime('%H:%M:%S %Z')}")
+    st.sidebar.caption(f"Session clock: {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")
     st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
+    if not session_has_candles:
+        st.sidebar.caption("Preview mode: waiting for session candles.")
+    elif not is_live_session:
+        st.sidebar.caption("Historical session preview.")
 
-    df = fetch_spy_hourly(period="60d")
     latest_price = None
     prior_day = None
     signal_day = None
@@ -5948,8 +6030,7 @@ def main() -> None:
     if df.empty:
         st.warning("No SPY data loaded. Click refresh or check yfinance availability.")
     if not df.empty:
-        close_series = df.get("Close", pd.Series(dtype="float64")).dropna()
-        latest_price = float(close_series.iloc[-1]) if not close_series.empty else None
+        latest_price = latest_price_for_session(df, selected_session_day, now_ct)
         signal_day = get_live_signal_day(df, now_ct)
         prior_day = get_prior_trading_day(df, pd.Timestamp(signal_day).to_pydatetime()) if signal_day is not None else None
         if prior_day is not None:
@@ -6018,6 +6099,10 @@ def main() -> None:
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
 
     with tabs["Live Terminal"]:
+        if not session_has_candles:
+            render_data_notice(f"{selected_session_day} is in preview mode. SPY Prophet is projecting the next session from the latest completed market data; entries will appear after that session's candles print.")
+        elif not is_live_session:
+            render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
         render_terminal_hero(
             latest_price,
             bias,
@@ -6176,7 +6261,7 @@ def main() -> None:
         auto_status = AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
         opt_state = option_state if strikes else None
         current_flow_tags = premium_flow_tags(morning_bundle.options_intelligence)
-        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on, flow_tags=current_flow_tags)
+        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on and is_live_session, flow_tags=current_flow_tags)
         render_status_strip([
             ("Auto journal", "On" if auto_status.enabled else "Off"),
             ("Saved", auto_status.saved_count),
@@ -6186,10 +6271,12 @@ def main() -> None:
         notes = st.text_area("Notes for latest live signal", "")
         tags_text = st.text_input("Tags (comma-separated)", "")
         cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
-        if cja.button("Save live signal") and active_signal:
+        if cja.button("Save live signal") and active_signal and is_live_session:
             user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
             e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
             entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
+        elif not is_live_session:
+            st.caption("Live signal journaling is only enabled for the actual current session. Use replay saves for historical sessions.")
         if cjb.button("Save replay signals") and 'rs' in locals():
             for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
             save_signal_journal(entries,journal_path)

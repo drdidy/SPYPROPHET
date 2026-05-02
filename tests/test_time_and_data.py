@@ -9,9 +9,14 @@ from app import (
     filter_extended_session,
     filter_rth_session,
     get_central_tz,
+    default_session_date,
     get_latest_available_trading_day,
     get_live_signal_day,
+    latest_price_for_session,
+    next_session_after,
+    next_session_date,
     get_prior_trading_day,
+    resolve_session_clock,
     get_structure_projection_time,
     rth_session_window_label,
 )
@@ -121,6 +126,35 @@ def test_live_signal_day_uses_current_day_before_first_loaded_candle() -> None:
     assert get_latest_available_trading_day(df, cur) == date(2026, 4, 30)
     assert get_live_signal_day(df, cur) == date(2026, 5, 1)
     assert get_prior_trading_day(df, datetime(2026, 5, 1, tzinfo=get_central_tz())) == date(2026, 4, 30)
+
+
+def test_session_date_defaults_to_monday_on_weekend() -> None:
+    df = _sample_day_frame("2026-05-01")
+    saturday = datetime(2026, 5, 2, 9, 0, tzinfo=get_central_tz())
+
+    assert next_session_date(saturday.date()) == date(2026, 5, 4)
+    assert next_session_after(date(2026, 5, 1)) == date(2026, 5, 4)
+    assert default_session_date(df, saturday) == date(2026, 5, 4)
+
+
+def test_future_session_clock_uses_nine_am_preview() -> None:
+    df = _sample_day_frame("2026-05-01")
+    monday = date(2026, 5, 4)
+
+    session_clock = resolve_session_clock(df, monday, datetime(2026, 5, 2, 9, 0, tzinfo=get_central_tz()))
+
+    assert session_clock == pd.Timestamp("2026-05-04 09:00", tz=get_central_tz())
+    assert latest_price_for_session(df, monday, session_clock.to_pydatetime()) == float(df["Close"].iloc[-1])
+
+
+def test_historical_session_uses_that_day_close() -> None:
+    df = _sample_day_frame("2026-05-01")
+    session_clock = resolve_session_clock(df, date(2026, 5, 1), datetime(2026, 5, 4, 9, 0, tzinfo=get_central_tz()))
+
+    assert session_clock.date() == date(2026, 5, 1)
+    assert session_clock.hour == 15
+    assert session_clock.minute == 0
+    assert latest_price_for_session(df, date(2026, 5, 1), session_clock.to_pydatetime()) == float(filter_rth_session(df, date(2026, 5, 1))["Close"].iloc[-1])
 
 
 def test_empty_dataframe_handling() -> None:
