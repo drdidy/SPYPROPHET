@@ -28,7 +28,7 @@ def _ts(s: str) -> pd.Timestamp:
 
 
 def test_default_slope_constant() -> None:
-    assert DEFAULT_SLOPE_PER_HOUR == 0.196
+    assert DEFAULT_SLOPE_PER_HOUR == 0.20
 
 
 def test_structure_calibration_reads_env_without_ui(monkeypatch) -> None:
@@ -42,10 +42,10 @@ def test_hours_since_uses_tradingview_active_chart_hours() -> None:
     now = _ts("2026-04-29T08:00:00")
 
     assert line_desc.hours_since(now) == 9
-    assert abs(line_desc.raw_value_at(now) - 712.696) < 1e-9
-    assert line_desc.tradable_value_at(now) == 712.7
-    assert abs(line_asc.raw_value_at(now) - 716.224) < 1e-9
-    assert line_asc.tradable_value_at(now) == 716.22
+    assert abs(line_desc.raw_value_at(now) - 712.66) < 1e-9
+    assert line_desc.tradable_value_at(now) == 712.66
+    assert abs(line_asc.raw_value_at(now) - 716.26) < 1e-9
+    assert line_asc.tradable_value_at(now) == 716.26
 
 
 def test_two_pm_to_ten_am_matches_active_chart_calibration_pair() -> None:
@@ -53,7 +53,7 @@ def test_two_pm_to_ten_am_matches_active_chart_calibration_pair() -> None:
     next_ten = _ts("2026-04-29T10:00:00")
 
     assert line.hours_since(next_ten) == 11
-    assert line.tradable_value_at(next_ten) == 712.3
+    assert line.tradable_value_at(next_ten) == 712.26
 
 
 def test_weekend_projection_skips_closed_chart_hours() -> None:
@@ -63,7 +63,7 @@ def test_weekend_projection_skips_closed_chart_hours() -> None:
 
     assert market_hours_between(friday_anchor, monday_projection) == 15
     assert line.hours_since(monday_projection) == 15
-    assert line.tradable_value_at(monday_projection) == 727.81
+    assert line.tradable_value_at(monday_projection) == 727.87
 
 
 def test_friday_close_to_monday_morning_counts_chart_reopen_window() -> None:
@@ -72,7 +72,7 @@ def test_friday_close_to_monday_morning_counts_chart_reopen_window() -> None:
     line = DynamicLine("UA", 724.87, friday_close, DEFAULT_SLOPE_PER_HOUR, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
 
     assert market_hours_between(friday_close, monday_projection) == 9
-    assert line.tradable_value_at(monday_projection) == 726.63
+    assert line.tradable_value_at(monday_projection) == 726.67
 
 
 def test_calibration_helper() -> None:
