@@ -83,7 +83,7 @@ def _bundle() -> MorningBriefingBundle:
         570.0,
         1.1,
     )
-    learning = StructureLearningProfile(20, 12, "CALL watch", "Moderate confidence", 0.58, 0.08, 0.25, 1.2, 2.3, -0.8, None, "Historical tendency only.")
+    learning = StructureLearningProfile(20, 12, "CALL watch", "Developing sample", 0.58, 0.08, 0.25, 1.2, 2.3, -0.8, None, "Historical tendency only.")
     return MorningBriefingBundle(
         now,
         [{"code": "UD", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 587.42, "anchor_price": 589.0, "anchor_time": "2026-04-30 15:00 CDT"}],
@@ -177,7 +177,7 @@ def test_merge_citations_dedupes_normalized_urls() -> None:
     assert [row["url"] for row in citations] == ["https://example.com/a", "https://example.com/b"]
 
 
-def test_fallback_decision_matches_contract_to_trigger_side() -> None:
+def test_fallback_decision_hides_contract_until_confirmation() -> None:
     bundle = _bundle()
     bundle = MorningBriefingBundle(
         bundle.generated_at,
@@ -206,7 +206,7 @@ def test_fallback_decision_matches_contract_to_trigger_side() -> None:
 
     decision = fallback_morning_decision(bundle)
 
-    assert decision["primary_trade"]["contract"] == "PUT 720"
+    assert decision["primary_trade"]["contract"] == "No contract until confirmation"
 
 
 def test_ai_calendar_event_requires_exact_date_time_and_source() -> None:

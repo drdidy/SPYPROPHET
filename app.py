@@ -1760,7 +1760,7 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
-        "Act as the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a same-day SPY options desk.\n"
+        "Act as the SPY Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a same-day SPY options desk.\n"
         "Rules: use the verified JSON facts plus live web search facts with citations. Do not invent unavailable options flow, social, or news. "
         "If premium order-flow data is present, treat it as the primary options-flow source and explicitly weigh same-day SPY OTM flow alerts, recent tape, net premium ticks, market tide, key strikes, near-strike Greeks, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
         "For same-day relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
@@ -2044,13 +2044,6 @@ def morning_decision_from_result(result: MorningBriefingResult | None) -> dict |
 def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None) -> dict:
     event = _first_high_impact_event(bundle.economic_events)
     first_line = bundle.lines[0] if bundle.lines else {}
-    quote_value, _, _ = _first_quote_label(bundle.options_intelligence)
-    role_text = str(first_line.get("role") or "").upper()
-    desired_type = "PUT" if "PUT" in role_text else "CALL" if "CALL" in role_text else ""
-    for quote in bundle.options_intelligence.selected_quotes or []:
-        if desired_type and str(quote.get("type") or "").upper() == desired_type:
-            quote_value = f"{desired_type} {fmt_price(quote.get('strike'), 0)}"
-            break
     confidence = int(result.confidence if result else 45)
     flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
     flow_reason = (
@@ -2065,7 +2058,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             "label": "Structure confirmation required",
             "trigger_line": first_line.get("name") or "-",
             "trigger_price": fmt_price(first_line.get("value")),
-            "contract": quote_value if quote_value != "No contract loaded" else "-",
+            "contract": "No contract until confirmation",
             "entry_timing": "Next candle open after confirmation",
             "entry_rule": "Price must reject the trigger line and the next candle must confirm direction.",
             "stop": "Invalid if SPY closes back through the trigger after entry.",
@@ -2105,8 +2098,8 @@ def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, l
         text = extract_openai_text(payload)
         citations = extract_openai_citations(payload)
     except Exception as e:
-        return None, f"Foresight synthesis failed: {type(e).__name__}", []
-    return text or None, None if text else "Foresight synthesis returned an empty read.", citations
+        return None, f"SPY Foresight synthesis failed: {type(e).__name__}", []
+    return text or None, None if text else "SPY Foresight synthesis returned an empty read.", citations
 
 
 def move_line(move: MarketMove) -> str:
@@ -2118,15 +2111,19 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     if ai_warning:
         warnings.insert(0, ai_warning)
     high_events = [event for event in bundle.economic_events if str(event.impact).lower() == "high"]
-    risk_score = 45
-    risk_score += min(len(high_events) * 8, 24)
+    readiness_score = 55
+    readiness_score -= min(len(high_events) * 12, 30)
     if bundle.gamma_insight.provider_payload is None and str(bundle.gamma_insight.dealer_tone).upper() != "OI PROXY":
-        risk_score -= 5
+        readiness_score -= 5
+    if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.learning_profile.target_first_rate >= 0.35:
+        readiness_score += 8
+    if bundle.learning_profile.stop_first_rate > bundle.learning_profile.target_first_rate:
+        readiness_score -= 8
     if bundle.sentiment.label.startswith("Bullish"):
-        risk_score += 6
+        readiness_score += 3
     if bundle.sentiment.label.startswith("Bearish"):
-        risk_score -= 6
-    risk_score = int(max(15, min(85, risk_score)))
+        readiness_score -= 3
+    readiness_score = int(max(15, min(85, readiness_score)))
     lines = "\n".join(f"- {row['name']}: {fmt_price(row['value'])} ({row['role']}, anchor {fmt_price(row['anchor_price'])})" for row in bundle.lines) or "- Structure lines unavailable."
     event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No dated macro events loaded."
     global_lines = "\n".join(f"- {move_line(move)}" for move in bundle.global_context[:8]) or "- Global market data unavailable."
@@ -2197,12 +2194,12 @@ EXTERNAL FACTORS AFFECTING THESE LINES:
 MY RECOMMENDATION:
 {recommendation}
 
-Confidence: {risk_score}%
+Readiness: {readiness_score}%
 
 RISK FACTORS:
 {risk_text}
 """
-    return MorningBriefingResult(bundle.generated_at, "Rule-based verified briefing", None, text, risk_score, warnings, bundle.source_statuses, [])
+    return MorningBriefingResult(bundle.generated_at, "Rule-based verified briefing", None, text, readiness_score, warnings, bundle.source_statuses, [])
 
 
 def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True) -> MorningBriefingResult:
@@ -2210,7 +2207,7 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
         ai_text, warning, citations = call_openai_morning_briefing(build_morning_briefing_prompt(bundle))
         if ai_text:
             base = rule_based_morning_briefing(bundle)
-            provider = "Prophet Foresight synthesis"
+            provider = "SPY Foresight synthesis"
             decision = extract_json_payload_from_text(ai_text)
             confidence = base.confidence
             if isinstance(decision, dict):
@@ -2221,7 +2218,7 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
                     confidence = base.confidence
             warnings = list(base.warnings)
             if not isinstance(decision, dict):
-                warnings.insert(0, "Foresight synthesis returned narrative text instead of the structured decision schema.")
+                warnings.insert(0, "SPY Foresight synthesis returned narrative text instead of the structured decision schema.")
             return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, confidence, warnings, bundle.source_statuses, citations)
         return rule_based_morning_briefing(bundle, warning)
     return rule_based_morning_briefing(bundle)
@@ -3253,7 +3250,7 @@ def build_decision_state(latest_signal, all_lines, current_price, current_dt, la
     elif quality.grade == "B": final = "SELECTIVE_TRADE"
     elif quality.grade == "C": final = "WAIT_FOR_RETEST"
     else: final = "NO_TRADE"
-    return DecisionState(latest_signal,quality,guard,final,f"{quality.explanation} Final decision: {final}.")
+    return DecisionState(latest_signal,quality,guard,final,f"{quality.explanation} Trade gate: {final}.")
 
 
 
@@ -4190,7 +4187,7 @@ def render_terminal_hero(
             <div class='decision-plate'>
               <div class='panel-head'>
                 <div>
-                  <div class='hero-label'>Final Decision</div>
+                  <div class='hero-label'>Trade Gate</div>
                   <div class='decision-main'>{decision}</div>
                 </div>
                 {ui_icon('compass', _tone_for_text(decision), 'lg')}
@@ -4247,6 +4244,34 @@ def render_terminal_hero(
     )
 
 
+def darkpool_context_label(options: OptionsIntelligence | None, current_price: float | None = None) -> dict:
+    whales = options.unusual_whales if options else {}
+    darkpool = whales.get("darkpool") if isinstance(whales, dict) else {}
+    if not isinstance(darkpool, dict) or not darkpool:
+        return {"value": "-", "copy": "Dark-pool levels unavailable for this run."}
+    rows = [row for row in (darkpool.get("key_levels") or darkpool.get("largest_prints") or []) if isinstance(row, dict)]
+    if not rows:
+        return {"value": "Loaded", "copy": f"{darkpool.get('print_count', 0)} dark-pool prints loaded."}
+    price = _finite_float(current_price)
+    def row_price(row):
+        return _finite_float(row.get("price"))
+    nearest = rows[0]
+    if not pd.isna(price):
+        priced_rows = [row for row in rows if not pd.isna(row_price(row))]
+        if priced_rows:
+            nearest = min(priced_rows, key=lambda row: abs(row_price(row) - price))
+    nearest_price = row_price(nearest)
+    distance = abs(nearest_price - price) if not pd.isna(price) and not pd.isna(nearest_price) else float("nan")
+    premium = nearest.get("premium") or nearest.get("notional") or darkpool.get("total_premium")
+    if not pd.isna(distance):
+        value = f"Near {fmt_price(nearest_price)}" if distance <= 1.0 else fmt_price(nearest_price)
+        copy = f"Nearest dark-pool liquidity level is {fmt_price(distance)} from SPY; notional {fmt_money_short(premium)}."
+    else:
+        value = fmt_price(nearest_price)
+        copy = f"Dark-pool liquidity level loaded; notional {fmt_money_short(premium)}."
+    return {"value": value, "copy": copy}
+
+
 def render_live_command_center(
     bias_state,
     decision_state,
@@ -4290,6 +4315,7 @@ def render_live_command_center(
         else "amber" if flow_alignment.get("state") == "neutral"
         else "blue"
     )
+    darkpool_alignment = darkpool_context_label(options_intel, latest_price)
 
     st.markdown(
         f"""
@@ -4336,7 +4362,9 @@ def render_live_command_center(
             <div class='pill-row'>
               {_pill('Side', display_state_label(flow_alignment.get('side') or 'Neutral'))}
               {_pill('Tide', display_state_label(flow_alignment.get('tide') or '-'))}
+              {_pill('Dark pool', darkpool_alignment.get('value') or '-')}
             </div>
+            <div class='panel-copy' style='margin-top:8px'>{escape(str(darkpool_alignment.get('copy') or ''))}</div>
           </div>
           <div class='terminal-panel'>
             <div class='panel-head'>
@@ -4410,8 +4438,8 @@ def render_learning_profile(profile: StructureLearningProfile) -> None:
             {ui_icon('compass', 'green' if profile.target_first_rate >= profile.stop_first_rate else 'amber', 'lg')}
           </div>
           <div class='learning-copy'>
-            {escape(profile.confidence_label)} from {profile.matching_sample_size} matching outcomes
-            ({profile.sample_size} completed outcomes in memory). {escape(profile.caveat)}
+            Evidence sample: {escape(profile.confidence_label)} ({profile.matching_sample_size} matching outcomes;
+            {profile.sample_size} completed outcomes in memory). {escape(profile.caveat)}
           </div>
           <div class='probability-grid'>
             <div class='prob-card green'><div class='prob-label'>Target first</div><div class='prob-value'>{fmt_pct(profile.target_first_rate * 100, 0)}</div></div>
@@ -4432,10 +4460,10 @@ def render_learning_profile(profile: StructureLearningProfile) -> None:
 
 
 def render_news_feed(news_items: list[NewsItem]) -> None:
-    head = f"<div class='feed-head'><div><div class='panel-label'>Market Movers</div><div class='panel-title'>SPY/SPX catalysts only</div></div>{ui_icon('pulse','blue','md')}</div>"
+    head = f"<div class='feed-head'><div><div class='panel-label'>Market Context</div><div class='panel-title'>Catalysts and risk tape</div></div>{ui_icon('pulse','blue','md')}</div>"
     items_to_show = list(news_items or [])[:MARKET_MOVING_NEWS_LIMIT]
     if not items_to_show:
-        st.markdown(f"<div class='terminal-panel'>{head}<div class='panel-copy'>No current SPY/SPX catalyst headlines loaded. Structure, catalyst timing, flow, and risk controls remain primary.</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='terminal-panel'>{head}<div class='panel-copy'>No current market catalyst headlines loaded. Structure, catalyst timing, flow, and risk controls remain primary.</div></div>", unsafe_allow_html=True)
         return
     cards = []
     for item in items_to_show:
@@ -4537,12 +4565,19 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
 def _morning_confidence_tone(confidence: int | float | None) -> tuple[str, str]:
     value = 0 if confidence is None or pd.isna(confidence) else int(confidence)
     if value >= 70:
-        return "green", "High conviction"
+        return "green", "Ready zone"
     if value >= 52:
-        return "blue", "Balanced read"
+        return "blue", "Watch zone"
     if value >= 35:
         return "amber", "Patience zone"
-    return "red", "Defensive read"
+    return "red", "Risk constrained"
+
+
+def stance_allows_contract(stance: str | None) -> bool:
+    text = str(stance or "").upper()
+    if any(flag in text for flag in ["WAIT", "NO_TRADE", "STOP"]):
+        return False
+    return any(flag in text for flag in ["WATCH_CALL", "WATCH_PUT", "TRADE_ALLOWED", "SELECTIVE_TRADE"])
 
 
 def _first_high_impact_event(events: list[EconomicEvent]) -> EconomicEvent | None:
@@ -4847,8 +4882,13 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     event_value = f"{event.event} at {event.time_label}" if event else "No scheduled catalyst"
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
-    stance = display_state_label(str(decision.get("stance") or "WAIT").upper())
+    raw_stance = str(decision.get("stance") or "WAIT").upper()
+    stance = display_state_label(raw_stance)
     contract = str(trade.get("contract") or "Wait for setup")
+    contract_copy = "Entry rule required."
+    if not stance_allows_contract(raw_stance):
+        contract = "No contract until confirmation"
+        contract_copy = "Hidden until trade gate allows setup."
     trigger = str(trade.get("trigger_line") or "No trigger selected")
     st.markdown(
         f"""
@@ -4856,11 +4896,11 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
           <div class='morning-hero-inner'>
             <div>
               <div class='morning-kicker'>{ui_icon('spark', tone, 'sm')} Trade Plan</div>
-              <div class='morning-title'>SPY Prophet Foresight</div>
+              <div class='morning-title'>SPY Foresight</div>
               <div class='morning-subtitle'>Trigger, contract, stop, target, catalyst filter.</div>
               <div class='morning-hero-metrics'>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Action</div><div class='morning-stat-value'>{escape(stance)}</div><div class='morning-stat-copy'>{escape(trigger)}</div></div>
-                <div class='morning-hero-stat'><div class='morning-stat-label'>Contract</div><div class='morning-stat-value'>{escape(contract)}</div><div class='morning-stat-copy'>Entry rule required.</div></div>
+                <div class='morning-hero-stat'><div class='morning-stat-label'>Contract</div><div class='morning-stat-value'>{escape(contract)}</div><div class='morning-stat-copy'>{escape(contract_copy)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Catalyst</div><div class='morning-stat-value'>{escape(event.impact if event else 'No event')}</div><div class='morning-stat-copy'>{escape(event_value)}</div></div>
                 <div class='morning-hero-stat'><div class='morning-stat-label'>Timing</div><div class='morning-stat-value'>{escape(fmt_time(result.generated_at))}</div><div class='morning-stat-copy'>Refresh before trading.</div></div>
               </div>
@@ -4904,13 +4944,18 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
     headline = str(decision.get("headline") or "Wait for a confirmed structure trigger.")
     novice = str(decision.get("novice_summary") or "Direction pending confirmed structure trigger.")
     confidence = trade.get("confidence", result.confidence)
+    contract_value = str(trade.get("contract") or "-")
+    contract_copy = "Use only the listed OTM contract after the entry rule confirms."
+    if not stance_allows_contract(stance):
+        contract_value = "No contract until confirmation"
+        contract_copy = "Hidden until the trade gate allows a setup."
     tickets = [
         ("Stance", display_state_label(stance), novice),
         ("Trigger", str(trade.get("trigger_line") or "-"), f"Trigger price {trade.get('trigger_price') or '-'}"),
-        ("Contract", str(trade.get("contract") or "-"), "Use only the listed OTM contract after the entry rule confirms."),
+        ("Contract", contract_value, contract_copy),
         ("Entry Rule", str(trade.get("entry_timing") or "-"), str(trade.get("entry_rule") or "-")),
         ("Invalidation", str(trade.get("stop") or "-"), "If this happens, the setup is no longer valid."),
-        ("Target", str(trade.get("target") or "-"), f"Confidence {fmt_float(confidence, 0)}%"),
+        ("Target", str(trade.get("target") or "-"), f"Readiness {fmt_float(confidence, 0)}%"),
     ]
     ticket_html = "".join(
         "<div class='action-ticket'>"
@@ -4974,7 +5019,7 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         _ai_verify_card(
             "Synthesis",
             "Live" if ai_ready else "Offline",
-            "Foresight synthesis can refresh the read." if ai_ready else "Live synthesis unavailable; API key not configured.",
+            "SPY Foresight synthesis can refresh the read." if ai_ready else "Live synthesis unavailable; API key not configured.",
             "good" if ai_ready else "warn",
         ),
         _ai_verify_card(
@@ -4986,7 +5031,7 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         _ai_verify_card(
             "Reasoning Core",
             "Ready" if ai_ready else "Standby",
-            "Used only when a fresh Foresight read is generated.",
+            "Used only when a fresh SPY Foresight read is generated.",
             "info",
         ),
         _ai_verify_card(
@@ -5094,8 +5139,8 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
         _evidence_card("Headline Scan", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines checked in the background for current-source context.", news_asof, "connected" if bundle.news_items else "watch"),
-        _evidence_card("Learning Stats", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
-        _evidence_card("Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
+        _evidence_card("Learning Sample", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
+        _evidence_card("SPY Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
     steps = [
         ("1", "Collect", "The app loads structure, options, technicals, news, macro, and learning stats."),
@@ -5150,7 +5195,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
     else:
         rows.append(_source_row_html("Current source scan", "not used", "No current source references were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
-        ("Macro calendar", "Generate Foresight for current calendar scanning, or connect a structured calendar source for scheduled releases."),
+        ("Macro calendar", "Generate SPY Foresight for current calendar scanning, or connect a structured calendar source for scheduled releases."),
         ("Flow pressure", "Connect the premium flow token for same-day alerts, recent tape, net premium, market tide, dark-pool, IV, Greeks, and GEX context."),
         ("Options depth", "Live broker data gives bid, ask, spread, and Greeks. Premium flow adds order-flow context; market data remains the delayed backup."),
         ("Current scan", "Keep live synthesis enabled so the engine can cite current public pages when accessible."),
@@ -5165,7 +5210,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
           <div class='source-ledger-head'>
             <div>
               <div class='source-ledger-title'>Inputs Behind The Read</div>
-              <div class='source-ledger-copy'>Source status for the data used in this Foresight read.</div>
+              <div class='source-ledger-copy'>Source status for the data used in this SPY Foresight read.</div>
             </div>
             {ui_icon('compass', 'blue', 'md')}
           </div>
@@ -5210,20 +5255,20 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Prophet Foresight", "Actionable same-day plan for today's SPY Prophet lines")
+    render_section_title("SPY Foresight", "Actionable same-day plan for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
         active_bundle = bundle
     if not ai_ready:
-        render_data_notice("Live synthesis is not connected. A verified rule-based Foresight read is still available.", tone="warn")
+        render_data_notice("Live synthesis is not connected. A verified rule-based SPY Foresight read is still available.", tone="warn")
     control_cols = st.columns([0.62, 0.38])
     with control_cols[0]:
         st.markdown(
             f"""
             <div class='morning-control'>
               <div>
-                <div class='morning-control-title'>Foresight Engine</div>
+                <div class='morning-control-title'>SPY Foresight Engine</div>
                 <div class='morning-control-copy'>{escape('Ready to refresh the trade plan.' if ai_ready else 'Rule-based read is active until live synthesis is connected.')}</div>
               </div>
               {ui_icon('spark' if ai_ready else 'shield', 'green' if ai_ready else 'amber', 'md')}
@@ -5233,7 +5278,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
         )
     with control_cols[1]:
         use_ai = st.toggle("Use live synthesis", value=ai_ready, disabled=not ai_ready, key="morning_briefing_use_ai")
-        if st.button("Generate Foresight" if ai_ready else "Generate Foresight read", type="primary", key="generate_morning_briefing", use_container_width=True):
+        if st.button("Generate SPY Foresight" if ai_ready else "Generate SPY Foresight read", type="primary", key="generate_morning_briefing", use_container_width=True):
             working_bundle = bundle
             calendar_citations = []
             if use_ai and not working_bundle.economic_events:
@@ -5654,7 +5699,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
     """
 
 
-def render_structure_map_svg(*args, height: int = 940, **kwargs) -> None:
+def render_structure_map_svg(*args, height: int = 1040, **kwargs) -> None:
     components.html(build_structure_map_svg(*args, **kwargs), height=height, scrolling=False)
 
 
@@ -5665,7 +5710,7 @@ def render_chart_brief(current_price, closest_line, active_signal, decision_stat
         ("Current SPY", fmt_price(current_price), "Session price"),
         ("Closest Structure", f"{display_line_name(closest_line.name)} {fmt_price(closest_value)}" if closest_line else "-", display_line_description(closest_line.name) if closest_line else "Structure pending"),
         ("Signal State", signal_text, display_line_name(active_signal.line_name) if active_signal else "No rejection confirmed"),
-        ("Decision", _humanize(decision_state.final_decision) if decision_state else "WAIT", _humanize(decision_state.signal_quality.grade) if decision_state and decision_state.signal_quality else "No grade yet"),
+        ("Trade Gate", _humanize(decision_state.final_decision) if decision_state else "WAIT", _humanize(decision_state.signal_quality.grade) if decision_state and decision_state.signal_quality else "No grade yet"),
     ]
     html = "".join(f"<div class='brief-card'><div class='brief-label'>{label}</div><div class='brief-value'>{value}</div><div class='brief-copy'>{copy}</div></div>" for label, value, copy in cards)
     st.markdown(f"<div class='brief-grid'>{html}</div>", unsafe_allow_html=True)
@@ -5969,28 +6014,79 @@ def friendly_provider_error(error: str | None) -> str:
     return "Tastytrade live quotes are not active for this run. Delayed quote context remains available when yfinance has the chain."
 
 
-def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | None = None, warning: str | None = None) -> str:
+def option_spread_pct(quote: OptionQuote | None) -> float:
+    if not quote:
+        return float("nan")
+    mark = _finite_float(quote.mark)
+    spread = _finite_float(quote.spread)
+    if pd.isna(mark) or mark <= 0 or pd.isna(spread):
+        return float("nan")
+    return (spread / mark) * 100
+
+
+def option_moneyness_label(quote: OptionQuote | None, underlying_price: float | None = None) -> str:
+    if not quote or underlying_price is None or pd.isna(_finite_float(underlying_price)):
+        return "-"
+    underlying = _finite_float(underlying_price)
+    strike = _finite_float(quote.strike)
+    if pd.isna(strike):
+        return "-"
+    diff = strike - underlying if str(quote.option_type).upper() == "CALL" else underlying - strike
+    if abs(diff) < 0.25:
+        return "ATM"
+    return f"OTM {fmt_price(abs(diff))}" if diff > 0 else f"ITM {fmt_price(abs(diff))}"
+
+
+def option_quote_liquidity_note(quote: OptionQuote | None) -> str | None:
+    pct = option_spread_pct(quote)
+    if pd.isna(pct):
+        return None
+    if pct > 35:
+        return "Wide spread: wait for better liquidity or skip."
+    if pct > 20:
+        return "Spread elevated: size carefully."
+    return "Spread acceptable."
+
+
+def option_quote_card_html(quote: OptionQuote | None, fallback_strike: int | None = None, warning: str | None = None, underlying_price: float | None = None) -> str:
     strike = quote.strike if quote else fallback_strike
     bid = fmt_price(quote.bid if quote else None)
     ask = fmt_price(quote.ask if quote else None)
     spread = fmt_price(quote.spread if quote else None)
+    spread_pct = option_spread_pct(quote)
     delta = fmt_float(quote.delta if quote else None)
+    gamma = fmt_float(quote.gamma if quote else None)
+    theta = fmt_float(quote.theta if quote else None)
+    iv = fmt_pct((quote.iv * 100) if quote and not pd.isna(_finite_float(quote.iv)) else float("nan"), 0)
+    expiry = str(quote.expiration) if quote and quote.expiration is not None else "-"
+    symbol = quote.symbol if quote and quote.symbol else "-"
+    as_of = fmt_time(quote.timestamp) if quote and quote.timestamp is not None else "-"
+    moneyness = option_moneyness_label(quote, underlying_price)
     if quote_has_live_market_data(quote):
         status = "Delayed yfinance price; mark is midpoint when bid/ask exist, otherwise last trade." if provider_is_yfinance_delayed(quote.provider) else "Live bid/ask and Greeks from Tastytrade."
     elif quote:
         status = "Contract found, but live bid/ask/delta are not available yet."
     else:
         status = warning or "Live option quote unavailable."
+    liquidity_note = option_quote_liquidity_note(quote)
+    if liquidity_note:
+        status = f"{status} {liquidity_note}"
     return (
         "<div class='option-quote-main'>"
         f"<div><div class='option-quote-label'>Strike</div><div class='option-quote-strike'>{strike if strike else '-'}</div></div>"
         f"<div><div class='option-quote-label'>Mark</div><div class='option-quote-mark'>{fmt_price(quote.mark if quote else None)}</div></div>"
         "</div>"
+        f"<div class='small-muted' style='margin-top:6px'>Symbol {escape(symbol)} | Exp {escape(expiry)} | As of {escape(as_of)}</div>"
         "<div class='option-quote-grid'>"
         f"<div class='option-quote-cell'><div class='option-quote-label'>Bid</div><div class='option-quote-value'>{bid}</div></div>"
         f"<div class='option-quote-cell'><div class='option-quote-label'>Ask</div><div class='option-quote-value'>{ask}</div></div>"
         f"<div class='option-quote-cell'><div class='option-quote-label'>Spread</div><div class='option-quote-value'>{spread}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Spread %</div><div class='option-quote-value'>{fmt_pct(spread_pct, 0)}</div></div>"
         f"<div class='option-quote-cell'><div class='option-quote-label'>Delta</div><div class='option-quote-value'>{delta}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Gamma</div><div class='option-quote-value'>{gamma}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Theta</div><div class='option-quote-value'>{theta}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>IV</div><div class='option-quote-value'>{iv}</div></div>"
+        f"<div class='option-quote-cell'><div class='option-quote-label'>Moneyness</div><div class='option-quote-value'>{escape(moneyness)}</div></div>"
         "</div>"
         f"<div class='small-muted' style='margin-top:10px'>{status}</div>"
     )
@@ -6162,11 +6258,11 @@ def infer_current_learning_filter(active_signal=None, bias_state=None, closest_l
 
 def confidence_from_sample_size(sample_size: int) -> str:
     if sample_size >= 30:
-        return "Higher confidence"
+        return "Large sample"
     if sample_size >= 12:
-        return "Moderate confidence"
+        return "Developing sample"
     if sample_size >= 5:
-        return "Early read"
+        return "Early sample"
     if sample_size > 0:
         return "Tiny sample"
     return "No sample"
@@ -6358,20 +6454,27 @@ def main() -> None:
             )
             morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
 
+    if not session_has_candles:
+        active_signal = None
+        decision_state = None
+        option_state = None
+        strikes = None
+        morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, None, None)
+
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tab_names = ["Live Terminal", "Prophet Foresight", "Market Context", "Prophet Chart", "Replay Lab", "Options", "Journal"]
+    tab_names = ["Live", "SPY Foresight", "Market", "Chart", "Replay", "Options", "Journal"]
     if show_debug:
         tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
 
-    with tabs["Live Terminal"]:
+    with tabs["Live"]:
         if not session_has_candles:
-            render_data_notice(f"{selected_session_day} is in preview mode. SPY Prophet is projecting the next session from the latest completed market data; entries will appear after that session's candles print.")
+            render_data_notice(f"Preview mode for {selected_session_day}. Structure is projected from completed market data; live entries and option contracts stay hidden until that session prints candles.", tone="warn")
         elif not is_live_session:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
         render_terminal_hero(
@@ -6399,7 +6502,7 @@ def main() -> None:
             morning_bundle.options_intelligence,
         )
         render_status_strip([
-            ("Learning", learning_profile.confidence_label),
+            ("Learning sample", learning_profile.confidence_label),
             ("Matching outcomes", learning_profile.matching_sample_size),
             ("Target first", fmt_pct(learning_profile.target_first_rate * 100, 0)),
             ("Stop first", fmt_pct(learning_profile.stop_first_rate * 100, 0)),
@@ -6413,13 +6516,15 @@ def main() -> None:
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
 
-    with tabs["Market Context"]:
+    with tabs["Market"]:
         render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
-    with tabs["Prophet Foresight"]:
+    with tabs["SPY Foresight"]:
+        if not session_has_candles:
+            render_data_notice("Preview mode: SPY Foresight is context only. Live contracts remain hidden until session candles print.", tone="warn")
         render_morning_briefing_tab(morning_bundle)
 
-    with tabs["Prophet Chart"]:
+    with tabs["Chart"]:
         render_section_title("Prophet Chart", "Trigger map and candles")
         chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
@@ -6441,7 +6546,7 @@ def main() -> None:
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
 
-    with tabs["Replay Lab"]:
+    with tabs["Replay"]:
         render_section_title("Replay Lab", "Review entries without look-ahead")
         dates = get_available_replay_dates(df)
         if not dates:
@@ -6449,7 +6554,7 @@ def main() -> None:
         else:
             rca,rcb,rcc=st.columns([1,1,1])
             rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
-            mode = rcb.selectbox("Mode", ["Full Day Review","Step Replay"], key="replay_mode")
+            mode = rcb.selectbox("Mode", ["Step Replay","Full Day Review"], key="replay_mode")
             replay_view = rcc.selectbox("View", ["Decision Map", "Technical Candles"], index=0, key="replay_view_mode")
             day_df = filter_replay_day(df, rdate)
             rtime = None
@@ -6480,7 +6585,9 @@ def main() -> None:
 
     with tabs["Options"]:
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
-        if strikes:
+        if not session_has_candles:
+            render_data_notice("Preview mode: live option setup is disabled until the selected session prints candles.", tone="warn")
+        elif strikes:
             state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
                 ("Provider", display_state_label(option_provider_label(state, provider_status))),
@@ -6497,10 +6604,10 @@ def main() -> None:
             c1,c2=st.columns(2)
             with c1:
                 cq=state.call_quote
-                render_glass_card("CALL Quote", option_quote_card_html(cq, strikes.call_strike, state.warning))
+                render_glass_card("CALL Quote", option_quote_card_html(cq, strikes.call_strike, state.warning, state.underlying_price))
             with c2:
                 pq=state.put_quote
-                render_glass_card("PUT Quote", option_quote_card_html(pq, strikes.put_strike, state.warning))
+                render_glass_card("PUT Quote", option_quote_card_html(pq, strikes.put_strike, state.warning, state.underlying_price))
             if state.selected_trade_quote:
                 render_status_strip([
                     ("Active contract", f"{state.selected_trade_quote.option_type} {state.selected_trade_quote.strike}"),
@@ -6526,6 +6633,8 @@ def main() -> None:
                 st.caption("09:00 entry projection requires mark and delta. Delayed quotes provide mark only; live Greeks are required for projection.")
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
+        else:
+            render_data_notice("No active options setup. Contract selection appears only after a confirmed or pending structure rejection.")
 
     with tabs["Journal"]:
         render_section_title("Journal Analytics", "Signal outcome history")
@@ -6544,13 +6653,16 @@ def main() -> None:
         notes = st.text_area("Trade notes", "")
         tags_text = st.text_input("Tags (comma-separated)", "")
         cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
-        if cja.button("Save live signal") and active_signal and is_live_session:
+        save_live_disabled = not (active_signal and is_live_session)
+        if cja.button("Save live signal", disabled=save_live_disabled):
             user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
             e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
             entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
+        if save_live_disabled:
+            st.caption("Live save activates only after the current session has an active signal.")
         elif not is_live_session:
             st.caption("Historical session: use Save replay signals.")
-        if cjb.button("Save replay signals") and 'rs' in locals():
+        if cjb.button("Save replay signals", disabled=('rs' not in locals())) and 'rs' in locals():
             for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
             save_signal_journal(entries,journal_path)
         if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)

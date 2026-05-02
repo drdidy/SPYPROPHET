@@ -1,6 +1,6 @@
 # SPY Prophet
 
-SPY Prophet is an **analysis-only** Streamlit terminal for SPY 0DTE structure workflows.
+SPY Prophet is an **analysis-only** Streamlit terminal for same-day SPY structure workflows.
 
 ## Quick Start
 ```bash
@@ -34,7 +34,7 @@ TASTYTRADE_ENVIRONMENT = "production"
 
 ## Data Sources
 - **SPY candles**: loaded from `yfinance`.
-- **Options quotes**: loaded from Tastytrade only.
+- **Options quotes**: live Tastytrade when configured, with delayed yfinance fallback for mark-only review.
 - No mock quote mode is used in the product app.
 
 ## Replay bias safety
@@ -57,7 +57,7 @@ TASTYTRADE_ENVIRONMENT = "production"
 - yfinance may have delays/gaps.
 - Hourly candles cannot resolve intrabar target-vs-stop sequence.
 - Option projection is delta-only (ignores gamma/IV/theta/liquidity/spread).
-- 0DTE Greeks can change rapidly.
+- Same-day option Greeks can change rapidly.
 
 ## Safety
 **No order execution is implemented.**
