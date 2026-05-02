@@ -3461,9 +3461,11 @@ def inject_global_css() -> None:
     div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button{border-radius:8px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);box-shadow:none}
     div[data-testid="stButton"] button:hover, div[data-testid="stDownloadButton"] button:hover{border-color:var(--blue);color:var(--text)}
     textarea, input{font-family:var(--ui-font)}
-    div[data-baseweb="tab-list"]{gap:10px;border-bottom:1px solid var(--border);padding-bottom:0}
-    button[role="tab"]{padding:10px 0;border-bottom:2px solid transparent;color:var(--muted)}
-    button[role="tab"][aria-selected="true"]{border-bottom-color:var(--green);color:var(--text)}
+    div[data-baseweb="tab-list"]{display:flex;width:100%;gap:8px;border:1px solid var(--border);border-radius:8px;background:rgba(17,24,33,.86);padding:7px;margin:2px 0 18px;box-shadow:0 10px 28px rgba(0,0,0,.18);overflow-x:auto;scrollbar-width:thin}
+    div[data-baseweb="tab-list"] button[role="tab"]{flex:1 1 0;min-width:118px;justify-content:center;padding:11px 12px;border:1px solid transparent;border-radius:8px;background:rgba(255,255,255,.025);color:var(--muted);transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease}
+    div[data-baseweb="tab-list"] button[role="tab"] p{font-size:.84rem;font-weight:800;letter-spacing:.01em;white-space:nowrap;color:inherit}
+    div[data-baseweb="tab-list"] button[role="tab"]:hover{background:rgba(78,168,222,.10);border-color:rgba(78,168,222,.28);color:var(--text)}
+    div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{border-color:rgba(46,204,113,.62);background:linear-gradient(180deg,rgba(46,204,113,.18),rgba(46,204,113,.08));color:var(--text);box-shadow:inset 0 -2px 0 var(--green),0 0 0 1px rgba(46,204,113,.08)}
     .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#101821,#111b26 58%,#0c1219);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
     .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
     .brand-row,.panel-head,.quote-head,.tile-head,.hero-price-row{display:flex;align-items:center;gap:12px}
