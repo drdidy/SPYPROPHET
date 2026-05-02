@@ -48,3 +48,6 @@ def test_build_live_and_auto_journal_and_analytics(tmp_path):
     entries[0]=entries[0].__class__(**{**entries[0].__dict__,'outcome':'TARGET_FIRST'})
     a=compute_journal_analytics(entries)
     assert a.total_entries==1 and a.target_first_count==1
+    entries[0]=entries[0].__class__(**{**entries[0].__dict__,'outcome':'TP1_FIRST'})
+    a=compute_journal_analytics(entries)
+    assert a.target_first_count==1

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-from app import TradeSignal, filter_replay_day, get_available_replay_dates, evaluate_signal_outcome, build_replay_state, get_central_tz, get_latest_active_signal
+from app import TradeSignal, filter_replay_day, get_available_replay_dates, evaluate_signal_outcome, build_replay_state, get_central_tz, get_latest_active_signal, signal_target_milestones
 
 
 def _ts(s): return pd.Timestamp(datetime.fromisoformat(s), tz=get_central_tz())
@@ -36,11 +36,11 @@ def test_build_replay_state_full_day_and_prior_day():
 def test_outcome_call_put_ambiguous_nohit_pending_unknown_and_bars_moves():
     fut = pd.DataFrame({"Open":[100,100],"High":[103,101],"Low":[99,98],"Close":[100.5,100]}, index=pd.DatetimeIndex([_ts("2026-04-29T10:30:00"),_ts("2026-04-29T11:30:00")]))
     call=TradeSignal("c","CALL","CONFIRMED","UD",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,_ts("2026-04-29T10:00:00"),100,98.5,"T",102,1,1,1,"be","")
-    o=evaluate_signal_outcome(call,fut); assert o.outcome in {"TARGET_FIRST","AMBIGUOUS_SAME_CANDLE"}
+    o=evaluate_signal_outcome(call,fut); assert o.outcome in {"TP1_FIRST","TP2_FIRST","TARGET_FIRST","AMBIGUOUS_SAME_CANDLE"}
     assert o.bars_to_outcome in {1,None}
 
     put=TradeSignal("p","PUT","CONFIRMED","UA",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,_ts("2026-04-29T10:00:00"),100,101.5,"T",98,1,1,1,"be","")
-    op=evaluate_signal_outcome(put,fut); assert op.outcome in {"TARGET_FIRST","STOP_FIRST","AMBIGUOUS_SAME_CANDLE"}
+    op=evaluate_signal_outcome(put,fut); assert op.outcome in {"TP1_FIRST","TP2_FIRST","TARGET_FIRST","STOP_FIRST","AMBIGUOUS_SAME_CANDLE"}
 
     nohitf = pd.DataFrame({"Open":[100],"High":[100.4],"Low":[99.6],"Close":[100]}, index=pd.DatetimeIndex([_ts("2026-04-29T10:30:00")]))
     nh=evaluate_signal_outcome(call,nohitf); assert nh.outcome=="NO_HIT"
@@ -49,6 +49,20 @@ def test_outcome_call_put_ambiguous_nohit_pending_unknown_and_bars_moves():
     assert evaluate_signal_outcome(pend,fut).outcome=="PENDING"
     bad=TradeSignal("u","CALL","CONFIRMED","UD",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,None,float('nan'),98.5,None,float('nan'),float('nan'),float('nan'),float('nan'),"be","")
     assert evaluate_signal_outcome(bad,fut).outcome=="UNKNOWN"
+
+
+def test_outcome_uses_tp1_and_tp2_milestones_before_full_target():
+    fut = pd.DataFrame(
+        {"Open":[100], "High":[101.2], "Low":[99.8], "Close":[101.0]},
+        index=pd.DatetimeIndex([_ts("2026-04-29T10:30:00")]),
+    )
+    call=TradeSignal("tp1","CALL","CONFIRMED","UD",100,_ts("2026-04-29T09:30:00"),101,102,99,100.2,_ts("2026-04-29T10:00:00"),100,98.5,"T",102,1,2,2,"be","")
+    tp1, tp2, full = signal_target_milestones(call)
+
+    assert tp1 == 101
+    assert tp2 == 101.5
+    assert full == 102
+    assert evaluate_signal_outcome(call, fut).outcome == "TP1_FIRST"
 
 
 def test_latest_active_signal_skips_resolved_setups():

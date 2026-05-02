@@ -26,6 +26,8 @@ VIX_SYMBOL = "^VIX"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
 DEFAULT_SLOPE_PER_HOUR = 0.20
+TP1_TARGET_FRACTION = 0.50
+TP2_TARGET_FRACTION = 0.75
 STRUCTURE_CALIBRATION_KEYS = ("SPYPROPHET_STRUCTURE_CALIBRATION", "SPYPROPHET_SLOPE_PER_HOUR")
 TARGET_OTM_STRIKE_DISTANCE = 2.0
 FLOW_STRIKE_MAX_OTM_DISTANCE = 3.0
@@ -2075,7 +2077,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             "confidence": confidence,
         },
         "why": [
-            f"Structure learning is {bundle.learning_profile.confidence_label} with target-first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
+            f"Structure learning is {bundle.learning_profile.confidence_label} with TP1+ {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
             flow_reason,
             darkpool_reason if darkpool_reason else "No large dark-pool level loaded near the active trigger.",
             f"External read: {len(supporting)} support, {len(opposing)} caution/refute the setup.",
@@ -2146,7 +2148,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     gamma = bundle.gamma_insight
     recommendation = "Wait for a clean hourly rejection at one of the SPY Prophet triggers before choosing direction."
     if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.lines:
-        recommendation = f"Favor the nearest valid trigger only after confirmation; historical target-first rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
+        recommendation = f"Favor the nearest valid trigger only after confirmation; historical TP1+ rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
     gamma_line = f"- Gamma exposure: {gamma.dealer_tone}. {gamma.notes}\n" if gamma.provider_payload else ""
     oi_magnets = ", ".join(fmt_price(x) for x in gamma.magnet_strikes) if gamma.magnet_strikes else "Unavailable"
     social_text = "connected" if bundle.sentiment.social_payload else "headline-only"
@@ -3501,6 +3503,17 @@ def get_available_replay_dates(df: pd.DataFrame) -> list:
     return get_available_trading_days(df)
 
 
+def signal_target_milestones(signal: TradeSignal) -> tuple[float, float, float]:
+    if signal is None or signal.entry_price is None or pd.isna(signal.entry_price) or signal.target_price is None or pd.isna(signal.target_price):
+        return float("nan"), float("nan"), float("nan")
+    distance = signal.target_price - signal.entry_price
+    return (
+        float(signal.entry_price + distance * TP1_TARGET_FRACTION),
+        float(signal.entry_price + distance * TP2_TARGET_FRACTION),
+        float(signal.target_price),
+    )
+
+
 def evaluate_signal_outcome(signal: TradeSignal, future_candles_df: pd.DataFrame) -> ReplaySignalOutcome:
     if signal.status == "PENDING_CONFIRMATION":
         return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, "PENDING", None, float('nan'), float('nan'), None, "Pending next candle open.")
@@ -3510,21 +3523,29 @@ def evaluate_signal_outcome(signal: TradeSignal, future_candles_df: pd.DataFrame
     if fut.empty:
         return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, "NO_HIT", None, float('nan'), float('nan'), None, "No future candles.")
     outcome="NO_HIT"; out_time=None; bars=None
+    tp1_price, tp2_price, full_target_price = signal_target_milestones(signal)
     for i,(ts,row) in enumerate(fut.iterrows(),start=1):
         if signal.signal_type=="CALL":
-            t = (not pd.isna(signal.target_price)) and row['High']>=signal.target_price
+            tp1 = (not pd.isna(tp1_price)) and row['High']>=tp1_price
+            tp2 = (not pd.isna(tp2_price)) and row['High']>=tp2_price
+            full = (not pd.isna(full_target_price)) and row['High']>=full_target_price
             st = row['Low']<=signal.stop_price
         else:
-            t = (not pd.isna(signal.target_price)) and row['Low']<=signal.target_price
+            tp1 = (not pd.isna(tp1_price)) and row['Low']<=tp1_price
+            tp2 = (not pd.isna(tp2_price)) and row['Low']<=tp2_price
+            full = (not pd.isna(full_target_price)) and row['Low']<=full_target_price
             st = row['High']>=signal.stop_price
-        if t and st: outcome="AMBIGUOUS_SAME_CANDLE"; out_time=ts; bars=i; break
-        if t: outcome="TARGET_FIRST"; out_time=ts; bars=i; break
+        hit_profit = tp1 or tp2 or full
+        if hit_profit and st: outcome="AMBIGUOUS_SAME_CANDLE"; out_time=ts; bars=i; break
+        if full: outcome="TARGET_FIRST"; out_time=ts; bars=i; break
+        if tp2: outcome="TP2_FIRST"; out_time=ts; bars=i; break
+        if tp1: outcome="TP1_FIRST"; out_time=ts; bars=i; break
         if st: outcome="STOP_FIRST"; out_time=ts; bars=i; break
     if signal.signal_type=="CALL":
         max_fav = (fut['High']-signal.entry_price).max(); max_adv = (fut['Low']-signal.entry_price).min()
     else:
         max_fav = (signal.entry_price-fut['Low']).max(); max_adv = (signal.entry_price-fut['High']).min()
-    return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, outcome, out_time, float(max_fav), float(max_adv), bars, "Hourly replay outcome.")
+    return ReplaySignalOutcome(signal.signal_id, signal.signal_type, signal.entry_time, signal.entry_price, signal.stop_price, signal.target_price, signal.target_line_name, outcome, out_time, float(max_fav), float(max_adv), bars, "Hourly replay outcome using TP1 at 50% and TP2 at 75% of distance to target.")
 
 
 def get_latest_active_signal(signals: list[TradeSignal], candles_df: pd.DataFrame) -> TradeSignal | None:
@@ -4722,7 +4743,7 @@ def render_learning_profile(profile: StructureLearningProfile) -> None:
             {profile.sample_size} completed outcomes in memory). {escape(profile.caveat)}
           </div>
           <div class='probability-grid'>
-            <div class='prob-card green'><div class='prob-label'>Target first</div><div class='prob-value'>{fmt_pct(profile.target_first_rate * 100, 0)}</div></div>
+            <div class='prob-card green'><div class='prob-label'>TP1+ first</div><div class='prob-value'>{fmt_pct(profile.target_first_rate * 100, 0)}</div></div>
             <div class='prob-card red'><div class='prob-label'>Stop first</div><div class='prob-value'>{fmt_pct(profile.stop_first_rate * 100, 0)}</div></div>
             <div class='prob-card blue'><div class='prob-label'>No hit</div><div class='prob-value'>{fmt_pct(profile.no_hit_rate * 100, 0)}</div></div>
           </div>
@@ -4833,7 +4854,7 @@ def render_briefing_snapshot(bundle: MorningBriefingBundle) -> None:
         ("Sector Leader", leader.label if leader else "-", fmt_float(leader.change_pct) + "%" if leader else "-"),
         ("Sector Laggard", laggard.label if laggard else "-", fmt_float(laggard.change_pct) + "%" if laggard else "-"),
         ("Prior Close", fmt_price(bundle.technical_context.prior_close), f"Gap {fmt_price(bundle.technical_context.gap_from_prior_close)}"),
-        ("Learning", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}"),
+        ("Learning", bundle.learning_profile.confidence_label, f"TP1+ first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}"),
     ]
     html = "".join(
         f"<div class='briefing-mini'><div class='briefing-mini-label'>{escape(label)}</div><div class='briefing-mini-value'>{escape(str(value))}</div><div class='briefing-mini-copy'>{escape(str(copy))}</div></div>"
@@ -5360,7 +5381,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
         _morning_card_html(
             "Structure Learning",
             bundle.learning_profile.confidence_label,
-            f"Matched history: target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}, stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.",
+            f"Matched history: TP1+ first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}, stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.",
             "shield",
             "green" if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate else "amber",
         ),
@@ -5449,7 +5470,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         _evidence_card("Global Context", f"{len(bundle.global_context)} yfinance instruments", _joined_moves(bundle.global_context, 3), global_asof, "connected" if bundle.global_context else "watch"),
         _evidence_card("SPY Technicals", bundle.technical_context.status.name, bundle.technical_context.status.detail, bundle.technical_context.status.as_of, "connected" if bundle.technical_context.status.status == "connected" else "watch"),
         _evidence_card("Headline Scan", bundle.sentiment.status.name, f"{len(bundle.news_items)} same-day/previous-day headlines checked in the background for current-source context.", news_asof, "connected" if bundle.news_items else "watch"),
-        _evidence_card("Learning Sample", bundle.learning_profile.confidence_label, f"Target first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
+        _evidence_card("Learning Sample", bundle.learning_profile.confidence_label, f"TP1+ first {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}; stop first {fmt_pct(bundle.learning_profile.stop_first_rate * 100, 0)}.", bundle.generated_at, "internal"),
         _evidence_card("SPY Foresight Synthesis", "Live synthesis" if result.model else "Rule-based verified", ai_detail, result.generated_at, "connected" if result.model else "internal"),
     ]
     steps = [
@@ -6041,7 +6062,7 @@ def render_replay_story(rs: ReplayState, replay_candles: pd.DataFrame, mode: str
         f"<div class='outcome-card'><div class='brief-label'>Signals</div><div class='brief-value'>{len(rs.signals)}</div></div>"
         f"<div class='outcome-card'><div class='brief-label'>Confirmed</div><div class='brief-value'>{len([x for x in rs.signals if x.status=='CONFIRMED'])}</div></div>"
         f"<div class='outcome-card'><div class='brief-label'>Pending</div><div class='brief-value'>{len([x for x in rs.signals if x.status=='PENDING_CONFIRMATION'])}</div></div>"
-        f"<div class='outcome-card'><div class='brief-label'>Targets</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='TARGET_FIRST'])}</div></div>"
+        f"<div class='outcome-card'><div class='brief-label'>TP1+</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if is_profit_milestone_outcome(o.outcome)])}</div></div>"
         f"<div class='outcome-card'><div class='brief-label'>Stops</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='STOP_FIRST'])}</div></div>"
         f"<div class='outcome-card'><div class='brief-label'>No Hit</div><div class='brief-value'>{len([o for o in rs.outcomes.values() if o.outcome=='NO_HIT'])}</div></div>"
         "</div></div>"
@@ -6510,8 +6531,11 @@ def build_journal_entries_from_replay_state(replay_state):
         out.append(e.__class__(make_journal_id(e), *list(asdict(e).values())[1:]))
     return out
 
+def is_profit_milestone_outcome(outcome: str | None) -> bool:
+    return outcome in {"TP1_FIRST", "TP2_FIRST", "TARGET_FIRST"}
+
 def compute_journal_analytics(entries):
-    n=len(entries); conf=[e for e in entries if e.signal_status=='CONFIRMED']; wins=[e for e in entries if e.outcome=='TARGET_FIRST']; losses=[e for e in entries if e.outcome=='STOP_FIRST']
+    n=len(entries); conf=[e for e in entries if e.signal_status=='CONFIRMED']; wins=[e for e in entries if is_profit_milestone_outcome(e.outcome)]; losses=[e for e in entries if e.outcome=='STOP_FIRST']
     wr=(len(wins)/(len(wins)+len(losses))) if (len(wins)+len(losses))>0 else float('nan')
     def grp(key):
         d={}
@@ -6520,10 +6544,10 @@ def compute_journal_analytics(entries):
             d.setdefault(k,[]).append(e)
         out={}
         for k,v in d.items():
-            w=len([x for x in v if x.outcome=='TARGET_FIRST']); l=len([x for x in v if x.outcome=='STOP_FIRST'])
+            w=len([x for x in v if is_profit_milestone_outcome(x.outcome)]); l=len([x for x in v if x.outcome=='STOP_FIRST'])
             out[str(k)]={"count":len(v),"wins":w,"losses":l,"win_rate":(w/(w+l) if (w+l)>0 else float('nan')),"average_rr":float(pd.Series([x.rr_ratio for x in v]).mean()),"average_estimated_profit_per_contract":float(pd.Series([x.estimated_profit_per_contract for x in v]).mean()),"small_sample":len(v)<5}
         return out
-    return JournalAnalytics(n,len(conf),len([e for e in entries if e.outcome=='TARGET_FIRST']),len([e for e in entries if e.outcome=='STOP_FIRST']),len([e for e in entries if e.outcome=='NO_HIT']),len([e for e in entries if e.outcome=='AMBIGUOUS_SAME_CANDLE']),len([e for e in entries if e.outcome in ['PENDING','PENDING_OUTCOME']]),len([e for e in entries if e.outcome in [None,'UNKNOWN']]),wr,float(pd.Series([e.rr_ratio for e in entries]).mean()),float(pd.Series([e.max_favorable_move for e in entries]).mean()),float(pd.Series([e.max_adverse_move for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in wins+losses]).mean()) if wins or losses else float('nan'),grp('line_name'),grp('signal_type'),grp('quality_grade'),grp('bias'),grp('hour'),grp('source'),[])
+    return JournalAnalytics(n,len(conf),len([e for e in entries if is_profit_milestone_outcome(e.outcome)]),len([e for e in entries if e.outcome=='STOP_FIRST']),len([e for e in entries if e.outcome=='NO_HIT']),len([e for e in entries if e.outcome=='AMBIGUOUS_SAME_CANDLE']),len([e for e in entries if e.outcome in ['PENDING','PENDING_OUTCOME']]),len([e for e in entries if e.outcome in [None,'UNKNOWN']]),wr,float(pd.Series([e.rr_ratio for e in entries]).mean()),float(pd.Series([e.max_favorable_move for e in entries]).mean()),float(pd.Series([e.max_adverse_move for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in entries]).mean()),float(pd.Series([e.estimated_profit_per_contract for e in wins+losses]).mean()) if wins or losses else float('nan'),grp('line_name'),grp('signal_type'),grp('quality_grade'),grp('bias'),grp('hour'),grp('source'),[])
 
 def build_replay_learning_entries(df: pd.DataFrame, max_days: int = REPLAY_LEARNING_DAYS, slope_per_hour: float = DEFAULT_SLOPE_PER_HOUR) -> list[JournalEntry]:
     if df is None or df.empty:
@@ -6551,7 +6575,7 @@ def dedupe_learning_entries(entries: list[JournalEntry]) -> list[JournalEntry]:
 
 
 def completed_learning_entries(entries: list[JournalEntry]) -> list[JournalEntry]:
-    complete = {"TARGET_FIRST", "STOP_FIRST", "NO_HIT", "AMBIGUOUS_SAME_CANDLE"}
+    complete = {"TP1_FIRST", "TP2_FIRST", "TARGET_FIRST", "STOP_FIRST", "NO_HIT", "AMBIGUOUS_SAME_CANDLE"}
     return [entry for entry in entries if entry.outcome in complete]
 
 
@@ -6591,7 +6615,7 @@ def best_learning_context(entries: list[JournalEntry]) -> str | None:
         return None
     win_rate, count, label, key = sorted(candidates, reverse=True)[0]
     display_key = display_line_name(key) if label == "trigger" else display_state_label(key)
-    return f"Best {label}: {display_key} ({fmt_pct(win_rate * 100, 0)} target-first across {count} samples)"
+    return f"Best {label}: {display_key} ({fmt_pct(win_rate * 100, 0)} TP1+ across {count} samples)"
 
 
 def build_structure_learning_profile(entries: list[JournalEntry], active_signal=None, bias_state=None, closest_line=None, flow_tags: list[str] | None = None) -> StructureLearningProfile:
@@ -6614,10 +6638,10 @@ def build_structure_learning_profile(entries: list[JournalEntry], active_signal=
     n = len(sample)
     if n == 0:
         return StructureLearningProfile(0, 0, direction, "No sample", float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), None, "No completed outcomes yet.")
-    target = len([entry for entry in sample if entry.outcome == "TARGET_FIRST"])
+    target = len([entry for entry in sample if is_profit_milestone_outcome(entry.outcome)])
     stop = len([entry for entry in sample if entry.outcome == "STOP_FIRST"])
     no_hit = len([entry for entry in sample if entry.outcome == "NO_HIT"])
-    caveat = "This is a historical tendency from completed outcomes, not a guarantee of the next candle or day."
+    caveat = "TP1 means price reached 50% of the distance to target; TP2 means 75%. This is a historical tendency, not a guarantee."
     return StructureLearningProfile(
         len(all_complete),
         len(matching),
@@ -6815,7 +6839,7 @@ def main() -> None:
         render_status_strip([
             ("Learning sample", learning_profile.confidence_label),
             ("Matching outcomes", learning_profile.matching_sample_size),
-            ("Target first", fmt_pct(learning_profile.target_first_rate * 100, 0)),
+            ("TP1+ first", fmt_pct(learning_profile.target_first_rate * 100, 0)),
             ("Stop first", fmt_pct(learning_profile.stop_first_rate * 100, 0)),
         ])
         render_structure_tiles(primary_lines, latest_price, structure_projection_time, closest, prior_day)
