@@ -4910,83 +4910,6 @@ def morning_report_png_is_populated(png: bytes) -> bool:
     return bool(extrema and extrema[0] != extrema[1])
 
 
-def _draw_report_background(draw: ImageDraw.ImageDraw, size: tuple[int, int]) -> None:
-    w, h = size
-    for y in range(h):
-        band = int(16 + (y / h) * 8)
-        draw.line((0, y, w, y), fill=(4, band, 24))
-    for x in range(0, w, 64):
-        draw.line((x, 0, x, h), fill="#0a1a2a", width=1)
-    for y in range(0, h, 64):
-        draw.line((0, y, w, y), fill="#0a1a2a", width=1)
-
-
-def _draw_report_logo(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], gold: str = "#f4bd39") -> None:
-    x1, y1, x2, y2 = box
-    cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
-    r = min(x2 - x1, y2 - y1) // 2 - 4
-    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=gold, width=3)
-    draw.ellipse((cx - r + 24, cy - 13, cx + r - 24, cy + 13), outline=gold, width=3)
-    draw.ellipse((cx - 14, cy - 14, cx + 14, cy + 14), fill="#06101a", outline=gold, width=3)
-    draw.line((cx - r, cy, cx - 22, cy), fill=gold, width=2)
-    draw.line((cx + 22, cy, cx + r, cy), fill=gold, width=2)
-    draw.line((cx, cy - r, cx, cy - r + 14), fill=gold, width=2)
-    draw.line((cx, cy + r - 14, cx, cy + r), fill=gold, width=2)
-
-
-def _draw_report_sparkline(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], color: str = "#9ec7ff") -> None:
-    x1, y1, x2, y2 = box
-    pts = [
-        (x1, y2 - 28),
-        (x1 + 42, y2 - 38),
-        (x1 + 76, y2 - 30),
-        (x1 + 120, y2 - 70),
-        (x1 + 150, y2 - 55),
-        (x1 + 190, y2 - 92),
-        (x1 + 232, y2 - 74),
-        (x1 + 270, y2 - 118),
-        (x1 + 326, y1 + 28),
-        (x2, y1 + 2),
-    ]
-    for i in range(len(pts) - 1):
-        draw.line((pts[i], pts[i + 1]), fill=color, width=2)
-    for i, point in enumerate(pts[1:-1], start=1):
-        if i % 2 == 0:
-            draw.line((point[0], point[1], point[0], y2), fill="#17324f", width=8)
-
-
-def _draw_report_icon(draw: ImageDraw.ImageDraw, center: tuple[int, int], kind: str, color: str) -> None:
-    cx, cy = center
-    if kind == "clock":
-        draw.ellipse((cx - 13, cy - 13, cx + 13, cy + 13), outline=color, width=3)
-        draw.line((cx, cy, cx, cy - 8), fill=color, width=3)
-        draw.line((cx, cy, cx + 7, cy + 4), fill=color, width=3)
-    elif kind == "target":
-        draw.ellipse((cx - 15, cy - 15, cx + 15, cy + 15), outline=color, width=3)
-        draw.ellipse((cx - 6, cy - 6, cx + 6, cy + 6), outline=color, width=3)
-        draw.line((cx - 20, cy, cx + 20, cy), fill=color, width=2)
-        draw.line((cx, cy - 20, cx, cy + 20), fill=color, width=2)
-    elif kind == "warn":
-        draw.polygon([(cx, cy - 16), (cx - 16, cy + 14), (cx + 16, cy + 14)], outline=color, fill=None)
-        draw.line((cx, cy - 5, cx, cy + 5), fill=color, width=3)
-        draw.ellipse((cx - 2, cy + 9, cx + 2, cy + 13), fill=color)
-    elif kind == "gamma":
-        draw.arc((cx - 26, cy - 26, cx + 26, cy + 26), 90, 300, fill=color, width=6)
-        for i, height in enumerate([12, 20, 32, 24, 40]):
-            x = cx - 16 + i * 8
-            draw.line((x, cy + 22, x, cy + 22 - height), fill=color, width=3)
-    elif kind == "flow":
-        for offset in [-12, 0, 12]:
-            draw.line((cx - 22, cy + offset, cx + 22, cy + offset), fill=color, width=3)
-        draw.line((cx + 8, cy - 20, cx + 22, cy - 12), fill=color, width=3)
-        draw.line((cx + 8, cy + 20, cx + 22, cy + 12), fill=color, width=3)
-    else:
-        draw.rounded_rectangle((cx - 13, cy - 16, cx + 13, cy + 16), radius=4, outline=color, width=3)
-        draw.line((cx - 6, cy - 6, cx + 6, cy - 6), fill=color, width=2)
-        draw.line((cx - 6, cy + 2, cx + 6, cy + 2), fill=color, width=2)
-
-
 def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes:
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
@@ -5005,68 +4928,54 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
 
     img = Image.new("RGB", (1200, 1800), "#06101a")
     draw = ImageDraw.Draw(img)
-    title = _report_font(58, True)
-    title_gold = _report_font(54, True)
-    h2 = _report_font(26, True)
-    h3 = _report_font(22, True)
-    body = _report_font(20)
-    body_bold = _report_font(20, True)
-    panel_body = _report_font(18)
-    small = _report_font(16, True)
-    tiny = _report_font(14)
-    mono = _report_font(42, True)
-    gold = "#f4bd39"
-    blue = "#76c7ff"
-    paper = "#f5f7fb"
-    ink = "#07111f"
+    title = _report_font(46, True)
+    h2 = _report_font(24, True)
+    h3 = _report_font(20, True)
+    body = _report_font(18)
+    body_bold = _report_font(18, True)
+    panel_body = _report_font(16)
+    small = _report_font(15)
+    tiny = _report_font(13)
+    mono = _report_font(30, True)
 
-    _draw_report_background(draw, (1200, 1800))
+    draw.rectangle((0, 0, 1200, 1800), fill="#050b12")
+    _report_card(draw, (18, 18, 1182, 188), "#07121f", "#314357", 14)
+    draw.ellipse((44, 46, 124, 126), outline="#f4c76b", width=3)
+    draw.ellipse((68, 72, 100, 100), outline="#f4c76b", width=3)
+    draw.line((44, 86, 124, 86), fill="#f4c76b", width=2)
+    title_x = 152
+    title_y = 46
+    draw.text((title_x, title_y), "SPY PROPHET", font=title, fill="#f8fbff")
+    draw.text((title_x + int(draw.textlength("SPY PROPHET", font=title)) + 22, title_y), "MORNING BRIEF", font=title, fill="#f4c76b")
+    draw.text((154, 112), "Actionable 0DTE plan for today's SPY Prophet lines", font=h2, fill="#f8fbff")
+    draw.text((154, 150), "Foresight Engine", font=body_bold, fill="#f8fbff")
+    draw.ellipse((340, 154, 356, 170), fill="#2ecc71")
+    draw.text((370, 150), "Generated from loaded structure, flow, macro, and option context.", font=body, fill="#c7d2e2")
+    _report_card(draw, (910, 34, 1162, 176), "#0a1624", "#53657c", 10)
+    draw.text((934, 58), "TIMING", font=h3, fill="#f8fbff")
+    draw.text((934, 92), generated.strftime("%Y-%m-%d"), font=h2, fill="#f8fbff")
+    draw.text((934, 126), generated.strftime("%H:%M %Z"), font=h2, fill="#f8fbff")
 
-    _report_card(draw, (10, 10, 1190, 226), "#07121f", "#2d4158", 12)
-    _draw_report_sparkline(draw, (640, 36, 958, 202), "#b7d5ff")
-    _draw_report_logo(draw, (42, 38, 142, 138), gold)
-    draw.text((34, 144), "PROPHET", font=h2, fill=gold)
-    draw.text((34, 174), "FORESIGHT", font=h2, fill=gold)
-    draw.text((184, 32), "SPY PROPHET", font=title, fill="#f8fbff")
-    draw.text((184, 102), "MORNING BRIEF", font=title_gold, fill=gold)
-    draw.text((188, 168), "Actionable 0DTE plan for today's SPY Prophet lines", font=body_bold, fill="#f8fbff")
-    draw.text((188, 202), "FORESIGHT ENGINE", font=small, fill=gold)
-    draw.ellipse((382, 206, 398, 222), fill="#75b65a")
-    draw.text((414, 200), "Ready to refresh the trade plan.", font=body, fill="#c7d2e2")
-    _report_card(draw, (938, 30, 1170, 204), "#07121f", gold, 12)
-    _draw_report_icon(draw, (968, 62), "clock", gold)
-    draw.text((994, 50), "TIMING", font=body_bold, fill=gold)
-    draw.text((960, 88), generated.strftime("%Y-%m-%d"), font=h2, fill="#f8fbff")
-    draw.text((960, 122), generated.strftime("%H:%M"), font=_report_font(38, True), fill="#f8fbff")
-    draw.text((1088, 132), generated.strftime("%Z"), font=body_bold, fill="#f8fbff")
-    draw.text((960, 170), "Refresh before trading.", font=body, fill="#f8fbff")
+    _report_card(draw, (18, 206, 324, 738), "#f5f7fb", "#b9c8da", 12)
+    draw.text((82, 234), "ACTION BRIEF", font=h2, fill="#0f3d83")
+    draw.line((44, 286, 298, 286), fill="#b9c8da", width=2)
+    draw.text((72, 326), stance, font=_report_font(66, True), fill="#0f4c94")
+    draw.line((54, 430, 288, 430), fill="#b9c8da", width=2)
+    draw.text((92, 464), f"{confidence}%", font=_report_font(72, True), fill="#030b18")
+    draw.text((76, 548), label.upper(), font=h2, fill=tone_color)
+    draw.ellipse((112, 604, 226, 718), fill=tone_color)
+    draw.text((143, 625), "0DTE", font=h3, fill="#ffffff")
+    draw.text((146, 654), "PLAN", font=h3, fill="#ffffff")
 
-    top_y = 236
-    top_h = 540
-    _report_card(draw, (14, top_y, 322, top_y + top_h), "#06101a", "#84cfff", 10)
-    draw.rectangle((16, top_y + 2, 320, top_y + 58), fill="#0c2440")
-    _draw_centered(draw, (26, top_y + 12, 310, top_y + 52), "ACTION BRIEF", h2, "#aee0ff")
-    _draw_centered(draw, (26, top_y + 92, 310, top_y + 180), stance, _report_font(72, True), "#f8fbff")
-    draw.ellipse((106, top_y + 188, 230, top_y + 312), outline=blue, width=3)
-    draw.rounded_rectangle((142, top_y + 226, 194, top_y + 272), radius=8, outline=blue, width=5)
-    draw.line((150, top_y + 226, 186, top_y + 226), fill=blue, width=5)
-    draw.line((150, top_y + 274, 186, top_y + 274), fill=blue, width=5)
-    draw.text((104, top_y + 328), f"{confidence}%", font=_report_font(56, True), fill=blue)
-    _draw_centered(draw, (30, top_y + 396, 306, top_y + 438), label.upper(), h2, "#f8fbff")
-    draw.line((56, top_y + 464, 280, top_y + 464), fill="#244b73", width=2)
-    _draw_centered(draw, (34, top_y + 480, 302, top_y + 510), "WAIT FOR THE EDGE", body_bold, gold)
+    _report_card(draw, (334, 206, 628, 738), "#f5f7fb", "#b9c8da", 12)
+    draw.text((362, 242), "STANCE", font=h3, fill="#111827")
+    draw.text((362, 308), stance, font=_report_font(42, True), fill="#030b18")
+    _draw_wrapped(draw, decision.get("novice_summary") or decision.get("headline") or "Wait for a confirmed structure trigger.", (362, 380), 230, body, "#111827", 5)
+    draw.line((362, 500, 600, 500), fill="#c5cedb", width=2)
+    _draw_wrapped(draw, trade.get("label") or "Structure confirmation required", (362, 546), 230, body_bold, "#111827", 5)
+    _draw_wrapped(draw, decision.get("headline") or "Let structure lead.", (362, 650), 230, small, "#0f4c94", 3)
 
-    _report_card(draw, (328, top_y, 628, top_y + top_h), paper, "#c4cedb", 10)
-    draw.text((360, top_y + 26), "PLAN SUMMARY", font=h2, fill="#0f1730")
-    _draw_report_icon(draw, (370, top_y + 94), "clock", ink)
-    draw.text((402, top_y + 82), "STANCE", font=body_bold, fill="#111827")
-    draw.text((360, top_y + 124), stance, font=_report_font(42, True), fill="#030b18")
-    _draw_wrapped(draw, decision.get("novice_summary") or decision.get("headline") or "Wait for a confirmed structure trigger.", (360, top_y + 184), 232, body, "#111827", 5)
-    draw.line((360, top_y + 312, 594, top_y + 312), fill="#c5cedb", width=2)
-    _draw_wrapped(draw, trade.get("label") or "Structure confirmation required", (360, top_y + 342), 232, body_bold, "#111827", 4)
-    _draw_wrapped(draw, decision.get("headline") or "Let structure lead.", (360, top_y + 446), 232, small, "#0f4c94", 3)
-
-    _report_card(draw, (636, top_y, 1186, top_y + top_h), paper, "#c4cedb", 10)
+    _report_card(draw, (638, 206, 1182, 738), "#f5f7fb", "#b9c8da", 12)
     rows = [
         ("TRIGGER", str(trade.get("trigger_line") or "-"), f"Trigger price {trade.get('trigger_price') or '-'}"),
         ("CONTRACT", str(trade.get("contract") or quote_value), "Use only the listed OTM contract after confirmation."),
@@ -5074,24 +4983,20 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
         ("INVALIDATION", str(trade.get("stop") or "Invalid if SPY closes back through the trigger."), "If this happens, the setup is no longer valid."),
         ("TARGET", str(trade.get("target") or "Nearest valid SPY Prophet target line"), f"Confidence {confidence}%"),
     ]
-    kinds = ["target", "doc", "target", "warn", "target"]
-    y = top_y + 28
-    for row_idx, (label_txt, value_txt, copy_txt) in enumerate(rows):
-        _draw_report_icon(draw, (684, y + 26), kinds[row_idx], ink)
-        draw.text((724, y + 12), label_txt, font=body_bold, fill="#111827")
-        _draw_wrapped(draw, value_txt, (858, y), 286, body_bold, "#111827", 2, 4)
-        _draw_wrapped(draw, copy_txt, (858, y + 52), 286, panel_body, "#111827", 2, 4)
-        draw.line((670, y + 94, 1160, y + 94), fill="#c8d0dc", width=1)
-        y += 100
+    y = 232
+    for label_txt, value_txt, copy_txt in rows:
+        draw.text((668, y + 8), label_txt, font=body_bold, fill="#111827")
+        _draw_wrapped(draw, value_txt, (818, y), 330, body_bold, "#111827", 2)
+        _draw_wrapped(draw, copy_txt, (818, y + 42), 330, small, "#111827", 2)
+        draw.line((660, y + 88, 1160, y + 88), fill="#d0d7e2", width=1)
+        y += 98
 
-    section_y = 792
-    _report_card(draw, (14, section_y, 1186, 1100), paper, "#c4cedb", 10)
-    draw.text((46, section_y + 20), "SPY PROPHET TRIGGER LINES", font=h3, fill="#0d2d62")
-    draw.line((352, section_y + 33, 1128, section_y + 33), fill="#c7d0db", width=2)
+    _report_card(draw, (18, 752, 1182, 1122), "#f5f7fb", "#b9c8da", 12)
+    draw.text((48, 782), "SPY PROPHET TRIGGER LINES", font=h3, fill="#0d2d62")
     display_lines = lines or [{"name": "Structure lines unavailable", "role": "Load candles", "value": float("nan"), "anchor_price": float("nan"), "anchor_time": "Refresh SPY data to calculate today's trigger deck."}]
-    gap = 28
-    left, right = 42, 1158
-    card_w = min(258, int((right - left - gap * (len(display_lines) - 1)) / len(display_lines)))
+    gap = 20
+    left, right = 42, 1150
+    card_w = min(262, int((right - left - gap * (len(display_lines) - 1)) / len(display_lines)))
     total_w = card_w * len(display_lines) + gap * (len(display_lines) - 1)
     x = int(left + ((right - left) - total_w) / 2)
     for line in display_lines:
@@ -5099,21 +5004,18 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
         is_pending = pd.isna(fmt_nan(line.get("value"), None))
         is_call = "call" in role.lower()
         color = "#6b7280" if is_pending else "#166534" if is_call else "#b91c1c"
-        card_top = section_y + 72
-        card_bottom = section_y + 306
-        _report_card(draw, (x, card_top, x + card_w, card_bottom), "#fbfdff", color, 8)
-        draw.rounded_rectangle((x + 1, card_top + 1, x + card_w - 1, card_top + 48), radius=7, fill=color)
-        _draw_centered(draw, (x + 16, card_top + 8, x + card_w - 16, card_top + 42), _report_text(line.get("name") or "-").upper(), small, "#ffffff")
-        _draw_centered(draw, (x + 16, card_top + 62, x + card_w - 16, card_top + 92), _report_text(role).upper(), body_bold, "#111827")
-        _draw_centered(draw, (x + 16, card_top + 94, x + card_w - 16, card_top + 142), fmt_price(line.get("value")), mono, color)
-        draw.line((x + 32, card_top + 148, x + card_w - 32, card_top + 148), fill="#4b5563", width=2)
-        _draw_centered(draw, (x + 16, card_top + 154, x + card_w - 16, card_top + 176), "ANCHOR", tiny, "#111827")
-        _draw_centered(draw, (x + 16, card_top + 176, x + card_w - 16, card_top + 200), fmt_price(line.get("anchor_price")), body_bold, "#111827")
-        _draw_centered(draw, (x + 16, card_top + 202, x + card_w - 16, card_top + 228), line.get("anchor_time") or "-", tiny, "#111827")
+        _report_card(draw, (x, 836, x + card_w, 1098), "#fbfdff", color, 10)
+        _draw_centered(draw, (x + 18, 854, x + card_w - 18, 886), _report_text(line.get("name") or "-").upper(), small, color)
+        _draw_centered(draw, (x + 18, 914, x + card_w - 18, 946), _report_text(role).upper(), body_bold, "#111827")
+        _draw_centered(draw, (x + 18, 958, x + card_w - 18, 1000), fmt_price(line.get("value")), mono, color)
+        draw.line((x + 34, 1014, x + card_w - 34, 1014), fill="#4b5563", width=2)
+        _draw_centered(draw, (x + 18, 1028, x + card_w - 18, 1050), "ANCHOR", small, "#111827")
+        _draw_centered(draw, (x + 18, 1054, x + card_w - 18, 1076), fmt_price(line.get("anchor_price")), body_bold, "#111827")
+        _draw_centered(draw, (x + 18, 1074, x + card_w - 18, 1094), line.get("anchor_time") or "-", tiny, "#111827")
         x += card_w + gap
 
-    panel_y = 1120
-    panel_h = 282
+    panel_y = 1140
+    panel_h = 250
     if isinstance(darkpool, dict) and (darkpool.get("key_levels") or darkpool.get("largest_prints")):
         darkpool_bullets = [f"{darkpool.get('print_count', 0)} prints, {fmt_money_short(darkpool.get('total_premium'))} notional"]
         for row in (darkpool.get("key_levels") or darkpool.get("largest_prints") or [])[:3]:
@@ -5133,19 +5035,15 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
     for i, (heading, bullets, color) in enumerate(panels):
         col = i % 3
         row = i // 3
-        px = 14 + col * 392
+        px = 18 + col * 388
         py = panel_y + row * (panel_h + 16)
-        _report_card(draw, (px, py, px + 378, py + panel_h), "#07121f", "#314357", 10)
-        kind = ["doc", "clock", "flow", "gamma", "warn", "target"][i]
-        _draw_report_icon(draw, (px + 46, py + 42), kind, color)
-        draw.text((px + 86, py + 28), heading, font=h3, fill=color)
-        _draw_report_bullets(draw, bullets, (px + 38, py + 86), 304, py + panel_h - 22, panel_body, "#f2f6fb", color, 2)
+        _report_card(draw, (px, py, px + 372, py + panel_h), "#07121f", "#314357", 12)
+        draw.text((px + 28, py + 24), heading, font=h3, fill=color)
+        _draw_report_bullets(draw, bullets, (px + 30, py + 74), 296, py + panel_h - 22, panel_body, "#f2f6fb", color, 2)
 
-    _report_card(draw, (10, 1720, 1190, 1784), "#07121f", "#314357", 8)
-    draw.polygon([(48, 1740), (55, 1757), (74, 1757), (59, 1768), (65, 1786), (48, 1775), (31, 1786), (37, 1768), (22, 1757), (41, 1757)], fill=gold)
-    draw.text((92, 1742), "DISCIPLINE AT THE TRIGGER.", font=_report_font(18, True), fill=gold)
-    draw.text((392, 1742), "PATIENCE FOR THE EDGE. LET STRUCTURE LEAD.", font=_report_font(18), fill="#c7d2e2")
-    draw.text((856, 1742), "SPY PROPHET FORESIGHT ENGINE", font=_report_font(17, True), fill="#c7d2e2")
+    _report_card(draw, (18, 1690, 1182, 1778), "#07121f", "#314357", 12)
+    draw.text((48, 1718), "Discipline at the trigger. Patience for the edge. Let structure lead.", font=h3, fill="#f8fbff")
+    draw.text((830, 1718), "SPY PROPHET FORESIGHT ENGINE", font=body_bold, fill="#c7d2e2")
 
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
