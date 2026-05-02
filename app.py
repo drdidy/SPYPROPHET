@@ -258,10 +258,10 @@ def market_hours_between(start_dt: datetime | pd.Timestamp, end_dt: datetime | p
     last_day = end.date()
     while day <= last_day:
         if pd.Timestamp(day).weekday() < 5:
-            session_start = pd.Timestamp(day, tz=ct) + pd.Timedelta(hours=RTH_SESSION_START.hour, minutes=RTH_SESSION_START.minute)
-            session_end = pd.Timestamp(day, tz=ct) + pd.Timedelta(hours=RTH_SESSION_END.hour, minutes=RTH_SESSION_END.minute)
-            left = max(start, session_start)
-            right = min(end, session_end)
+            day_start = pd.Timestamp(day, tz=ct)
+            day_end = day_start + pd.Timedelta(days=1)
+            left = max(start, day_start)
+            right = min(end, day_end)
             if right > left:
                 total_seconds += (right - left).total_seconds()
         day = (pd.Timestamp(day) + pd.Timedelta(days=1)).date()
@@ -2550,8 +2550,8 @@ def build_structure_projection_table(primary_lines: list[DynamicLine], current_d
             "Pivot Price": line.anchor_price,
             "Pivot Candle Closes": line.anchor_time,
             "Projection Time": pd.Timestamp(current_dt),
-            "Projection Method": "Protected RTH market-hours calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
-            "Market Hours Since Anchor": hours,
+            "Projection Method": "Protected weekend-adjusted calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
+            "Projection Hours Since Anchor": hours,
             "Projected SPY Level": tradable,
             "Current SPY": current_price,
             "Distance From SPY": distance,
