@@ -38,6 +38,18 @@ def test_half_hour_anchor_normalizes_to_tradingview_hour() -> None:
     assert normalize_tradingview_anchor_time(_df([("2026-04-28T14:30:00", 0, 0, 0, 0)]).index[0]) == _df([("2026-04-28T14:00:00", 0, 0, 0, 0)]).index[0]
 
 
+def test_opening_half_hour_pivot_anchors_to_nine_am_tradingview_candle() -> None:
+    df = _df([
+        ("2026-04-28T08:30:00", 10, 12, 8, 11),
+        ("2026-04-28T09:30:00", 11, 11.5, 10, 10),
+    ])
+    hp = find_high_pivot(df)
+    lp = find_low_pivot(df)
+
+    assert hp.timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
+    assert lp.timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
+
+
 def test_high_pivot_found() -> None:
     df = _df([
         ("2026-04-28T08:30:00", 10, 11, 9, 11),
@@ -57,7 +69,7 @@ def test_low_pivot_found() -> None:
     ])
     p = find_low_pivot(df)
     assert p.price == 8
-    assert p.timestamp == df.index[0] - pd.Timedelta(minutes=30)
+    assert p.timestamp == df.index[0] + pd.Timedelta(minutes=30)
     assert not p.fallback_used
     assert p.candle_color == "red"
 
@@ -151,7 +163,7 @@ def test_secondary_pivots() -> None:
     assert pivots[0].direction == "descending" and pivots[0].price == 9
     assert pivots[1].direction == "ascending" and pivots[1].price == 10.6
     assert pivots[2].direction == "descending" and pivots[2].price == 7.5
-    assert pivots[0].timestamp == _df([("2026-04-28T08:00:00", 0, 0, 0, 0)]).index[0]
+    assert pivots[0].timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
     assert pivots[1].timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
     assert pivots[2].timestamp == _df([("2026-04-28T12:00:00", 0, 0, 0, 0)]).index[0]
     assert [p.timestamp for p in pivots] == sorted([p.timestamp for p in pivots])

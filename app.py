@@ -2462,7 +2462,12 @@ def normalize_tradingview_anchor_time(value) -> pd.Timestamp:
 
 
 def get_tradingview_anchor_time(candle_time: pd.Timestamp) -> pd.Timestamp:
-    return normalize_tradingview_anchor_time(candle_time)
+    ts = pd.Timestamp(candle_time)
+    ct = get_central_tz()
+    ts = ts.tz_localize(ct) if ts.tzinfo is None else ts.tz_convert(ct)
+    if ts.time() == RTH_SESSION_START:
+        return pd.Timestamp(ts.date(), tz=ct) + pd.Timedelta(hours=9)
+    return normalize_tradingview_anchor_time(ts)
 
 
 def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
