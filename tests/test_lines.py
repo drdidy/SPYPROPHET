@@ -28,7 +28,7 @@ def _ts(s: str) -> pd.Timestamp:
 
 
 def test_default_slope_constant() -> None:
-    assert DEFAULT_SLOPE_PER_HOUR == 0.121
+    assert DEFAULT_SLOPE_PER_HOUR == 0.196
 
 
 def test_structure_calibration_reads_env_without_ui(monkeypatch) -> None:
@@ -36,35 +36,43 @@ def test_structure_calibration_reads_env_without_ui(monkeypatch) -> None:
     assert get_structure_calibration() == 0.111
 
 
-def test_hours_since_preserves_normal_overnight_clock_hours() -> None:
+def test_hours_since_uses_tradingview_active_chart_hours() -> None:
     line_desc = DynamicLine("X", 714.46, _ts("2026-04-28T14:00:00"), DEFAULT_SLOPE_PER_HOUR, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
     line_asc = DynamicLine("Y", 714.46, _ts("2026-04-28T14:00:00"), DEFAULT_SLOPE_PER_HOUR, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
     now = _ts("2026-04-29T08:00:00")
 
-    assert line_desc.hours_since(now) == 18
-    assert abs(line_desc.raw_value_at(now) - 712.282) < 1e-9
-    assert line_desc.tradable_value_at(now) == 712.28
-    assert abs(line_asc.raw_value_at(now) - 716.638) < 1e-9
-    assert line_asc.tradable_value_at(now) == 716.64
+    assert line_desc.hours_since(now) == 9
+    assert abs(line_desc.raw_value_at(now) - 712.696) < 1e-9
+    assert line_desc.tradable_value_at(now) == 712.7
+    assert abs(line_asc.raw_value_at(now) - 716.224) < 1e-9
+    assert line_asc.tradable_value_at(now) == 716.22
 
 
-def test_weekend_projection_skips_saturday_and_sunday_but_preserves_overnight_slope() -> None:
+def test_two_pm_to_ten_am_matches_active_chart_calibration_pair() -> None:
+    line = DynamicLine("UD", 714.46, _ts("2026-04-28T14:00:00"), DEFAULT_SLOPE_PER_HOUR, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
+    next_ten = _ts("2026-04-29T10:00:00")
+
+    assert line.hours_since(next_ten) == 11
+    assert line.tradable_value_at(next_ten) == 712.3
+
+
+def test_weekend_projection_skips_closed_chart_hours() -> None:
     friday_anchor = _ts("2026-05-01T09:00:00")
     monday_projection = _ts("2026-05-04T09:00:00")
     line = DynamicLine("UA", 724.87, friday_anchor, DEFAULT_SLOPE_PER_HOUR, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
 
-    assert market_hours_between(friday_anchor, monday_projection) == 24
-    assert line.hours_since(monday_projection) == 24
-    assert line.tradable_value_at(monday_projection) == 727.77
+    assert market_hours_between(friday_anchor, monday_projection) == 15
+    assert line.hours_since(monday_projection) == 15
+    assert line.tradable_value_at(monday_projection) == 727.81
 
 
-def test_friday_close_to_monday_morning_matches_normal_overnight_window() -> None:
+def test_friday_close_to_monday_morning_counts_chart_reopen_window() -> None:
     friday_close = _ts("2026-05-01T15:00:00")
     monday_projection = _ts("2026-05-04T09:00:00")
     line = DynamicLine("UA", 724.87, friday_close, DEFAULT_SLOPE_PER_HOUR, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
 
-    assert market_hours_between(friday_close, monday_projection) == 18
-    assert line.tradable_value_at(monday_projection) == 727.05
+    assert market_hours_between(friday_close, monday_projection) == 9
+    assert line.tradable_value_at(monday_projection) == 726.63
 
 
 def test_calibration_helper() -> None:

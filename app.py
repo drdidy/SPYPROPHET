@@ -25,7 +25,7 @@ SYMBOL = "SPY"
 VIX_SYMBOL = "^VIX"
 CENTRAL_TZ_NAME = "America/Chicago"
 CENTRAL_TZ_ALIASES = (CENTRAL_TZ_NAME, "US/Central")
-DEFAULT_SLOPE_PER_HOUR = 0.121
+DEFAULT_SLOPE_PER_HOUR = 0.196
 STRUCTURE_CALIBRATION_KEYS = ("SPYPROPHET_STRUCTURE_CALIBRATION", "SPYPROPHET_SLOPE_PER_HOUR")
 TARGET_OTM_STRIKE_DISTANCE = 2.0
 FLOW_STRIKE_MAX_OTM_DISTANCE = 3.0
@@ -34,6 +34,8 @@ EXPECTED_OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 TASTYTRADE_SECRET_KEYS = ["TASTYTRADE_CLIENT_ID", "TASTYTRADE_CLIENT_SECRET", "TASTYTRADE_REFRESH_TOKEN"]
 RTH_SESSION_START = time(8, 30)
 RTH_SESSION_END = time(15, 0)
+PROJECTION_SESSION_START = time(3, 0)
+PROJECTION_SESSION_END = time(18, 0)
 NEWS_RSS_FEEDS = (
     ("Yahoo Finance SPY", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US"),
     ("Yahoo Finance VIX", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EVIX&region=US&lang=en-US"),
@@ -258,10 +260,10 @@ def market_hours_between(start_dt: datetime | pd.Timestamp, end_dt: datetime | p
     last_day = end.date()
     while day <= last_day:
         if pd.Timestamp(day).weekday() < 5:
-            day_start = pd.Timestamp(day, tz=ct)
-            day_end = day_start + pd.Timedelta(days=1)
-            left = max(start, day_start)
-            right = min(end, day_end)
+            session_start = pd.Timestamp(day, tz=ct) + pd.Timedelta(hours=PROJECTION_SESSION_START.hour, minutes=PROJECTION_SESSION_START.minute)
+            session_end = pd.Timestamp(day, tz=ct) + pd.Timedelta(hours=PROJECTION_SESSION_END.hour, minutes=PROJECTION_SESSION_END.minute)
+            left = max(start, session_start)
+            right = min(end, session_end)
             if right > left:
                 total_seconds += (right - left).total_seconds()
         day = (pd.Timestamp(day) + pd.Timedelta(days=1)).date()
@@ -2550,8 +2552,8 @@ def build_structure_projection_table(primary_lines: list[DynamicLine], current_d
             "Pivot Price": line.anchor_price,
             "Pivot Candle Closes": line.anchor_time,
             "Projection Time": pd.Timestamp(current_dt),
-            "Projection Method": "Protected weekend-adjusted calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
-            "Projection Hours Since Anchor": hours,
+            "Projection Method": "Protected TradingView active-hours calibration" if not pd.isna(hours) and not pd.isna(line.anchor_price) else "-",
+            "Active Chart Hours Since Anchor": hours,
             "Projected SPY Level": tradable,
             "Current SPY": current_price,
             "Distance From SPY": distance,

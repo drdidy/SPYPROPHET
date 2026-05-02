@@ -83,8 +83,8 @@ def test_high_pivot_projection_uses_candle_close_anchor() -> None:
     assert hp.timestamp == _df([("2026-04-28T15:00:00", 0, 0, 0, 0)]).index[0]
     ua, ud, *_ = build_primary_lines(hp, find_low_pivot(df), DEFAULT_SLOPE_PER_HOUR)
     next_9am = _df([("2026-04-29T09:00:00", 0, 0, 0, 0)]).index[0]
-    assert ua.tradable_value_at(next_9am) == 721.96
-    assert ud.tradable_value_at(next_9am) == 717.6
+    assert ua.tradable_value_at(next_9am) == 721.54
+    assert ud.tradable_value_at(next_9am) == 718.02
 
 
 def test_doji_does_not_invalidate_session_extreme_primary() -> None:
