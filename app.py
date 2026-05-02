@@ -6407,7 +6407,7 @@ def main() -> None:
         if option_state:
             if option_state.entry_target_projection:
                 render_status_strip([
-                    ("Entry premium", fmt_price(option_state.entry_target_projection.estimated_entry_mark)),
+                    ("9am entry premium", fmt_price(option_state.entry_target_projection.estimated_entry_mark)),
                     ("Target premium", fmt_price(option_state.entry_target_projection.estimated_target_mark)),
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
@@ -6514,13 +6514,19 @@ def main() -> None:
             if state.entry_target_projection:
                 p = state.entry_target_projection
                 render_status_strip([
-                    ("Entry premium", fmt_price(p.estimated_entry_mark)),
+                    ("9am entry premium", fmt_price(p.estimated_entry_mark)),
                     ("Target premium", fmt_price(p.estimated_target_mark)),
                     ("Est. P/L", fmt_price(p.estimated_profit_per_contract)),
                     ("Return", f"{p.estimated_return_pct}%"),
                 ])
+                st.caption(
+                    f"Projection uses {display_line_name(p.entry_line_name)} at {fmt_time(p.entry_projection_time)}. "
+                    "This is a delta-only estimate from the current contract mark; actual 0DTE price can move with IV, theta, gamma, liquidity, and bid/ask spread."
+                )
                 if p.option_type=='CALL' and p.entry_line_value < state.underlying_price: st.caption("CALL premium expected to depreciate into entry.")
                 if p.option_type=='PUT' and p.entry_line_value > state.underlying_price: st.caption("PUT premium expected to depreciate into entry.")
+            elif state.selected_trade_quote and not quote_has_projection_inputs(state.selected_trade_quote):
+                st.caption("9am entry premium needs both mark and delta. Delayed yfinance can show mark, but live Tastytrade Greeks are needed for the projection.")
             if state.scenarios:
                 st.dataframe(pd.DataFrame([asdict(x) for x in state.scenarios]))
 
