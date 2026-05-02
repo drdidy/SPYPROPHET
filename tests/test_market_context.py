@@ -50,7 +50,7 @@ def test_technical_context_prefers_hourly_moving_averages() -> None:
     assert round(context.hourly_ma50, 2) == round(sum(range(820, 870)) / 50, 2)
     assert round(context.hourly_ma200, 2) == round(sum(range(670, 870)) / 200, 2)
     assert classify_vix(28.0)[0] == "Stress"
-    assert classify_vix(float("nan"))[0] == "Unavailable"
+    assert classify_vix(float("nan"))[0] == "Pending"
 
 
 def test_spy_pressure_uses_recent_hourly_closes() -> None:

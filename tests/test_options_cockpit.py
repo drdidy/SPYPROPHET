@@ -176,12 +176,12 @@ def test_yfinance_delayed_quotes_are_allowed_for_marks():
                 "iv": 0.22,
                 "provider": "YFINANCE_DELAYED",
                 "timestamp": _ts("2026-04-29T10:00:00"),
-                "warning": "Delayed yfinance quote.",
+                "warning": "Delayed quote.",
             }
             return {
                 "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", **base},
                 "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", **base},
-                "warning": "Using delayed yfinance option data.",
+                "warning": "Using delayed option data.",
             }
 
     state = build_options_cockpit_state(Strikes(712.61,717,708,_ts("2026-04-29").date()), provider=YFinanceProvider())
@@ -189,8 +189,8 @@ def test_yfinance_delayed_quotes_are_allowed_for_marks():
     assert state.provider == "YFINANCE_DELAYED"
     assert state.call_quote.mark == 1.35
     assert state.scenarios == []
-    assert option_provider_label(state) == "YFINANCE delayed"
-    assert "Delayed yfinance price" in option_quote_card_html(state.call_quote, 717, state.warning)
+    assert option_provider_label(state) == "Delayed quotes"
+    assert "Delayed price" in option_quote_card_html(state.call_quote, 717, state.warning)
 
 
 def test_option_state_fallback_centralizes_yfinance_path(monkeypatch):
@@ -235,12 +235,12 @@ def test_option_state_fallback_centralizes_yfinance_path(monkeypatch):
             "iv": 0.21,
             "provider": "YFINANCE_DELAYED",
             "timestamp": _ts("2026-04-29T10:00:00"),
-            "warning": "Delayed yfinance quote.",
+            "warning": "Delayed quote.",
         }
         return {
             "CALL": {"symbol": "SPY_CALL", "strike": call_strike, "option_type": "CALL", **base},
             "PUT": {"symbol": "SPY_PUT", "strike": put_strike, "option_type": "PUT", **base},
-            "warning": "Using delayed yfinance option data.",
+            "warning": "Using delayed option data.",
         }
 
     monkeypatch.setattr("app.fetch_yfinance_option_quotes", delayed_quotes)

@@ -137,7 +137,7 @@ def test_support_refute_scorecard_weights_actionable_context() -> None:
 
     assert scorecard["support"] == 1
     assert scorecard["risk"] == 1
-    assert scorecard["refute"] == 1
+    assert scorecard["caution"] == 1
     assert scorecard["neutral"] == 1
     assert scorecard["net_score"] < 0
 
@@ -170,7 +170,7 @@ def test_filter_near_spy_strikes_removes_far_open_interest() -> None:
 def _bundle() -> MorningBriefingBundle:
     now = pd.Timestamp("2026-05-01 06:30", tz="America/Chicago")
     options = OptionsIntelligence(
-        SourceStatus("Options intelligence", "connected", "Delayed yfinance OI/volume proxy."),
+        SourceStatus("Options intelligence", "connected", "Delayed option-chain OI/volume proxy."),
         1.2,
         0.9,
         588.0,
@@ -186,7 +186,7 @@ def _bundle() -> MorningBriefingBundle:
         "True dealer GEX is not available without GEX_API_URL.",
     )
     technical = TechnicalContext(
-        SourceStatus("Yahoo Finance daily SPY", "connected", "Daily SPY history loaded."),
+        SourceStatus("Yahoo Finance daily SPY", "connected", "Daily SPY history available."),
         589.0,
         584.0,
         587.0,
@@ -235,7 +235,7 @@ def test_prompt_carries_truthful_source_statuses() -> None:
 def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
     result = rule_based_morning_briefing(_bundle(), ai_warning="Live synthesis connection is not configured.")
 
-    assert result.provider == "Rule-based verified briefing"
+    assert result.provider == "Verified internal assessment"
     assert any("Live synthesis connection is not configured" in warning for warning in result.warnings)
     assert "True dealer GEX is not available" not in result.text
     assert any("GEX_API_URL is not configured" in warning for warning in result.warnings)
@@ -579,6 +579,6 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
     assert darkpool["levels"][0]["label"] == "719.50"
-    assert "support or refute an entry" in darkpool["means"]
-    assert read["label"] == "Calls have the flow tailwind"
+    assert "support or caution against an entry" in darkpool["means"]
+    assert read["label"] == "Flow supports calls"
     assert read["tone"] == "call"

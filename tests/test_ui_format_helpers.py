@@ -47,7 +47,7 @@ def test_display_state_labels_hide_internal_enums():
     assert display_state_label("REGULAR_SESSION") == "Session watch"
     assert display_state_label("WAIT_FOR_CONFIRMATION") == "Wait for confirmation"
     assert display_state_label("YFINANCE delayed") == "Delayed quotes"
-    assert display_state_label("YFINANCE_FALLBACK") == "Delayed yfinance quotes"
+    assert display_state_label("YFINANCE_FALLBACK") == "Delayed quotes"
     assert display_state_label("unavailable") == "Needs data"
     assert display_state_label("connected") == "Connected"
     assert display_state_label("not used") == "Not used"
