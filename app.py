@@ -57,6 +57,7 @@ REPLAY_LEARNING_DAYS = 45
 TRADING_ECONOMICS_CALENDAR_URL = "https://api.tradingeconomics.com/calendar/country/united%20states/{start}/{end}"
 TRADING_ECONOMICS_GUEST_CREDENTIAL = "guest:guest"
 MORNING_BRIEFING_PATH = "data/morning_briefings.json"
+FORESIGHT_AUDIT_DIR = "data/foresight_audits"
 MORNING_BRIEFING_NEWS_MAX_AGE_DAYS = 1
 MARKET_MOVING_NEWS_LIMIT = 4
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -247,6 +248,21 @@ class MorningBriefingResult:
     warnings: list[str]
     source_statuses: list[SourceStatus]
     citations: list[dict] | None = None
+
+
+FORESIGHT_SCHEMA_VERSION = "spy_foresight_v2"
+FORESIGHT_REQUIRED_TRADE_FIELDS = {
+    "label": "Structure confirmation required",
+    "trigger_line": "-",
+    "trigger_price": "-",
+    "contract": "No contract until confirmation",
+    "entry_timing": "Next candle open after confirmation",
+    "entry_rule": "Price must reject the trigger line and the next candle must confirm direction.",
+    "stop": "Invalid if SPY closes back through the trigger after entry.",
+    "target": "Nearest valid SPY Prophet target line",
+    "confidence": 45,
+}
+FORESIGHT_ALLOWED_STANCES = {"WAIT", "WATCH_CALL", "WATCH_PUT", "NO_TRADE"}
 
 
 def market_hours_between(start_dt: datetime | pd.Timestamp, end_dt: datetime | pd.Timestamp) -> float:
@@ -1743,7 +1759,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
-        else "No scheduled catalyst loaded for this session."
+        else "No scheduled high-impact catalyst found for this session."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
@@ -1774,8 +1790,147 @@ def briefing_bundle_to_dict(bundle: MorningBriefingBundle) -> dict:
     return json.loads(json.dumps(asdict(bundle), default=str))
 
 
+def normalize_morning_decision(data: dict | None, confidence: int | float | None = None) -> dict | None:
+    if not isinstance(data, dict):
+        return None
+    raw_stance = str(data.get("stance") or "WAIT").upper().strip()
+    stance = raw_stance if raw_stance in FORESIGHT_ALLOWED_STANCES else "WAIT"
+    trade_raw = data.get("primary_trade") if isinstance(data.get("primary_trade"), dict) else {}
+    trade = {**FORESIGHT_REQUIRED_TRADE_FIELDS, **trade_raw}
+    try:
+        trade["confidence"] = int(max(0, min(100, float(trade.get("confidence", confidence or 45)))))
+    except Exception:
+        trade["confidence"] = int(max(0, min(100, float(confidence or 45))))
+    for key in ["label", "trigger_line", "trigger_price", "contract", "entry_timing", "entry_rule", "stop", "target"]:
+        value = str(trade.get(key) or FORESIGHT_REQUIRED_TRADE_FIELDS[key]).strip()
+        trade[key] = value if value else FORESIGHT_REQUIRED_TRADE_FIELDS[key]
+    normalized = {
+        "schema_version": FORESIGHT_SCHEMA_VERSION,
+        "stance": stance,
+        "headline": str(data.get("headline") or "Wait for a confirmed structure trigger.").strip(),
+        "primary_trade": trade,
+        "why": [str(x).strip() for x in data.get("why", []) if str(x).strip()] if isinstance(data.get("why"), list) else [],
+        "avoid": [x for x in data.get("avoid", []) if isinstance(x, dict)] if isinstance(data.get("avoid"), list) else [],
+        "risk_flags": [str(x).strip() for x in data.get("risk_flags", []) if str(x).strip()] if isinstance(data.get("risk_flags"), list) else [],
+        "source_notes": [str(x).strip() for x in data.get("source_notes", []) if str(x).strip()] if isinstance(data.get("source_notes"), list) else [],
+        "novice_summary": str(data.get("novice_summary") or "Await confirmed line rejection, then evaluate the nearest valid OTM contract.").strip(),
+    }
+    if isinstance(data.get("support_refute"), dict):
+        normalized["support_refute"] = data["support_refute"]
+    if isinstance(data.get("desk_reviews"), list):
+        normalized["desk_reviews"] = [row for row in data["desk_reviews"] if isinstance(row, dict)]
+    return normalized
+
+
+def verdict_weight(source: str | None) -> float:
+    weights = {
+        "Option Flow": 2.0,
+        "Dark Pool": 1.5,
+        "Dealer GEX": 1.5,
+        "Catalyst Clock": 2.0,
+        "Technicals": 1.25,
+        "Macro Pulse": 1.0,
+        "Global Tape": 0.75,
+        "Headlines": 0.75,
+    }
+    return weights.get(str(source or ""), 1.0)
+
+
+def support_refute_scorecard(verdicts: list[dict]) -> dict:
+    counts = {"support": 0, "refute": 0, "risk": 0, "neutral": 0}
+    weighted = 0.0
+    strongest: list[str] = []
+    for verdict in verdicts or []:
+        state = str(verdict.get("state") or "neutral")
+        weight = float(verdict.get("weight", verdict_weight(verdict.get("source"))))
+        if state == "aligned":
+            counts["support"] += 1
+            weighted += weight
+        elif state == "opposes":
+            counts["refute"] += 1
+            weighted -= weight
+        elif state == "risk":
+            counts["risk"] += 1
+            weighted -= weight * 0.65
+        else:
+            counts["neutral"] += 1
+        if state in {"aligned", "opposes", "risk"} and len(strongest) < 4:
+            strongest.append(f"{verdict.get('source')}: {verdict.get('title')}")
+    if weighted >= 2.0:
+        read = "External context supports the active setup."
+    elif weighted <= -2.0:
+        read = "External context cautions against the active setup."
+    elif counts["risk"]:
+        read = "External context is mixed with timing or liquidity risk."
+    else:
+        read = "External context is balanced; structure confirmation remains primary."
+    return {**counts, "net_score": round(weighted, 2), "read": read, "strongest": strongest}
+
+
+def build_foresight_desk_reviews(bundle: MorningBriefingBundle, decision: dict | None = None) -> list[dict]:
+    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    verdicts = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
+    scorecard = support_refute_scorecard(verdicts)
+    event = _first_high_impact_event(bundle.economic_events)
+    learning = bundle.learning_profile
+    structure_state = "aligned" if learning.target_first_rate >= learning.stop_first_rate else "risk" if learning.stop_first_rate > learning.target_first_rate else "neutral"
+    flow_verdicts = [row for row in verdicts if row.get("source") in {"Option Flow", "Dark Pool", "Dealer GEX"}]
+    flow_score = support_refute_scorecard(flow_verdicts)
+    risk_count = len([row for row in verdicts if row.get("state") in {"risk", "opposes"}])
+    trade = (decision or {}).get("primary_trade") if isinstance((decision or {}).get("primary_trade"), dict) else {}
+    stance = str((decision or {}).get("stance") or "WAIT")
+    contract = str(trade.get("contract") or "No contract until confirmation")
+    return [
+        {
+            "desk": "Structure",
+            "state": structure_state,
+            "title": learning.confidence_label,
+            "read": f"Matched history shows TP1+ first {fmt_pct(learning.target_first_rate * 100, 0)} and stop first {fmt_pct(learning.stop_first_rate * 100, 0)}.",
+        },
+        {
+            "desk": "Order Flow",
+            "state": "aligned" if flow_score["net_score"] > 0 else "opposes" if flow_score["net_score"] < -0.75 else "neutral",
+            "title": flow_score["read"],
+            "read": f"{flow_score['support']} support, {flow_score['refute']} refute, {flow_score['risk']} risk.",
+        },
+        {
+            "desk": "Catalyst",
+            "state": "risk" if event and str(event.impact).lower() == "high" else "neutral",
+            "title": event.event if event else "No scheduled catalyst",
+            "read": f"{event.time_label}; avoid blind entries around the release." if event else "Structure and flow remain primary.",
+        },
+        {
+            "desk": "Risk",
+            "state": "risk" if risk_count else "aligned" if scorecard["net_score"] > 0 else "neutral",
+            "title": scorecard["read"],
+            "read": f"Support/refute score {scorecard['net_score']}; {risk_count} caution flags.",
+        },
+        {
+            "desk": "Execution",
+            "state": "aligned" if stance in {"WATCH_CALL", "WATCH_PUT"} else "neutral" if stance == "WAIT" else "risk",
+            "title": display_state_label(stance),
+            "read": f"{contract}. Entry remains gated by confirmation at the trigger.",
+        },
+    ]
+
+
+def build_app_decision_context(bundle: MorningBriefingBundle, decision: dict | None = None) -> dict:
+    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    verdicts = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
+    enriched = [{**row, "weight": verdict_weight(row.get("source"))} for row in verdicts]
+    return {
+        "watch_side": watch_side,
+        "entry_price": entry_price,
+        "entry_label": entry_label,
+        "external_verdicts": enriched,
+        "support_refute": support_refute_scorecard(enriched),
+        "desk_reviews": build_foresight_desk_reviews(bundle, decision),
+    }
+
+
 def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
+    app_context = build_app_decision_context(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
         "Act as the SPY Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a same-day SPY options desk.\n"
@@ -1809,9 +1964,12 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
         "  \"avoid\": [{\"label\":\"what to avoid\", \"reason\":\"why\"}],\n"
         "  \"risk_flags\": [\"specific timing/news/liquidity risks\"],\n"
         "  \"source_notes\": [\"short source note, not URLs\"],\n"
-        "  \"novice_summary\": \"One concise execution sentence.\"\n"
+        "  \"novice_summary\": \"One concise execution sentence.\",\n"
+        "  \"support_refute\": {\"support\":0,\"refute\":0,\"risk\":0,\"neutral\":0,\"net_score\":0,\"read\":\"short read\"},\n"
+        "  \"desk_reviews\": [{\"desk\":\"Structure | Order Flow | Catalyst | Risk | Execution\", \"state\":\"aligned | opposes | risk | neutral\", \"title\":\"short title\", \"read\":\"short read\"}]\n"
         "}\n\n"
         f"SCOUT_LIST_JSON:\n{curated}\n\n"
+        f"APP_DECISION_CONTEXT_JSON:\n{json.dumps(app_context, default=str, indent=2)}\n\n"
         f"VERIFIED_DATA_JSON:\n{json.dumps(payload, default=str, indent=2)}"
     )
 
@@ -2046,18 +2204,7 @@ def morning_decision_from_result(result: MorningBriefingResult | None) -> dict |
     if result is None:
         return None
     data = extract_json_payload_from_text(result.text)
-    if not isinstance(data, dict):
-        return None
-    trade = data.get("primary_trade")
-    if not isinstance(trade, dict):
-        trade = {}
-    data["primary_trade"] = trade
-    for key in ["why", "risk_flags", "source_notes"]:
-        if not isinstance(data.get(key), list):
-            data[key] = []
-    if not isinstance(data.get("avoid"), list):
-        data["avoid"] = []
-    return data
+    return normalize_morning_decision(data, result.confidence)
 
 
 def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None) -> dict:
@@ -2090,7 +2237,8 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     if event:
         risk_flags.append(f"High-impact macro event: {event.event} at {event.time_label}.")
     risk_flags.extend(f"{row.get('source')}: {row.get('copy')}" for row in opposing[:2])
-    return {
+    decision = {
+        "schema_version": FORESIGHT_SCHEMA_VERSION,
         "stance": "WAIT",
         "headline": "Wait for a confirmed hourly rejection before choosing a same-day contract.",
         "primary_trade": {
@@ -2112,6 +2260,10 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
         "source_notes": ["Rule-based summary from the loaded SPY Prophet data bundle."],
         "novice_summary": "Await confirmed line rejection, then evaluate the nearest valid OTM contract.",
     }
+    app_context = build_app_decision_context(bundle, decision)
+    decision["support_refute"] = app_context["support_refute"]
+    decision["desk_reviews"] = app_context["desk_reviews"]
+    return decision
 
 
 def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
@@ -2158,7 +2310,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
         readiness_score -= 3
     readiness_score = int(max(15, min(85, readiness_score)))
     lines = "\n".join(f"- {row['name']}: {fmt_price(row['value'])} ({row['role']}, anchor {fmt_price(row['anchor_price'])})" for row in bundle.lines) or "- Structure lines unavailable."
-    event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No scheduled catalyst loaded."
+    event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No scheduled high-impact catalyst found."
     global_lines = "\n".join(f"- {move_line(move)}" for move in bundle.global_context[:8]) or "- Global market data unavailable."
     top_sectors = ", ".join(move_line(move) for move in bundle.sector_context[:3]) or "Unavailable"
     weak_sectors = ", ".join(move_line(move) for move in bundle.sector_context[-3:]) or "Unavailable"
@@ -2256,18 +2408,25 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
         if ai_text:
             base = rule_based_morning_briefing(bundle)
             provider = "SPY Foresight synthesis"
-            decision = extract_json_payload_from_text(ai_text)
-            confidence = base.confidence
-            if isinstance(decision, dict):
-                trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
-                try:
-                    confidence = int(trade.get("confidence") or confidence)
-                except Exception:
-                    confidence = base.confidence
+            raw_decision = extract_json_payload_from_text(ai_text)
             warnings = list(base.warnings)
-            if not isinstance(decision, dict):
-                warnings.insert(0, "SPY Foresight synthesis returned narrative text instead of the structured decision schema.")
-            return MorningBriefingResult(bundle.generated_at, provider, get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL), ai_text, confidence, warnings, bundle.source_statuses, citations)
+            if not isinstance(raw_decision, dict):
+                return rule_based_morning_briefing(bundle, "SPY Foresight synthesis returned non-structured text; rule-based read used.")
+            decision = normalize_morning_decision(raw_decision, base.confidence) or fallback_morning_decision(bundle, base)
+            app_context = build_app_decision_context(bundle, decision)
+            decision["support_refute"] = app_context["support_refute"]
+            decision["desk_reviews"] = app_context["desk_reviews"]
+            confidence = int(decision["primary_trade"].get("confidence") or base.confidence)
+            return MorningBriefingResult(
+                bundle.generated_at,
+                provider,
+                get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
+                json.dumps(decision, indent=2, default=str),
+                confidence,
+                warnings,
+                bundle.source_statuses,
+                citations,
+            )
         return rule_based_morning_briefing(bundle, warning)
     return rule_based_morning_briefing(bundle)
 
@@ -2283,6 +2442,60 @@ def save_morning_briefing(result: MorningBriefingResult, path: str = MORNING_BRI
             rows = []
     rows.append(json.loads(json.dumps(asdict(result), default=str)))
     p.write_text(json.dumps(rows[-60:], indent=2, default=str))
+
+
+def provider_audit_matrix(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> list[dict]:
+    statuses = list(bundle.source_statuses or [])
+    names = {status.name for status in statuses}
+    if "SPY Foresight Synthesis" not in names:
+        statuses.append(SourceStatus("SPY Foresight Synthesis", "connected" if result.model else "internal", "Live synthesis used." if result.model else "Rule-based read used.", result.generated_at))
+    rows = []
+    for status in statuses:
+        rows.append({
+            "name": status.name,
+            "status": status.status,
+            "detail": status.detail,
+            "as_of": status.as_of.isoformat() if isinstance(status.as_of, pd.Timestamp) else str(status.as_of) if status.as_of else None,
+            "url": status.url,
+        })
+    return rows
+
+
+def build_foresight_audit_record(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
+    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    app_context = build_app_decision_context(bundle, decision)
+    decision["support_refute"] = app_context["support_refute"]
+    decision["desk_reviews"] = app_context["desk_reviews"]
+    return {
+        "schema_version": FORESIGHT_SCHEMA_VERSION,
+        "generated_at": pd.Timestamp(result.generated_at).isoformat(),
+        "trade_date": str(pd.Timestamp(bundle.generated_at).date()),
+        "provider": result.provider,
+        "model": result.model,
+        "confidence": result.confidence,
+        "decision": decision,
+        "app_decision_context": app_context,
+        "lines": bundle.lines,
+        "learning": asdict(bundle.learning_profile),
+        "source_statuses": provider_audit_matrix(bundle, result),
+        "citations": merge_citations(result.citations, None),
+    }
+
+
+def save_foresight_decision_audit(bundle: MorningBriefingBundle, result: MorningBriefingResult, directory: str = FORESIGHT_AUDIT_DIR) -> Path:
+    ensure_data_dir(directory)
+    audit_date = pd.Timestamp(bundle.generated_at).date()
+    path = Path(directory) / f"{audit_date}.json"
+    existing = []
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            existing = loaded if isinstance(loaded, list) else [loaded]
+        except Exception:
+            existing = []
+    existing.append(build_foresight_audit_record(bundle, result))
+    path.write_text(json.dumps(existing[-20:], indent=2, default=str))
+    return path
 
 
 def get_primary_anchor_summary(primary_lines: list[DynamicLine] | None) -> dict:
@@ -2898,7 +3111,7 @@ def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side
         copy = "Flow agrees with the current structure watch. Still wait for SPY Prophet confirmation at the line."
         state = "aligned"
     else:
-        title = f"Conflicts with {display_state_label(watch_side).lower()} setup"
+        title = f"Caution for {display_state_label(watch_side).lower()} setup"
         copy = "Flow leans the other way, so require a cleaner rejection or wait."
         state = "opposes"
     reason_text = "; ".join(read.get("reasons") or [])
@@ -2922,7 +3135,7 @@ def alignment_title(state: str, label: str, direction: str | None = None, watch_
     if state == "aligned":
         return f"Supports {display_state_label(setup_side).lower()} setup" if setup_side else "Supports setup"
     if state == "opposes":
-        return f"Conflicts with {display_state_label(watch_side).lower()} setup" if watch_side else "Conflicts with setup"
+        return f"Caution for {display_state_label(watch_side).lower()} setup" if watch_side else "Caution for setup"
     if state == "risk":
         return "Timing Risk"
     return label
@@ -3060,20 +3273,21 @@ def external_context_verdicts(
     verdicts: list[dict] = []
     side = str(watch_side or "").upper()
     flow = premium_flow_alignment(bundle.options_intelligence, side)
-    verdicts.append({"source": "Option Flow", "state": flow.get("state") or "neutral", "title": flow.get("title") or "Flow Pressure", "copy": flow.get("copy") or "Flow unavailable."})
+    verdicts.append({"source": "Option Flow", "state": flow.get("state") or "neutral", "title": flow.get("title") or "Flow Pressure", "copy": flow.get("copy") or "Flow unavailable.", "weight": verdict_weight("Option Flow")})
 
     whales = premium_flow_payload(bundle.options_intelligence)
     darkpool = whales.get("darkpool") if isinstance(whales, dict) else {}
     dp = darkpool_entry_read(darkpool, entry_price, side, entry_label, current_price)
-    verdicts.append({"source": "Dark Pool", "state": dp.get("state") or "neutral", "title": dp.get("title") or "Dark Pool", "copy": dp.get("copy") or "Dark-pool levels unavailable."})
+    verdicts.append({"source": "Dark Pool", "state": dp.get("state") or "neutral", "title": dp.get("title") or "Dark Pool", "copy": dp.get("copy") or "Dark-pool levels unavailable.", "weight": verdict_weight("Dark Pool")})
 
-    verdicts.append(gamma_entry_alignment(bundle.options_intelligence, side))
+    gamma_verdict = gamma_entry_alignment(bundle.options_intelligence, side)
+    verdicts.append({**gamma_verdict, "weight": verdict_weight(gamma_verdict.get("source"))})
 
     high_event = _first_high_impact_event(bundle.economic_events)
     if high_event and str(high_event.impact).lower() == "high":
-        verdicts.append({"source": "Catalyst Clock", "state": "risk", "title": "High-impact timing risk", "copy": f"{high_event.event} at {high_event.time_label}; avoid entries immediately before the release."})
+        verdicts.append({"source": "Catalyst Clock", "state": "risk", "title": "High-impact timing risk", "copy": f"{high_event.event} at {high_event.time_label}; avoid entries immediately before the release.", "weight": verdict_weight("Catalyst Clock")})
     elif high_event:
-        verdicts.append({"source": "Catalyst Clock", "state": "neutral", "title": "Scheduled catalyst", "copy": f"{high_event.event} at {high_event.time_label}."})
+        verdicts.append({"source": "Catalyst Clock", "state": "neutral", "title": "Scheduled catalyst", "copy": f"{high_event.event} at {high_event.time_label}.", "weight": verdict_weight("Catalyst Clock")})
 
     for source, direction_func, args in [
         ("Global Tape", global_tape_direction, (bundle.global_context,)),
@@ -3083,7 +3297,7 @@ def external_context_verdicts(
     ]:
         direction, copy = direction_func(*args)
         state = alignment_state_for_side(direction, side)
-        verdicts.append({"source": source, "state": state, "title": alignment_title(state, source, direction, side), "copy": copy})
+        verdicts.append({"source": source, "state": state, "title": alignment_title(state, source, direction, side), "copy": copy, "weight": verdict_weight(source)})
 
     order = {"opposes": 0, "risk": 1, "aligned": 2, "neutral": 3, "unavailable": 4}
     return sorted(verdicts, key=lambda row: order.get(str(row.get("state")), 5))
@@ -3885,6 +4099,7 @@ def inject_global_css() -> None:
     .morning-line-card.put{border-color:rgba(255,95,124,.34);--wash:rgba(255,95,124,.18)}
     .morning-line-card.neutral{--wash:rgba(103,183,255,.16)}
     .morning-dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+    .decision-stack-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:12px}
     .morning-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(18,28,42,.9),rgba(9,14,21,.96));padding:14px;min-height:168px;display:flex;flex-direction:column}
     .morning-card.green{border-color:rgba(46,204,113,.34)}.morning-card.red{border-color:rgba(255,95,124,.34)}.morning-card.amber{border-color:rgba(245,196,81,.36)}.morning-card.blue{border-color:rgba(103,183,255,.34)}
     .morning-card-head{display:flex;align-items:center;gap:10px}
@@ -3994,7 +4209,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.decision-stack-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -4127,7 +4342,13 @@ def display_state_label(value: str | None) -> str:
     text = _humanize(value)
     labels = {
         "CONNECTED": "Connected",
+        "ALIGNED": "Supports",
+        "OPPOSES": "Cautions",
+        "RISK": "Risk",
+        "NEUTRAL": "Neutral",
         "WAIT": "Wait",
+        "WATCH CALL": "Watch call",
+        "WATCH PUT": "Watch put",
         "WAIT FOR CONFIRMATION": "Wait for confirmation",
         "WAIT FOR RETEST": "Wait for retest",
         "TRADE ALLOWED": "Trade allowed",
@@ -4572,7 +4793,7 @@ def darkpool_entry_read(
         state = "opposes"
         direction = "below" if nearest["price"] < anchor else "above"
         copy = f"Nearest large dark-pool level is {direction} the {display_state_label(side).lower()} entry at {fmt_price(nearest['price'])}; treat it as a pullback/chop risk unless rejection is strong."
-        title = f"Conflicts with {display_state_label(side).lower()} setup"
+        title = f"Caution for {display_state_label(side).lower()} setup"
     else:
         state = "neutral"
         title = f"Largest level {fmt_price(largest['price'])}"
@@ -4838,7 +5059,7 @@ def render_economic_calendar(events: list[EconomicEvent]) -> None:
             "<div class='calendar-row'>"
             "<div class='calendar-event'>No scheduled catalyst</div>"
             "<div class='calendar-meta'><span>Current session</span></div>"
-            "<div class='calendar-notes'>No scheduled catalyst loaded for this session.</div>"
+            "<div class='calendar-notes'>No scheduled high-impact catalyst found for this session.</div>"
             "</div>"
         )
     st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
@@ -5429,6 +5650,27 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     st.markdown(f"<div class='morning-dashboard'>{''.join(cards[:4])}</div>", unsafe_allow_html=True)
 
 
+def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
+    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    reviews = build_foresight_desk_reviews(bundle, decision)
+    if not reviews:
+        return
+    tone_map = {"aligned": "green", "opposes": "red", "risk": "amber", "neutral": "blue", "unavailable": "blue"}
+    icon_map = {"Structure": "compass", "Order Flow": "pulse", "Catalyst": "clock", "Risk": "shield", "Execution": "target"}
+    cards = [
+        _morning_card_html(
+            str(row.get("desk") or "Read"),
+            str(row.get("title") or "-"),
+            str(row.get("read") or ""),
+            icon_map.get(str(row.get("desk") or ""), "target"),
+            tone_map.get(str(row.get("state") or "neutral"), "blue"),
+        )
+        for row in reviews[:5]
+    ]
+    st.markdown("<div class='section-kicker'>Decision Stack</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='decision-stack-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
 def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
     watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
     verdicts = [row for row in external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price) if str(row.get("state") or "") != "unavailable"]
@@ -5480,7 +5722,7 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_source = "Macro Calendar" if event else "No scheduled catalyst"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No scheduled catalyst loaded for this session."
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No scheduled high-impact catalyst found for this session."
     event_state = "connected" if event else "watch"
     quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded."
@@ -5648,6 +5890,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
             if calendar_citations:
                 result = result_with_extra_citations(result, calendar_citations)
             save_morning_briefing(result)
+            save_foresight_decision_audit(working_bundle, result)
             st.session_state["morning_briefing_result"] = result
             st.session_state["morning_briefing_bundle"] = working_bundle
             active_bundle = working_bundle
@@ -5659,6 +5902,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_briefing_hero(active_bundle, result, ai_ready)
     render_morning_action_panel(active_bundle, result)
     render_morning_lines_deck(active_bundle)
+    render_foresight_decision_stack(active_bundle, result)
     render_morning_context_deck(active_bundle)
     render_external_verdict_deck(active_bundle)
     render_order_flow_board(active_bundle.options_intelligence)

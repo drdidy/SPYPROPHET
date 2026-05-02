@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 from app import (
@@ -16,6 +18,9 @@ from app import (
     build_openai_calendar_prompt,
     build_openai_request_payload,
     build_morning_briefing_prompt,
+    build_app_decision_context,
+    build_foresight_audit_record,
+    build_foresight_desk_reviews,
     economic_event_from_ai_calendar_dict,
     darkpool_entry_read,
     darkpool_ranked_levels,
@@ -32,9 +37,12 @@ from app import (
     unusual_whales_card_data,
     merge_citations,
     morning_decision_from_result,
+    normalize_morning_decision,
     calculate_max_pain,
     filter_near_spy_strikes,
     rule_based_morning_briefing,
+    save_foresight_decision_audit,
+    support_refute_scorecard,
 )
 
 
@@ -115,8 +123,31 @@ def test_external_verdict_opposing_title_names_active_setup_side() -> None:
     by_source = {row["source"]: row for row in verdicts}
 
     assert by_source["Technicals"]["state"] == "opposes"
-    assert by_source["Technicals"]["title"] == "Conflicts with put setup"
+    assert by_source["Technicals"]["title"] == "Caution for put setup"
     assert "SPY above" in by_source["Technicals"]["copy"]
+
+
+def test_support_refute_scorecard_weights_actionable_context() -> None:
+    scorecard = support_refute_scorecard([
+        {"source": "Option Flow", "state": "aligned", "title": "Calls supported"},
+        {"source": "Catalyst Clock", "state": "risk", "title": "CPI timing"},
+        {"source": "Headlines", "state": "opposes", "title": "Risk-off headlines"},
+        {"source": "Global Tape", "state": "neutral", "title": "Mixed"},
+    ])
+
+    assert scorecard["support"] == 1
+    assert scorecard["risk"] == 1
+    assert scorecard["refute"] == 1
+    assert scorecard["neutral"] == 1
+    assert scorecard["net_score"] < 0
+
+
+def test_foresight_desk_reviews_cover_execution_stack() -> None:
+    decision = fallback_morning_decision(_bundle())
+    reviews = build_foresight_desk_reviews(_bundle(), decision)
+
+    assert [row["desk"] for row in reviews] == ["Structure", "Order Flow", "Catalyst", "Risk", "Execution"]
+    assert any(row["state"] == "risk" for row in reviews)
 
 
 def test_calculate_max_pain_uses_open_interest() -> None:
@@ -191,6 +222,9 @@ def test_prompt_carries_truthful_source_statuses() -> None:
     assert "Do not invent unavailable options flow" in prompt
     assert "Return ONLY valid JSON" in prompt
     assert '"primary_trade"' in prompt
+    assert "APP_DECISION_CONTEXT_JSON" in prompt
+    assert '"support_refute"' in prompt
+    assert '"desk_reviews"' in prompt
     assert "SCOUT_LIST_JSON" in prompt
     assert "Tradytics" in prompt
     assert "GEX_API_URL is not configured" in prompt
@@ -248,8 +282,27 @@ def test_morning_decision_parser_reads_structured_ai_output() -> None:
 
     assert decision is not None
     assert decision["stance"] == "WATCH_PUT"
+    assert decision["schema_version"] == "spy_foresight_v2"
     assert decision["primary_trade"]["contract"] == "PUT 718"
+    assert decision["primary_trade"]["entry_rule"]
     assert decision["avoid"][0]["label"] == "Chase"
+
+
+def test_normalize_morning_decision_enforces_required_schema() -> None:
+    decision = normalize_morning_decision({"stance": "BUY_NOW", "primary_trade": {"confidence": 101}}, 44)
+
+    assert decision["stance"] == "WAIT"
+    assert decision["schema_version"] == "spy_foresight_v2"
+    assert decision["primary_trade"]["confidence"] == 100
+    assert decision["primary_trade"]["contract"] == "No contract until confirmation"
+
+
+def test_app_decision_context_includes_weighted_verdicts() -> None:
+    context = build_app_decision_context(_bundle())
+
+    assert context["support_refute"]["risk"] >= 1
+    assert context["desk_reviews"]
+    assert all("weight" in row for row in context["external_verdicts"])
 
 
 def test_merge_citations_dedupes_normalized_urls() -> None:
@@ -291,6 +344,30 @@ def test_fallback_decision_hides_contract_until_confirmation() -> None:
     decision = fallback_morning_decision(bundle)
 
     assert decision["primary_trade"]["contract"] == "No contract until confirmation"
+    assert decision["support_refute"]["risk"] >= 1
+    assert decision["desk_reviews"]
+
+
+def test_foresight_audit_file_records_daily_decision(tmp_path) -> None:
+    bundle = _bundle()
+    result = rule_based_morning_briefing(bundle)
+
+    path = save_foresight_decision_audit(bundle, result, directory=str(tmp_path))
+    rows = json.loads(path.read_text())
+
+    assert path.name == "2026-05-01.json"
+    assert rows[0]["schema_version"] == "spy_foresight_v2"
+    assert rows[0]["decision"]["support_refute"]
+    assert rows[0]["source_statuses"]
+
+
+def test_foresight_audit_record_contains_provider_matrix() -> None:
+    bundle = _bundle()
+    result = rule_based_morning_briefing(bundle)
+    record = build_foresight_audit_record(bundle, result)
+
+    assert record["app_decision_context"]["external_verdicts"]
+    assert any(row["name"] == "SPY Foresight Synthesis" for row in record["source_statuses"])
 
 
 def test_ai_calendar_event_requires_exact_date_time_and_source() -> None:
