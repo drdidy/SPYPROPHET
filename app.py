@@ -5277,6 +5277,17 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         idx = times.index(pd.Timestamp(ts)) if pd.Timestamp(ts) in times else len(times) - 1
         return x0 + (idx / (len(times) - 1)) * (x1 - x0)
 
+    def x_for_elapsed(ts):
+        ts = pd.Timestamp(ts)
+        first, last = pd.Timestamp(times[0]), pd.Timestamp(times[-1])
+        if len(times) <= 1 or last <= first:
+            return (x0 + x1) / 2
+        if ts in times:
+            return x_for(ts)
+        elapsed = (ts - first).total_seconds()
+        total = (last - first).total_seconds()
+        return x0 + (elapsed / total) * (x1 - x0)
+
     def y_for(value):
         if value is None or pd.isna(value):
             return (y0 + y1) / 2
@@ -5355,6 +5366,17 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         y = y0 + (i / 4) * (y1 - y0)
         val = hi - (i / 4) * (hi - lo)
         grid.append(f"<line x1='{x0}' y1='{y:.2f}' x2='{x1}' y2='{y:.2f}' class='grid-line'/><text x='32' y='{y + 4:.2f}' class='axis-label'>{val:.2f}</text>")
+    decision_ts = get_structure_projection_time(times[0])
+    decision_marker = ""
+    if pd.Timestamp(times[0]) <= decision_ts <= pd.Timestamp(times[-1]):
+        decision_x = x_for_elapsed(decision_ts)
+        decision_marker = (
+            f"<g class='decision-time-marker'>"
+            f"<line x1='{decision_x:.2f}' y1='{y0}' x2='{decision_x:.2f}' y2='{y1}'/>"
+            f"<rect x='{decision_x - 44:.2f}' y='{y0 - 30}' width='88' height='22' rx='7'/>"
+            f"<text x='{decision_x:.2f}' y='{y0 - 15}' text-anchor='middle'>9 AM Decision</text>"
+            f"</g>"
+        )
 
     latest_label = fmt_time(times[-1]) if times else "-"
     first_label = fmt_time(times[0]) if times else "-"
@@ -5379,6 +5401,9 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
       .svg-map-badge{{border:1px solid #314357;border-radius:999px;padding:7px 11px;color:#b9dcfb;background:#151f2b;font-size:12px;font-weight:750;white-space:nowrap}}
       .grid-line{{stroke:#243244;stroke-width:1;opacity:.72}}
       .axis-label{{fill:#9aa7b5;font-size:12px;font-weight:650}}
+      .decision-time-marker line{{stroke:#f4c76b;stroke-width:1.6;stroke-dasharray:8 8;opacity:.92}}
+      .decision-time-marker rect{{fill:#151f2b;stroke:#f4c76b;stroke-width:1;opacity:.96}}
+      .decision-time-marker text{{fill:#f8dfa0;font-size:11px;font-weight:850;letter-spacing:0}}
       .zone-upper{{fill:#4ea8de;opacity:.10}}
       .zone-lower{{fill:#f45d75;opacity:.08}}
       .rail{{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-dasharray:8 10;animation:railFlow 9s linear infinite}}
@@ -5411,6 +5436,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         <rect x='0' y='0' width='{width}' height='{height - 96}' rx='8' fill='#0d131d'/>
         <rect x='{x0}' y='{y0}' width='{x1 - x0}' height='{y1 - y0}' rx='8' fill='#111821' stroke='#243244'/>
         {''.join(grid)}
+        {decision_marker}
         {"<polygon points='" + upper_poly + "' class='zone-upper'/>" if upper_poly else ""}
         {"<polygon points='" + lower_poly + "' class='zone-lower'/>" if lower_poly else ""}
         {''.join(targets)}

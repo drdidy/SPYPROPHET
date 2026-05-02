@@ -75,3 +75,17 @@ def test_animated_structure_map_svg():
     assert "Upper Put Trigger" in html
     assert "SPY 101.20" in html
     assert "Candlestick" not in html
+
+
+def test_structure_map_marks_nine_am_decision_time():
+    idx = pd.DatetimeIndex([
+        _ts("2026-04-28T03:00:00"),
+        _ts("2026-04-28T09:00:00"),
+        _ts("2026-04-28T10:00:00"),
+    ])
+    df = pd.DataFrame({"Open":[100,101,102],"High":[101,102,103],"Low":[99,100,101],"Close":[100.5,101.5,102.5]}, index=idx)
+
+    html = build_structure_map_svg(df, _lines(), [], [], None, 102.5, _ts("2026-04-28T10:00:00"), title="Test Map")
+
+    assert "9 AM Decision" in html
+    assert "decision-time-marker" in html
