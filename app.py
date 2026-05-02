@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time
 from email.utils import parsedate_to_datetime
 from html import escape, unescape
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +18,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 import plotly.graph_objects as go
-from PIL import Image, ImageDraw, ImageFont
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -4770,255 +4768,6 @@ def _morning_card_html(title: str, value: str, copy: str, icon: str, tone: str =
     )
 
 
-def _report_font(size: int, bold: bool = False):
-    names = (
-        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
-        "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf",
-        "arialbd.ttf" if bold else "arial.ttf",
-    )
-    for name in names:
-        try:
-            return ImageFont.truetype(name, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-
-def _report_text(value) -> str:
-    text = str(value if value is not None else "-")
-    return text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"').replace("\u2013", "-").replace("\u2014", "-")
-
-
-def _draw_wrapped(draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int], width: int, font, fill: str, max_lines: int = 4, line_gap: int = 6) -> int:
-    words = _report_text(text).split()
-    if not words:
-        return xy[1]
-    lines: list[str] = []
-    line = ""
-    for word in words:
-        candidate = f"{line} {word}".strip()
-        if draw.textlength(candidate, font=font) <= width or not line:
-            line = candidate
-        else:
-            lines.append(line)
-            line = word
-        if len(lines) >= max_lines:
-            break
-    if len(lines) < max_lines and line:
-        lines.append(line)
-    if words and len(lines) == max_lines:
-        consumed = " ".join(lines).split()
-        if len(consumed) < len(words):
-            while lines[-1] and draw.textlength(lines[-1] + "...", font=font) > width:
-                lines[-1] = lines[-1][:-1].rstrip()
-            lines[-1] = lines[-1] + "..."
-    y = xy[1]
-    bbox = draw.textbbox((0, 0), "Ag", font=font)
-    line_h = bbox[3] - bbox[1]
-    for item in lines:
-        draw.text((xy[0], y), item, font=font, fill=fill)
-        y += line_h + line_gap
-    return y
-
-
-def _report_card(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill: str, outline: str = "#2b3a4f", radius: int = 14) -> None:
-    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=2)
-
-
-def _report_safe_confidence(value) -> int:
-    try:
-        if value is None or pd.isna(value):
-            return 45
-        return int(max(0, min(100, float(value))))
-    except Exception:
-        return 45
-
-
-def _report_line_rows(bundle: MorningBriefingBundle) -> list[dict]:
-    rows = list(bundle.lines or [])[:4]
-    while len(rows) < 4:
-        rows.append({"name": "Trigger pending", "role": "-", "value": float("nan"), "anchor_price": float("nan"), "anchor_time": "-"})
-    return rows
-
-
-def _report_bullets(decision: dict, bundle: MorningBriefingBundle) -> list[str]:
-    why = [str(item) for item in decision.get("why", []) if str(item).strip()]
-    if why:
-        return why[:3]
-    event = _first_high_impact_event(bundle.economic_events)
-    flow_value, _, _, _ = unusual_whales_card_data(bundle.options_intelligence)
-    return [
-        f"Structure learning is {bundle.learning_profile.confidence_label}.",
-        f"Flow pressure: {flow_value or 'No premium flow loaded'}.",
-        f"Catalyst timing: {event.event + ' at ' + event.time_label if event else 'No timed catalyst loaded'}.",
-    ]
-
-
-def _report_risks(decision: dict, bundle: MorningBriefingBundle) -> list[str]:
-    risks = [str(item) for item in decision.get("risk_flags", []) if str(item).strip()]
-    avoid = []
-    for row in decision.get("avoid", []) or []:
-        avoid.append(f"{row.get('label')}: {row.get('reason')}" if isinstance(row, dict) else str(row))
-    merged = (risks + avoid)[:3]
-    return merged or ["Do not chase between lines; wait for confirmation at the trigger."]
-
-
-def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes:
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
-    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
-    confidence = _report_safe_confidence(trade.get("confidence", result.confidence))
-    stance = display_state_label(str(decision.get("stance") or "WAIT").upper())
-    tone, label = _morning_confidence_tone(confidence)
-    tone_color = {"green": "#167a3a", "blue": "#0f4c94", "amber": "#a76600", "red": "#a81420"}.get(tone, "#0f4c94")
-    generated = pd.Timestamp(result.generated_at).tz_convert(get_central_tz()) if pd.Timestamp(result.generated_at).tzinfo else pd.Timestamp(result.generated_at, tz=get_central_tz())
-    event = _first_high_impact_event(bundle.economic_events)
-    whale_value, whale_copy, whale_chips, whale_tone = unusual_whales_card_data(bundle.options_intelligence)
-    gex_card = unusual_whales_gex_card_data(bundle.options_intelligence)
-    quote_value, quote_copy, quote_chips = _first_quote_label(bundle.options_intelligence)
-    lines = _report_line_rows(bundle)
-
-    img = Image.new("RGB", (1200, 1800), "#06101a")
-    draw = ImageDraw.Draw(img)
-    title = _report_font(46, True)
-    h2 = _report_font(24, True)
-    h3 = _report_font(20, True)
-    body = _report_font(18)
-    body_bold = _report_font(18, True)
-    small = _report_font(15)
-    tiny = _report_font(13)
-    mono = _report_font(30, True)
-
-    draw.rectangle((0, 0, 1200, 1800), fill="#050b12")
-    _report_card(draw, (18, 18, 1182, 188), "#07121f", "#314357", 14)
-    draw.ellipse((44, 46, 124, 126), outline="#f4c76b", width=3)
-    draw.ellipse((68, 72, 100, 100), outline="#f4c76b", width=3)
-    draw.line((44, 86, 124, 86), fill="#f4c76b", width=2)
-    title_x = 152
-    title_y = 46
-    draw.text((title_x, title_y), "SPY PROPHET", font=title, fill="#f8fbff")
-    draw.text((title_x + int(draw.textlength("SPY PROPHET", font=title)) + 22, title_y), "MORNING BRIEF", font=title, fill="#f4c76b")
-    draw.text((154, 112), "Actionable 0DTE plan for today's SPY Prophet lines", font=h2, fill="#f8fbff")
-    draw.text((154, 150), "Foresight Engine", font=body_bold, fill="#f8fbff")
-    draw.ellipse((340, 154, 356, 170), fill="#2ecc71")
-    draw.text((370, 150), "Generated from loaded structure, flow, macro, and option context.", font=body, fill="#c7d2e2")
-    _report_card(draw, (910, 34, 1162, 176), "#0a1624", "#53657c", 10)
-    draw.text((934, 58), "TIMING", font=h3, fill="#f8fbff")
-    draw.text((934, 92), generated.strftime("%Y-%m-%d"), font=h2, fill="#f8fbff")
-    draw.text((934, 126), generated.strftime("%H:%M %Z"), font=h2, fill="#f8fbff")
-
-    _report_card(draw, (18, 206, 324, 738), "#f5f7fb", "#b9c8da", 12)
-    draw.text((82, 234), "ACTION BRIEF", font=h2, fill="#0f3d83")
-    draw.line((44, 286, 298, 286), fill="#b9c8da", width=2)
-    draw.text((72, 326), stance, font=_report_font(66, True), fill="#0f4c94")
-    draw.line((54, 430, 288, 430), fill="#b9c8da", width=2)
-    draw.text((92, 464), f"{confidence}%", font=_report_font(72, True), fill="#030b18")
-    draw.text((76, 548), label.upper(), font=h2, fill=tone_color)
-    draw.ellipse((112, 604, 226, 718), fill=tone_color)
-    draw.text((143, 625), "0DTE", font=h3, fill="#ffffff")
-    draw.text((146, 654), "PLAN", font=h3, fill="#ffffff")
-
-    _report_card(draw, (334, 206, 628, 738), "#f5f7fb", "#b9c8da", 12)
-    draw.text((362, 242), "STANCE", font=h3, fill="#111827")
-    draw.text((362, 308), stance, font=_report_font(42, True), fill="#030b18")
-    _draw_wrapped(draw, decision.get("novice_summary") or decision.get("headline") or "Wait for a confirmed structure trigger.", (362, 380), 230, body, "#111827", 5)
-    draw.line((362, 500, 600, 500), fill="#c5cedb", width=2)
-    _draw_wrapped(draw, trade.get("label") or "Structure confirmation required", (362, 546), 230, body_bold, "#111827", 5)
-    _draw_wrapped(draw, decision.get("headline") or "Let structure lead.", (362, 650), 230, small, "#0f4c94", 3)
-
-    _report_card(draw, (638, 206, 1182, 738), "#f5f7fb", "#b9c8da", 12)
-    rows = [
-        ("TRIGGER", str(trade.get("trigger_line") or "-"), f"Trigger price {trade.get('trigger_price') or '-'}"),
-        ("CONTRACT", str(trade.get("contract") or quote_value), "Use only the listed OTM contract after confirmation."),
-        ("ENTRY RULE", str(trade.get("entry_timing") or "Next candle open after confirmation"), str(trade.get("entry_rule") or "Reject the trigger line; next candle confirms direction.")),
-        ("INVALIDATION", str(trade.get("stop") or "Invalid if SPY closes back through the trigger."), "If this happens, the setup is no longer valid."),
-        ("TARGET", str(trade.get("target") or "Nearest valid SPY Prophet target line"), f"Confidence {confidence}%"),
-    ]
-    y = 232
-    for label_txt, value_txt, copy_txt in rows:
-        draw.text((668, y + 8), label_txt, font=body_bold, fill="#111827")
-        _draw_wrapped(draw, value_txt, (818, y), 330, body_bold, "#111827", 2)
-        _draw_wrapped(draw, copy_txt, (818, y + 42), 330, small, "#111827", 2)
-        draw.line((660, y + 88, 1160, y + 88), fill="#d0d7e2", width=1)
-        y += 98
-
-    _report_card(draw, (18, 752, 1182, 1122), "#f5f7fb", "#b9c8da", 12)
-    draw.text((48, 782), "SPY PROPHET TRIGGER LINES", font=h3, fill="#0d2d62")
-    card_w = 262
-    x = 42
-    for line in lines:
-        role = str(line.get("role") or "")
-        is_pending = str(line.get("name") or "").lower() == "trigger pending"
-        is_call = "call" in role.lower()
-        color = "#6b7280" if is_pending else "#166534" if is_call else "#b91c1c"
-        _report_card(draw, (x, 836, x + card_w, 1098), "#fbfdff", color, 10)
-        draw.text((x + 22, 860), _report_text(line.get("name") or "-").upper(), font=small, fill=color)
-        draw.text((x + 78, 922), _report_text(role).upper(), font=body_bold, fill="#111827")
-        draw.text((x + 54, 964), fmt_price(line.get("value")), font=mono, fill=color)
-        draw.line((x + 34, 1018, x + card_w - 34, 1018), fill="#4b5563", width=2)
-        draw.text((x + 96, 1032), "ANCHOR", font=small, fill="#111827")
-        draw.text((x + 94, 1054), fmt_price(line.get("anchor_price")), font=body_bold, fill="#111827")
-        _draw_wrapped(draw, line.get("anchor_time") or "-", (x + 28, 1076), card_w - 56, tiny, "#111827", 1)
-        x += card_w + 20
-
-    panel_y = 1140
-    panel_h = 250
-    panels = [
-        ("WHY THIS MATTERS", _report_bullets(decision, bundle), "#67b7ff"),
-        ("CATALYST CLOCK", [f"{event.event} at {event.time_label}" if event else "No timed catalyst loaded", event.notes or event.source if event else "Structure and flow must do the work."], "#b47cff"),
-        ("FLOW PRESSURE", [whale_value or "No premium flow loaded", whale_copy] + whale_chips[:2], "#75b65a"),
-        ("DEALER GAMMA", [gex_card[0], gex_card[1]] + gex_card[2][:2] if gex_card else [bundle.gamma_insight.dealer_tone, bundle.gamma_insight.notes], "#f4c76b"),
-        ("AVOID / RISK", _report_risks(decision, bundle), "#ff9f2f"),
-        ("CONTRACT WATCH", [quote_value, quote_copy] + quote_chips[:2], "#67b7ff"),
-    ]
-    for i, (heading, bullets, color) in enumerate(panels):
-        col = i % 3
-        row = i // 3
-        px = 18 + col * 388
-        py = panel_y + row * (panel_h + 16)
-        _report_card(draw, (px, py, px + 372, py + panel_h), "#07121f", "#314357", 12)
-        draw.text((px + 28, py + 24), heading, font=h3, fill=color)
-        yy = py + 72
-        clean_bullets = [str(bullet) for bullet in bullets if str(bullet).strip()]
-        for bullet in (clean_bullets or ["Context unavailable for this run."])[:4]:
-            draw.ellipse((px + 30, yy + 8, px + 40, yy + 18), fill=color)
-            yy = _draw_wrapped(draw, bullet, (px + 52, yy), 292, body, "#f2f6fb", 2, 5) + 8
-
-    _report_card(draw, (18, 1690, 1182, 1778), "#07121f", "#314357", 12)
-    draw.text((48, 1718), "Discipline at the trigger. Patience for the edge. Let structure lead.", font=h3, fill="#f8fbff")
-    draw.text((830, 1718), "SPY PROPHET FORESIGHT ENGINE", font=body_bold, fill="#c7d2e2")
-
-    out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
-    return out.getvalue()
-
-
-def build_morning_briefing_report_pdf(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes:
-    png = build_morning_briefing_report_png(bundle, result)
-    img = Image.open(BytesIO(png)).convert("RGB")
-    out = BytesIO()
-    img.save(out, format="PDF", resolution=144.0)
-    return out.getvalue()
-
-
-def render_morning_report_export(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
-    try:
-        png = build_morning_briefing_report_png(bundle, result)
-        pdf = build_morning_briefing_report_pdf(bundle, result)
-    except Exception as e:
-        render_warning_panel(f"Daily briefing export could not be generated: {type(e).__name__}")
-        return
-    ts = pd.Timestamp(result.generated_at).tz_convert(get_central_tz()) if pd.Timestamp(result.generated_at).tzinfo else pd.Timestamp(result.generated_at, tz=get_central_tz())
-    stamp = ts.strftime("%Y-%m-%d")
-    st.markdown(
-        "<div class='terminal-panel'><div class='panel-label'>Daily Brief Export</div><div class='panel-title'>Shareable Morning Brief</div><div class='panel-copy'>A polished snapshot generated from the current Foresight read, trigger lines, flow, gamma, catalyst, and contract context.</div></div>",
-        unsafe_allow_html=True,
-    )
-    st.image(png, use_container_width=True)
-    c1, c2 = st.columns(2)
-    c1.download_button("Download briefing image", data=png, file_name=f"spy_prophet_morning_brief_{stamp}.png", mime="image/png", use_container_width=True)
-    c2.download_button("Download briefing PDF", data=pdf, file_name=f"spy_prophet_morning_brief_{stamp}.pdf", mime="application/pdf", use_container_width=True)
-
-
 def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningBriefingResult, ai_ready: bool) -> None:
     tone, label = _morning_confidence_tone(result.confidence)
     ring = {"green": "#2ecc71", "blue": "#67b7ff", "amber": "#f5c451", "red": "#ff5f7c"}.get(tone, "#67b7ff")
@@ -5436,7 +5185,6 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_lines_deck(active_bundle)
     render_morning_context_deck(active_bundle)
     render_order_flow_board(active_bundle.options_intelligence)
-    render_morning_report_export(active_bundle, result)
     if is_admin_diagnostics_enabled():
         with st.expander("Foresight health and inputs"):
             render_ai_verification_panel(result, ai_ready, use_ai)
