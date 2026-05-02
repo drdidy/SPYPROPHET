@@ -2371,8 +2371,7 @@ def get_structure_projection_time(current_dt: datetime | pd.Timestamp, hour: int
     dt = pd.Timestamp(current_dt)
     ct = get_central_tz()
     dt = dt.tz_localize(ct) if dt.tzinfo is None else dt.tz_convert(ct)
-    decision_time = pd.Timestamp(dt.date(), tz=ct) + pd.Timedelta(hours=hour, minutes=minute)
-    return decision_time if dt < decision_time else dt
+    return pd.Timestamp(dt.date(), tz=ct) + pd.Timedelta(hours=hour, minutes=minute)
 
 
 def candle_color(row: pd.Series) -> str:
