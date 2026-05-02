@@ -12,6 +12,8 @@ from app import (
     find_secondary_pivots,
     build_primary_lines,
     get_central_tz,
+    normalize_tradingview_anchor_time,
+    Pivot,
 )
 
 
@@ -32,6 +34,10 @@ def test_candle_color() -> None:
     assert candle_color(pd.Series({"Open": 2, "Close": 2})) == "doji"
 
 
+def test_half_hour_anchor_normalizes_to_tradingview_hour() -> None:
+    assert normalize_tradingview_anchor_time(_df([("2026-04-28T14:30:00", 0, 0, 0, 0)]).index[0]) == _df([("2026-04-28T14:00:00", 0, 0, 0, 0)]).index[0]
+
+
 def test_high_pivot_found() -> None:
     df = _df([
         ("2026-04-28T08:30:00", 10, 11, 9, 11),
@@ -39,7 +45,7 @@ def test_high_pivot_found() -> None:
     ])
     p = find_high_pivot(df)
     assert p.price == 12
-    assert p.timestamp == df.index[1] + pd.Timedelta(hours=1)
+    assert p.timestamp == df.index[1] + pd.Timedelta(minutes=30)
     assert p.fallback_used is False
     assert p.source == "session_high"
 
@@ -51,7 +57,7 @@ def test_low_pivot_found() -> None:
     ])
     p = find_low_pivot(df)
     assert p.price == 8
-    assert p.timestamp == df.index[1]
+    assert p.timestamp == df.index[1] - pd.Timedelta(minutes=30)
     assert not p.fallback_used
     assert p.candle_color == "red"
 
@@ -69,7 +75,7 @@ def test_newest_pattern_selected_for_high_and_low() -> None:
     ])
     hp = find_high_pivot(df)
     lp = find_low_pivot(df)
-    assert hp.timestamp == df.index[5]
+    assert hp.timestamp == df.index[5] - pd.Timedelta(minutes=30)
     assert lp.timestamp == df.index[7]
 
 
@@ -85,6 +91,14 @@ def test_high_pivot_projection_uses_candle_close_anchor() -> None:
     next_9am = _df([("2026-04-29T09:00:00", 0, 0, 0, 0)]).index[0]
     assert ua.tradable_value_at(next_9am) == 721.58
     assert ud.tradable_value_at(next_9am) == 717.98
+
+
+def test_two_pm_tradingview_anchor_projects_to_expected_nine_am_level() -> None:
+    hp = Pivot("HIGH_PIVOT", 714.47, _df([("2026-04-28T14:00:00", 0, 0, 0, 0)]).index[0], "session_high", "green", False)
+    lp = Pivot("LOW_PIVOT", 700.00, _df([("2026-04-28T14:00:00", 0, 0, 0, 0)]).index[0], "session_low", "red", False)
+    _, ud, *_ = build_primary_lines(hp, lp, DEFAULT_SLOPE_PER_HOUR)
+
+    assert ud.tradable_value_at(_df([("2026-04-29T09:00:00", 0, 0, 0, 0)]).index[0]) == 712.47
 
 
 def test_doji_does_not_invalidate_session_extreme_primary() -> None:
@@ -112,7 +126,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 12, 13, 11, 13),
     ])
     hp = find_high_pivot(high_no_pattern)
-    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[2]
+    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[2] - pd.Timedelta(minutes=30)
 
     low_no_pattern = _df([
         ("2026-04-28T08:30:00", 10, 11, 8, 9),
@@ -120,7 +134,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 8, 9, 7, 7),
     ])
     lp = find_low_pivot(low_no_pattern)
-    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[2]
+    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[2] - pd.Timedelta(minutes=30)
 
 
 def test_secondary_pivots() -> None:

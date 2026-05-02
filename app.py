@@ -2406,12 +2406,21 @@ def get_hourly_candle_close_time(df: pd.DataFrame, candle_time: pd.Timestamp) ->
     return min(ts + pd.Timedelta(hours=1), rth_close)
 
 
+def normalize_tradingview_anchor_time(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    ct = get_central_tz()
+    ts = ts.tz_localize(ct) if ts.tzinfo is None else ts.tz_convert(ct)
+    if ts.minute == 30:
+        return ts - pd.Timedelta(minutes=30)
+    return ts
+
+
 def find_high_pivot(rth_df: pd.DataFrame) -> Pivot:
     if rth_df is None or rth_df.empty:
         return _empty_pivot("HIGH_PIVOT")
     df = rth_df.sort_index()
     high_ts = df["High"].idxmax()
-    anchor_ts = get_hourly_candle_close_time(df, high_ts)
+    anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, high_ts))
     return Pivot("HIGH_PIVOT", float(df.loc[high_ts, "High"]), anchor_ts, "session_high", candle_color(df.loc[high_ts]), False)
 
 
@@ -2420,7 +2429,7 @@ def find_low_pivot(rth_df: pd.DataFrame) -> Pivot:
         return _empty_pivot("LOW_PIVOT")
     df = rth_df.sort_index()
     low_ts = df["Low"].idxmin()
-    anchor_ts = get_hourly_candle_close_time(df, low_ts)
+    anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, low_ts))
     return Pivot("LOW_PIVOT", float(df.loc[low_ts, "Low"]), anchor_ts, "session_low", candle_color(df.loc[low_ts]), False)
 
 
