@@ -2444,10 +2444,11 @@ def find_secondary_pivots(rth_df: pd.DataFrame) -> list[SecondaryPivot]:
     out: list[SecondaryPivot] = []
     for i in range(len(df) - 1):
         cur_color, nxt_color = candle_color(df.iloc[i]), candle_color(df.iloc[i + 1])
+        anchor_ts = normalize_tradingview_anchor_time(get_hourly_candle_close_time(df, df.index[i]))
         if cur_color == "red" and nxt_color == "green":
-            out.append(SecondaryPivot("SECONDARY_DESCENDING", float(df.iloc[i]["Low"]), df.index[i], "descending", "secondary_transition"))
+            out.append(SecondaryPivot("SECONDARY_DESCENDING", float(df.iloc[i]["Low"]), anchor_ts, "descending", "secondary_transition"))
         elif cur_color == "green" and nxt_color == "red":
-            out.append(SecondaryPivot("SECONDARY_ASCENDING", float(df.iloc[i]["High"]), df.index[i], "ascending", "secondary_transition"))
+            out.append(SecondaryPivot("SECONDARY_ASCENDING", float(df.iloc[i]["High"]), anchor_ts, "ascending", "secondary_transition"))
     return out
 
 

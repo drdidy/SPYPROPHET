@@ -151,6 +151,9 @@ def test_secondary_pivots() -> None:
     assert pivots[0].direction == "descending" and pivots[0].price == 9
     assert pivots[1].direction == "ascending" and pivots[1].price == 10.6
     assert pivots[2].direction == "descending" and pivots[2].price == 7.5
+    assert pivots[0].timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
+    assert pivots[1].timestamp == _df([("2026-04-28T10:00:00", 0, 0, 0, 0)]).index[0]
+    assert pivots[2].timestamp == _df([("2026-04-28T13:00:00", 0, 0, 0, 0)]).index[0]
     assert [p.timestamp for p in pivots] == sorted([p.timestamp for p in pivots])
 
 
