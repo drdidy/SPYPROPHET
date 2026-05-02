@@ -6,6 +6,7 @@ import pandas as pd
 
 from app import (
     ensure_central_index,
+    filter_active_chart_session,
     filter_extended_session,
     filter_rth_session,
     get_central_tz,
@@ -101,6 +102,19 @@ def test_extended_filter_boundaries() -> None:
     assert datetime(2026, 4, 28, 19, 0, tzinfo=get_central_tz()) in ext.index
     assert datetime(2026, 4, 28, 2, 59, tzinfo=get_central_tz()) not in ext.index
     assert datetime(2026, 4, 28, 19, 1, tzinfo=get_central_tz()) not in ext.index
+
+
+def test_active_chart_filter_matches_projection_window() -> None:
+    df = _sample_day_frame()
+    day = date(2026, 4, 28)
+
+    active = filter_active_chart_session(df, day)
+
+    assert not active.empty
+    assert datetime(2026, 4, 28, 3, 0, tzinfo=get_central_tz()) in active.index
+    assert datetime(2026, 4, 28, 18, 0, tzinfo=get_central_tz()) in active.index
+    assert datetime(2026, 4, 28, 2, 59, tzinfo=get_central_tz()) not in active.index
+    assert datetime(2026, 4, 28, 18, 1, tzinfo=get_central_tz()) not in active.index
 
 
 def test_prior_trading_day_skips_missing_days() -> None:

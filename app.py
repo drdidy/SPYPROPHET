@@ -2367,6 +2367,13 @@ def filter_extended_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame
     return df[df.index.date == trading_day].between_time(time(3, 0), time(19, 0), inclusive="both")
 
 
+def filter_active_chart_session(df: pd.DataFrame, trading_day: date) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    session = df[df.index.date == trading_day].sort_index()
+    return session.between_time(PROJECTION_SESSION_START, PROJECTION_SESSION_END, inclusive="both")
+
+
 def get_structure_projection_time(current_dt: datetime | pd.Timestamp, hour: int = 9, minute: int = 0) -> pd.Timestamp:
     dt = pd.Timestamp(current_dt)
     ct = get_central_tz()
@@ -6062,7 +6069,7 @@ def main() -> None:
     latest_price = None
     prior_day = None
     signal_day = None
-    rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); pivots={}; secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
+    rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); chart_session_df = pd.DataFrame(); pivots={}; secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
     bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None; market_context=None
     option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
@@ -6076,6 +6083,7 @@ def main() -> None:
             rth_df = filter_rth_session(df, prior_day)
             signal_rth_df = filter_rth_session(df, signal_day) if signal_day is not None else pd.DataFrame()
             ext_df = filter_extended_session(df, signal_day) if signal_day is not None else pd.DataFrame()
+            chart_session_df = filter_active_chart_session(df, signal_day) if signal_day is not None else pd.DataFrame()
             if not rth_df.empty:
                 pivots = find_primary_pivots(rth_df)
                 secondary_pivots = find_secondary_pivots(rth_df)
@@ -6189,7 +6197,7 @@ def main() -> None:
 
     with tabs["Prophet Chart"]:
         render_section_title("Prophet Chart", "Decision map and technical candle views")
-        chart_df = signal_rth_df if not signal_rth_df.empty else (rth_df if not rth_df.empty else df)
+        chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
         cc1,cc2=st.columns([1.1,1])
         chart_mode = cc1.selectbox("View", ["Decision Map", "Technical Candles"], index=0, key="chart_view_mode")
@@ -6201,7 +6209,7 @@ def main() -> None:
             hp = pivots["high"] if 'pivots' in locals() else None
             lp = pivots["low"] if 'pivots' in locals() else None
             if chart_mode == "Decision Map":
-                render_structure_map_svg(chart_df, primary_lines, secondary_lines, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), title="SPY Structure Map", subtitle=f"Prior session {prior_day}; signal day {signal_day}", secondary_mode=secondary_mode)
+                render_structure_map_svg(chart_df, primary_lines, secondary_lines, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), title="SPY Structure Map", subtitle=f"Active chart window 3:00 AM-6:00 PM CT; structure from {prior_day}", secondary_mode=secondary_mode)
             else:
                 fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=True, secondary_mode=secondary_mode)
                 render_plotly_html(fig)
@@ -6420,7 +6428,7 @@ def main() -> None:
             render_debug_json("SignalQuality", asdict(decision_state.signal_quality) if decision_state and decision_state.signal_quality else {})
             render_debug_json("RiskGuardrailState", asdict(decision_state.guardrail_state) if decision_state else {})
             render_debug_json("DecisionState", asdict(decision_state) if decision_state else {})
-            st.write({"current_ts": str(now_ct), "latest_price": latest_price, "structure_day": str(prior_day), "signal_day": str(signal_day), "candles_plotted": len(signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df), "num_primary_lines": len(primary_lines), "num_secondary_lines_available": len(secondary_lines), "num_signals": len(signals), "active_signal_id": active_signal.signal_id if active_signal else None})
+            st.write({"current_ts": str(now_ct), "latest_price": latest_price, "structure_day": str(prior_day), "signal_day": str(signal_day), "candles_plotted": len(chart_session_df if not chart_session_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df), "num_primary_lines": len(primary_lines), "num_secondary_lines_available": len(secondary_lines), "num_signals": len(signals), "active_signal_id": active_signal.signal_id if active_signal else None})
             j_entries = load_signal_journal("data/signal_journal.json")
             render_debug_json("Journal path", {"path":"data/signal_journal.json","count":len(j_entries),"auto_journal":auto_journal_on})
             render_debug_json("Last 3 journal entries", [journal_entry_to_dict(x) for x in j_entries[-3:]])
