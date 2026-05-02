@@ -1543,7 +1543,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     uw_news_rows = [row for row in payload_rows(news_payload) if row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))][:5]
     has_data = bool(flow["alert_count"] or recent_flow or tide or net_premium or volume or iv or darkpool or uw_news_rows or gex.get("levels") or greeks)
     if not has_data:
-        detail = "Premium order-flow feed is connected, but no current SPY 0DTE rows returned yet."
+        detail = "Premium order-flow feed is connected, but no current same-day SPY rows returned yet."
         if errors:
             detail = errors[0]
         return None, unusual_whales_status(False, detail, now)
@@ -1571,7 +1571,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     }
     bits = []
     if flow["alert_count"]:
-        bits.append(f"{flow['alert_count']} SPY 0DTE OTM flow alerts")
+        bits.append(f"{flow['alert_count']} same-day SPY OTM flow alerts")
     if recent_flow:
         bits.append("recent SPY flow tape")
     if net_premium:
@@ -1730,7 +1730,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
     news_detail = (
-        f"{len(news_items)} fresh 0DTE headlines loaded from {', '.join(news_sources)}; only today or previous-day items are included."
+        f"{len(news_items)} fresh same-day headlines loaded from {', '.join(news_sources)}; only today or previous-day items are included."
         if news_items
         else f"No same-day or previous-day market headlines loaded from {len(NEWS_RSS_FEEDS)} configured public feeds."
     )
@@ -1760,10 +1760,10 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     payload = briefing_bundle_to_dict(bundle)
     curated = json.dumps(CURATED_MORNING_SOURCES, indent=2)
     return (
-        "Act as the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a 0DTE SPY options desk.\n"
+        "Act as the Prophet Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a same-day SPY options desk.\n"
         "Rules: use the verified JSON facts plus live web search facts with citations. Do not invent unavailable options flow, social, or news. "
-        "If premium order-flow data is present, treat it as the primary options-flow source and explicitly weigh SPY 0DTE OTM flow alerts, recent tape, net premium ticks, market tide, key strikes, near-strike Greeks, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
-        "For 0DTE relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
+        "If premium order-flow data is present, treat it as the primary options-flow source and explicitly weigh same-day SPY OTM flow alerts, recent tape, net premium ticks, market tide, key strikes, near-strike Greeks, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
+        "For same-day relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
@@ -1779,7 +1779,7 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
         "    \"label\": \"Primary setup name or Wait\",\n"
         "    \"trigger_line\": \"SPY Prophet line name\",\n"
         "    \"trigger_price\": \"price or '-'\",\n"
-        "    \"contract\": \"specific 0DTE contract or '-'\",\n"
+        "    \"contract\": \"specific same-day contract or '-'\",\n"
         "    \"entry_timing\": \"exact time/candle rule\",\n"
         "    \"entry_rule\": \"what must happen before entry\",\n"
         "    \"stop\": \"invalidating price/candle rule\",\n"
@@ -1909,7 +1909,7 @@ def build_openai_calendar_prompt(now_ct, days: int = 0) -> str:
     end = (pd.Timestamp(start) + pd.Timedelta(days=days)).date()
     date_label = str(start) if start == end else f"{start} through {end}"
     return (
-        "Act as the SPY Prophet economic-calendar scout for a 0DTE SPY options trader.\n"
+        "Act as the SPY Prophet economic-calendar scout for a same-day SPY options trader.\n"
         f"Find verified United States economic calendar events scheduled for {date_label}. "
         "Use current public web sources only, such as Investing.com Economic Calendar, ForexFactory Calendar, "
         "MarketWatch Economic Calendar, Nasdaq Economic Calendar, Trading Economics public calendar, Federal Reserve, "
@@ -1994,9 +1994,9 @@ def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEven
 def bundle_with_economic_events(bundle: MorningBriefingBundle, events: list[EconomicEvent], scout_warning: str | None = None) -> MorningBriefingBundle:
     statuses = [status for status in bundle.source_statuses if status.name not in {"Economic calendar", "Calendar scout"}]
     calendar_detail = (
-        f"{len(events)} verified calendar rows found by current source scan for today's 0DTE session."
+        f"{len(events)} verified calendar rows found by current source scan for today's same-day session."
         if events
-        else scout_warning or "No sourced macro calendar events returned for today's 0DTE session."
+        else scout_warning or "No sourced macro calendar events returned for today's same-day session."
     )
     statuses.append(source_status("Economic calendar", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
     statuses.append(source_status("Calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
@@ -2060,7 +2060,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     )
     return {
         "stance": "WAIT",
-        "headline": "Wait for a confirmed hourly rejection before choosing a 0DTE contract.",
+        "headline": "Wait for a confirmed hourly rejection before choosing a same-day contract.",
         "primary_trade": {
             "label": "Structure confirmation required",
             "trigger_line": first_line.get("name") or "-",
@@ -2694,7 +2694,7 @@ def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedS
     now = pd.Timestamp(current_dt)
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if current_price is None or pd.isna(current_price):
-        return SelectedStrikes(float("nan"), 0, 0, now.date(), "0DTE", "Invalid underlying price.")
+        return SelectedStrikes(float("nan"), 0, 0, now.date(), "Same-day", "Invalid underlying price.")
     target_call = current_price + TARGET_OTM_STRIKE_DISTANCE
     target_put = current_price - TARGET_OTM_STRIKE_DISTANCE
     call_strike = int(math.floor(target_call / SPY_STRIKE_INCREMENT + 0.5) * SPY_STRIKE_INCREMENT)
@@ -2707,7 +2707,7 @@ def select_0dte_strikes(current_price: float, current_dt: datetime) -> SelectedS
         put_strike = int(math.floor(current_price / SPY_STRIKE_INCREMENT) * SPY_STRIKE_INCREMENT)
         if put_strike >= current_price:
             put_strike -= SPY_STRIKE_INCREMENT
-    return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "0DTE", None)
+    return SelectedStrikes(float(current_price), call_strike, put_strike, now.date(), "Same-day", None)
 
 
 def get_contract_watch_price(current_price: float, current_dt: datetime, active_signal=None, all_lines=None) -> float:
@@ -2750,12 +2750,12 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
     bias = str(flow.get("flow_bias") or "")
     if "bull" in bias.lower():
         score += 2
-        reasons.append("SPY 0DTE flow leans call-side")
+        reasons.append("Same-day SPY flow leans call-side")
     elif "bear" in bias.lower():
         score -= 2
-        reasons.append("SPY 0DTE flow leans put-side")
+        reasons.append("Same-day SPY flow leans put-side")
     elif bias:
-        reasons.append("SPY 0DTE flow is mixed")
+        reasons.append("Same-day SPY flow is mixed")
 
     recent_tone = str(recent_flow.get("tone") or "")
     recent_pressure = _finite_float(recent_flow.get("net_pressure"))
@@ -4220,7 +4220,7 @@ def render_terminal_hero(
               <div class='quote-mini'>
                 <div class='quote-head'>
                   <div>
-                    <div class='hero-label'>0DTE Watchlist</div>
+                    <div class='hero-label'>Same-Day Watchlist</div>
                     <div class='quote-eyebrow'>OTM contracts</div>
                   </div>
                   {ui_icon('contract', 'green', 'sm')}
@@ -4612,7 +4612,7 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
     if not key_strikes and isinstance(recent_flow, dict):
         key_strikes = recent_flow.get("top_strikes") or []
     first_strike = key_strikes[0] if key_strikes else None
-    copy = "SPY 0DTE flow, premium tape, and dealer context are being merged into the Action Brief."
+    copy = "Same-day SPY flow, premium tape, and dealer context are being merged into the Action Brief."
     if isinstance(first_strike, dict) and first_strike.get("strike") is not None:
         side = "call" if _finite_float(first_strike.get("call_premium"), 0) >= _finite_float(first_strike.get("put_premium"), 0) else "put"
         copy = f"Most active nearby institutional strike: {fmt_price(first_strike.get('strike'), 0)} {side.upper()} pressure."
@@ -4711,7 +4711,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
                 "value": f"{fmt_money_short(row.get('net_pressure'))}",
             })
         cards.append({
-            "title": "0DTE Flow Alerts",
+            "title": "Same-Day Flow Alerts",
             "value": str(flow.get("flow_bias") or "Flow alerts loaded"),
             "copy": f"{flow.get('alert_count', 0)} OTM SPY alerts; net pressure {fmt_money_short(flow.get('net_premium_pressure'))}.",
             "means": "Same-day OTM SPY alert pressure by side and strike. Bullish flow supports call setups; bearish flow supports put setups. Mixed flow requires structure confirmation.",
@@ -4927,7 +4927,7 @@ def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBr
         else:
             avoid.append(str(row))
     reason_html = "".join(f"<div class='action-reason'><span class='action-reason-dot'></span><span>{escape(item)}</span></div>" for item in reasons or ["No additional decision driver loaded."])
-    risk_html = "".join(f"<div class='action-reason action-risk'><span class='action-reason-dot'></span><span>{escape(item)}</span></div>" for item in (risks + avoid)[:5] or ["No additional risk constraint beyond standard 0DTE discipline."])
+    risk_html = "".join(f"<div class='action-reason action-risk'><span class='action-reason-dot'></span><span>{escape(item)}</span></div>" for item in (risks + avoid)[:5] or ["No additional risk constraint beyond standard same-day discipline."])
     st.markdown(
         f"""
         <div class='action-brief {tone}'>
@@ -5072,7 +5072,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     whale_recent = whales.get("recent_flow", {}) if isinstance(whales, dict) else {}
     whale_premium = whales.get("net_premium_ticks", {}) if isinstance(whales, dict) else {}
     whale_detail = (
-        f"{whale_flow.get('alert_count', 0)} SPY 0DTE OTM alerts; {whale_flow.get('flow_bias', 'flow loaded')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
+        f"{whale_flow.get('alert_count', 0)} same-day SPY OTM alerts; {whale_flow.get('flow_bias', 'flow loaded')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
         if whale_flow
         else f"Recent tape {whale_recent.get('tone')}; premium tape {whale_premium.get('tone')}."
         if whale_recent or whale_premium
@@ -5149,7 +5149,7 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
         rows.append(_source_row_html("Current source scan", "not used", "No current source references were returned for this run.", result.generated_at, state="scout"))
     upgrades = [
         ("Macro calendar", "Generate Foresight for current calendar scanning, or connect a structured calendar source for scheduled releases."),
-        ("Flow pressure", "Connect the premium flow token for 0DTE alerts, recent tape, net premium, market tide, dark-pool, IV, Greeks, and GEX context."),
+        ("Flow pressure", "Connect the premium flow token for same-day alerts, recent tape, net premium, market tide, dark-pool, IV, Greeks, and GEX context."),
         ("Options depth", "Live broker data gives bid, ask, spread, and Greeks. Premium flow adds order-flow context; market data remains the delayed backup."),
         ("Current scan", "Keep live synthesis enabled so the engine can cite current public pages when accessible."),
     ]
@@ -5208,7 +5208,7 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Prophet Foresight", "Actionable 0DTE plan for today's SPY Prophet lines")
+    render_section_title("Prophet Foresight", "Actionable same-day plan for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
@@ -5855,10 +5855,10 @@ def project_option_entry_to_target(quote, current_underlying_price, entry_line, 
     etv = entry_line.tradable_value_at(ept); move_e = etv-current_underlying_price; est_entry=max(0.01, round(quote.mark + quote.delta*move_e,2))
     warn=None
     if target_line is None:
-        return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,None,float('nan'),None,float('nan'),float('nan'),float('nan'),float('nan'),'No target line selected.','Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Actual 0DTE prices may change faster than this estimate.')
+        return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,None,float('nan'),None,float('nan'),float('nan'),float('nan'),float('nan'),'No target line selected.','Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Same-day prices may change faster than this estimate.')
     tpt = pd.Timestamp(target_projection_time) if target_projection_time is not None else ept
     ttv = target_line.tradable_value_at(tpt); move_t = ttv-etv; est_target=max(0.01, round(est_entry + quote.delta*move_t,2)); prof=round((est_target-est_entry)*100,2); ret=round(((est_target-est_entry)/est_entry)*100,2) if est_entry>0 else float('nan')
-    return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,target_line.name,ttv,tpt,move_t,est_target,prof,ret,warn,'Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Actual 0DTE prices may change faster than this estimate.')
+    return EntryTargetOptionProjection(quote.option_type,quote.strike,quote.symbol,current_underlying_price,quote.mark,quote.delta,entry_line.name,etv,ept,move_e,est_entry,target_line.name,ttv,tpt,move_t,est_target,prof,ret,warn,'Delta-only estimate. It ignores gamma, IV changes, theta decay, liquidity, and bid/ask spread. Same-day prices may change faster than this estimate.')
 
 def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_state=None, provider=None, current_dt=None, all_lines=None, entry_line_name=None, target_line_name=None, projection_time=None, option_type_override=None):
     now=pd.Timestamp(current_dt) if current_dt is not None else pd.Timestamp.now(tz=get_central_tz())

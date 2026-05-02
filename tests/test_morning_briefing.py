@@ -413,8 +413,8 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     cards = order_flow_board_cards(options)
     read = order_flow_plain_english(options)
 
-    assert {card["title"] for card in cards} >= {"0DTE Flow Alerts", "Recent Tape", "Market Tide", "Dark Pool Levels"}
-    flow_card = next(card for card in cards if card["title"] == "0DTE Flow Alerts")
+    assert {card["title"] for card in cards} >= {"Same-Day Flow Alerts", "Recent Tape", "Market Tide", "Dark Pool Levels"}
+    flow_card = next(card for card in cards if card["title"] == "Same-Day Flow Alerts")
     assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
     assert darkpool["levels"][0]["label"] == "719.50"
