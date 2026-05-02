@@ -8,6 +8,7 @@ from app import (
     DynamicLine,
     JournalEntry,
     NEWS_RSS_FEEDS,
+    build_technical_context,
     build_structure_learning_profile,
     build_market_context,
     calculate_spy_pressure,
@@ -33,6 +34,21 @@ def test_vix_regime_labels() -> None:
     assert classify_vix(14.9)[0] == "Calm"
     assert classify_vix(18.0)[0] == "Normal"
     assert classify_vix(22.0)[0] == "Elevated"
+
+
+def test_technical_context_prefers_hourly_moving_averages() -> None:
+    daily_idx = pd.date_range("2026-01-01", periods=220, freq="B", tz=get_central_tz())
+    daily = pd.DataFrame(
+        {"Close": range(500, 720), "High": range(501, 721), "Low": range(499, 719)},
+        index=daily_idx,
+    )
+    hourly_idx = pd.date_range("2026-04-20 09:30", periods=220, freq="h", tz=get_central_tz())
+    hourly = pd.DataFrame({"Close": range(650, 870)}, index=hourly_idx)
+
+    context = build_technical_context(daily, 720, hourly)
+
+    assert round(context.hourly_ma50, 2) == round(sum(range(820, 870)) / 50, 2)
+    assert round(context.hourly_ma200, 2) == round(sum(range(670, 870)) / 200, 2)
     assert classify_vix(28.0)[0] == "Stress"
     assert classify_vix(float("nan"))[0] == "Unavailable"
 

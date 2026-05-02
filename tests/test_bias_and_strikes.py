@@ -180,4 +180,4 @@ def test_flow_alignment_warns_when_pressure_fights_watch_side() -> None:
     read = premium_flow_alignment(options, "CALL")
 
     assert read["state"] == "opposes"
-    assert "Fights CALL" in read["title"]
+    assert "Against call setup" in read["title"]

@@ -203,6 +203,8 @@ class TechnicalContext:
     monthly_high: float
     monthly_low: float
     gap_from_prior_close: float
+    hourly_ma50: float = float("nan")
+    hourly_ma200: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -909,7 +911,7 @@ def fetch_spy_daily(period: str = "1y") -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None) -> TechnicalContext:
+def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None, hourly_df: pd.DataFrame | None = None) -> TechnicalContext:
     if daily_df is None or daily_df.empty or "Close" not in daily_df:
         return TechnicalContext(source_status("Yahoo Finance daily SPY", False, "Daily SPY history unavailable."), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
     df = daily_df.dropna(subset=["Close"]).sort_index()
@@ -920,8 +922,14 @@ def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None) 
     weekly = df.tail(5)
     monthly = df.tail(21)
     gap = float(latest_price - prior["Close"]) if latest_price is not None and not pd.isna(latest_price) else float("nan")
+    hourly_close = pd.Series(dtype=float)
+    if hourly_df is not None and not hourly_df.empty and "Close" in hourly_df:
+        hourly_close = hourly_df["Close"].dropna().sort_index()
+    hourly_ma50 = float(hourly_close.tail(50).mean()) if len(hourly_close) >= 50 else float("nan")
+    hourly_ma200 = float(hourly_close.tail(200).mean()) if len(hourly_close) >= 200 else float("nan")
+    detail = "Prior levels from daily SPY candles; same-day technical verdict uses hourly 50/200MA when available."
     return TechnicalContext(
-        source_status("Yahoo Finance daily SPY", True, "Prior levels and moving averages from daily SPY candles.", df.index[-1]),
+        source_status("Yahoo Finance SPY technicals", True, detail, df.index[-1]),
         float(prior.get("High", float("nan"))),
         float(prior.get("Low", float("nan"))),
         float(prior.get("Close", float("nan"))),
@@ -932,6 +940,8 @@ def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None) 
         float(monthly["High"].max()) if "High" in monthly else float("nan"),
         float(monthly["Low"].min()) if "Low" in monthly else float("nan"),
         gap,
+        hourly_ma50,
+        hourly_ma200,
     )
 
 
@@ -1644,9 +1654,9 @@ def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExp
         magnets = [row.get("strike") for row in levels if isinstance(row, dict) and row.get("strike") is not None]
         notes = "Spot GEX by strike is loaded; use these levels as volatility/magnet context, not as standalone entries."
         return GammaExposureInsight(
-            source_status("Dealer Gamma", True, "SPY spot GEX by strike loaded.", pd.Timestamp.now(tz=get_central_tz())),
+            source_status("Dealer GEX", True, "SPY spot GEX by strike loaded.", pd.Timestamp.now(tz=get_central_tz())),
             whales_gex.get("gamma_flip"),
-            str(whales_gex.get("dealer_tone") or "Dealer Gamma"),
+            str(whales_gex.get("dealer_tone") or "Dealer GEX"),
             [float(x) for x in magnets[:6] if not pd.isna(_finite_float(x))],
             notes,
             whales,
@@ -1701,11 +1711,11 @@ def structure_lines_for_briefing(primary_lines: list[DynamicLine], projection_ti
     return rows
 
 
-def build_morning_briefing_bundle(primary_lines, projection_time, economic_events, news_items, learning_profile, latest_price, selected_strikes=None, option_state=None) -> MorningBriefingBundle:
+def build_morning_briefing_bundle(primary_lines, projection_time, economic_events, news_items, learning_profile, latest_price, selected_strikes=None, option_state=None, hourly_df: pd.DataFrame | None = None) -> MorningBriefingBundle:
     global_context = fetch_global_context()
     sector_context = fetch_sector_context()
     daily = fetch_spy_daily("1y")
-    technical = build_technical_context(daily, latest_price)
+    technical = build_technical_context(daily, latest_price, hourly_df)
     expiration = selected_strikes.expiration_date if selected_strikes else pd.Timestamp(projection_time).date()
     options_intel = build_options_intelligence(expiration, latest_price, option_state)
     gamma = build_gamma_exposure_insight(options_intel)
@@ -2217,7 +2227,7 @@ EXTERNAL SUPPORT / REFUTE MAP:
 {gamma_line}- OI magnets: {oi_magnets}.
 - Global tone: {global_lines}
 - Sector leadership: {top_sectors}. Laggards: {weak_sectors}.
-- Technical: prior high {fmt_price(technical.prior_high)}, prior low {fmt_price(technical.prior_low)}, prior close {fmt_price(technical.prior_close)}, 50DMA {fmt_price(technical.ma50)}, 200DMA {fmt_price(technical.ma200)}, gap {fmt_price(technical.gap_from_prior_close)}.
+- Technical: prior high {fmt_price(technical.prior_high)}, prior low {fmt_price(technical.prior_low)}, prior close {fmt_price(technical.prior_close)}, hourly 50MA {fmt_price(getattr(technical, 'hourly_ma50', float('nan')))}, hourly 200MA {fmt_price(getattr(technical, 'hourly_ma200', float('nan')))}, daily 50/200MA {fmt_price(technical.ma50)}/{fmt_price(technical.ma200)}, gap {fmt_price(technical.gap_from_prior_close)}.
 - Sentiment: {bundle.sentiment.label} (headline score {bundle.sentiment.headline_score}; {social_text}).
 
 MY RECOMMENDATION:
@@ -2866,11 +2876,11 @@ def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side
         return {"state": "neutral", "title": title, "copy": copy, **read}
     aligned = side == watch_side
     if aligned:
-        title = f"Supports {watch_side}"
+        title = f"Supports {display_state_label(watch_side).lower()} setup"
         copy = "Flow agrees with the current structure watch. Still wait for SPY Prophet confirmation at the line."
         state = "aligned"
     else:
-        title = f"Fights {watch_side}"
+        title = f"Against {display_state_label(watch_side).lower()} setup"
         copy = "Flow is leaning the other way, so require a cleaner rejection or wait."
         state = "opposes"
     reason_text = "; ".join(read.get("reasons") or [])
@@ -2891,9 +2901,9 @@ def alignment_state_for_side(direction: str | None, watch_side: str | None) -> s
 
 def alignment_title(state: str, label: str, direction: str | None = None) -> str:
     if state == "aligned":
-        return f"Supports {display_state_label(direction) if direction else 'setup'}"
+        return f"Supports {display_state_label(direction).lower()} setup" if direction else "Supports setup"
     if state == "opposes":
-        return f"Fights {display_state_label(direction) if direction else 'setup'}"
+        return f"Against {display_state_label(direction).lower()} setup" if direction else "Against setup"
     if state == "risk":
         return "Timing Risk"
     return label
@@ -2957,25 +2967,29 @@ def technical_context_direction(technical: TechnicalContext | None, latest_price
     if technical is None:
         return None, "Technical context unavailable."
     price = _finite_float(latest_price)
-    ma50 = _finite_float(technical.ma50)
-    ma200 = _finite_float(technical.ma200)
+    hourly_ma50 = _finite_float(getattr(technical, "hourly_ma50", float("nan")))
+    hourly_ma200 = _finite_float(getattr(technical, "hourly_ma200", float("nan")))
+    use_hourly = not pd.isna(hourly_ma50) or not pd.isna(hourly_ma200)
+    ma50 = hourly_ma50 if not pd.isna(hourly_ma50) else _finite_float(technical.ma50)
+    ma200 = hourly_ma200 if not pd.isna(hourly_ma200) else _finite_float(technical.ma200)
+    ma_label = "hourly" if use_hourly else "daily"
     gap = _finite_float(technical.gap_from_prior_close)
     score = 0
     reasons = []
     if not pd.isna(price) and not pd.isna(ma50):
         if price >= ma50:
             score += 1
-            reasons.append(f"SPY above 50DMA {fmt_price(ma50)}")
+            reasons.append(f"SPY above {ma_label} 50MA {fmt_price(ma50)}")
         else:
             score -= 1
-            reasons.append(f"SPY below 50DMA {fmt_price(ma50)}")
+            reasons.append(f"SPY below {ma_label} 50MA {fmt_price(ma50)}")
     if not pd.isna(price) and not pd.isna(ma200):
         if price >= ma200:
             score += 1
-            reasons.append(f"SPY above 200DMA {fmt_price(ma200)}")
+            reasons.append(f"SPY above {ma_label} 200MA {fmt_price(ma200)}")
         else:
             score -= 1
-            reasons.append(f"SPY below 200DMA {fmt_price(ma200)}")
+            reasons.append(f"SPY below {ma_label} 200MA {fmt_price(ma200)}")
     if not pd.isna(gap) and abs(gap) >= 1:
         reasons.append(f"gap from prior close {fmt_price(gap)}")
     if score >= 2:
@@ -2990,7 +3004,7 @@ def gamma_entry_alignment(options_intel: OptionsIntelligence | None, watch_side:
     gex = whales.get("gex") or {}
     iv = whales.get("iv") or {}
     if not isinstance(gex, dict) and not isinstance(iv, dict):
-        return {"source": "Dealer Gamma", "state": "neutral", "title": "No gamma edge", "copy": "Dealer gamma/IV context unavailable."}
+        return {"source": "Dealer GEX", "state": "neutral", "title": "No GEX edge", "copy": "Dealer GEX/IV context unavailable."}
     net_gex = _finite_float(gex.get("net_gex") if isinstance(gex, dict) else None)
     iv_value = _finite_float(iv.get("iv") if isinstance(iv, dict) else None)
     notes = []
@@ -2999,15 +3013,15 @@ def gamma_entry_alignment(options_intel: OptionsIntelligence | None, watch_side:
     if not pd.isna(net_gex):
         if net_gex < 0:
             state = "aligned" if watch_side in {"CALL", "PUT"} else "neutral"
-            title = "Momentum can expand"
-            notes.append("negative gamma can amplify confirmed breaks")
+            title = "Negative GEX"
+            notes.append("negative dealer GEX can amplify confirmed breaks")
         elif net_gex > 0:
             state = "opposes" if watch_side in {"CALL", "PUT"} else "neutral"
-            title = "Follow-through may mute"
-            notes.append("positive gamma can pin or slow moves")
+            title = "Positive GEX"
+            notes.append("positive dealer GEX can pin or slow moves")
     if not pd.isna(iv_value):
         notes.append(f"IV {fmt_pct(iv_value * 100, 0)}")
-    return {"source": "Dealer Gamma", "state": state, "title": title, "copy": "; ".join(notes) + "." if notes else "Gamma context is balanced."}
+    return {"source": "Dealer GEX", "state": state, "title": title, "copy": "; ".join(notes) + "." if notes else "GEX context is balanced."}
 
 
 def bundle_primary_entry_context(bundle: MorningBriefingBundle) -> tuple[str | None, float | None, str | None]:
@@ -3671,8 +3685,8 @@ def inject_global_css() -> None:
       --border:#243244;--border2:#314357;--text:#f4f7fb;--muted:#9aa7b5;
       --blue:#4ea8de;--green:#2ecc71;--red:#f45d75;--amber:#f5c451;
       --cyan:#28d2c2;--shadow:0 14px 34px rgba(0,0,0,.26);
-      --ui-font:"Inter","Source Sans 3","Segoe UI",Roboto,system-ui,sans-serif;
-      --mono-font:"IBM Plex Mono","Roboto Mono","JetBrains Mono",Consolas,monospace;
+      --ui-font:"Aptos","Segoe UI Variable","Segoe UI",Candara,Calibri,system-ui,sans-serif;
+      --mono-font:"Cascadia Mono","Aptos Mono","Consolas","Courier New",monospace;
     }
     html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
     .stMarkdown,.stText,.stCaption,.stDataFrame,p,span,button,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
@@ -4532,7 +4546,7 @@ def darkpool_entry_read(
         state = "opposes"
         direction = "below" if nearest["price"] < anchor else "above"
         copy = f"Nearest large dark-pool level is {direction} the {display_state_label(side).lower()} entry at {fmt_price(nearest['price'])}; treat it as a pullback/chop risk unless rejection is strong."
-        title = f"Fights {display_state_label(side)}"
+        title = f"Against {display_state_label(side).lower()} setup"
     else:
         state = "neutral"
         title = f"Largest level {fmt_price(largest['price'])}"
@@ -5375,7 +5389,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
     gex_card = unusual_whales_gex_card_data(options)
     if gex_card:
         gex_value, gex_copy, gex_chips, gex_tone = gex_card
-        cards.append(_morning_card_html("Dealer Gamma", gex_value, gex_copy, "gauge", gex_tone, gex_chips))
+        cards.append(_morning_card_html("Dealer GEX", gex_value, gex_copy, "gauge", gex_tone, gex_chips))
     cards.extend([
         _morning_card_html("Contract Watch", quote_value, quote_copy, "contract", "green", quote_chips),
         _morning_card_html(
@@ -5398,7 +5412,7 @@ def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
     icon_map = {
         "Option Flow": "pulse",
         "Dark Pool": "target",
-        "Dealer Gamma": "gauge",
+        "Dealer GEX": "gauge",
         "Catalyst Clock": "clock",
         "Global Tape": "compass",
         "Macro Pulse": "bolt",
@@ -5406,7 +5420,7 @@ def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
         "Technicals": "peak",
     }
     cards = []
-    for row in verdicts[:6]:
+    for row in verdicts[:8]:
         state = str(row.get("state") or "neutral")
         title = f"{row.get('source')}: {display_state_label(state)}"
         value = str(row.get("title") or row.get("source") or "-")
@@ -5968,7 +5982,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
 
     return f"""
     <style>
-      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Inter,"Source Sans 3","Segoe UI",Roboto,system-ui,sans-serif;color:#f4f7fb}}
+      .svg-map-shell{{background:#111821;border:1px solid #243244;border-radius:8px;padding:16px 16px 12px;box-shadow:none;font-family:Aptos,"Segoe UI Variable","Segoe UI",Candara,Calibri,system-ui,sans-serif;color:#f4f7fb}}
       .svg-map-shell svg{{display:block;width:100%;height:auto}}
       .svg-map-title{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin:2px 2px 12px}}
       .svg-map-title h3{{margin:0;font-size:20px;letter-spacing:0;font-weight:850;color:#f4f7fb}}
@@ -6761,13 +6775,13 @@ def main() -> None:
     learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
     news_items = fetch_market_news(limit=MARKET_MOVING_NEWS_LIMIT)
     economic_events = get_upcoming_economic_events(now_ct, days=0)
-    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
+    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state, df)
     flow_tags_for_learning = premium_flow_tags(morning_bundle.options_intelligence)
     if flow_tags_for_learning:
         flow_learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest, flow_tags_for_learning)
         if flow_learning_profile.matching_sample_size != learning_profile.matching_sample_size or flow_learning_profile.expected_direction != learning_profile.expected_direction:
             learning_profile = flow_learning_profile
-            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
+            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state, df)
     if strikes and morning_bundle.options_intelligence.status.status != "skipped":
         flow_strikes = select_flow_aware_watch_contracts(
             latest_price if latest_price is not None else float("nan"),
@@ -6787,14 +6801,14 @@ def main() -> None:
                 all_lines=primary_lines + secondary_lines if primary_lines else [],
                 projection_time=get_default_projection_time(now_ct),
             )
-            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state)
+            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state, df)
 
     if not session_has_candles:
         active_signal = None
         decision_state = None
         option_state = None
         strikes = None
-        morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, None, None)
+        morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, None, None, df)
 
     if show_debug:
         st.sidebar.caption(f"Data loaded: {not df.empty}")
