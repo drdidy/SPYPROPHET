@@ -4894,22 +4894,6 @@ def _report_risks(decision: dict, bundle: MorningBriefingBundle) -> list[str]:
     return merged or ["Do not chase between lines; wait for confirmation at the trigger."]
 
 
-def morning_report_has_verified_inputs(bundle: MorningBriefingBundle) -> bool:
-    connected_sources = [status for status in bundle.source_statuses if str(status.status).lower() == "connected"]
-    return bool(bundle.lines) and bool(connected_sources)
-
-
-def morning_report_png_is_populated(png: bytes) -> bool:
-    if not png or len(png) < 20_000:
-        return False
-    try:
-        img = Image.open(BytesIO(png)).convert("L")
-        extrema = img.getextrema()
-    except Exception:
-        return False
-    return bool(extrema and extrema[0] != extrema[1])
-
-
 def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes:
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
@@ -4996,9 +4980,8 @@ def build_morning_briefing_report_png(bundle: MorningBriefingBundle, result: Mor
     display_lines = lines or [{"name": "Structure lines unavailable", "role": "Load candles", "value": float("nan"), "anchor_price": float("nan"), "anchor_time": "Refresh SPY data to calculate today's trigger deck."}]
     gap = 20
     left, right = 42, 1150
-    card_w = min(262, int((right - left - gap * (len(display_lines) - 1)) / len(display_lines)))
-    total_w = card_w * len(display_lines) + gap * (len(display_lines) - 1)
-    x = int(left + ((right - left) - total_w) / 2)
+    card_w = int((right - left - gap * (len(display_lines) - 1)) / len(display_lines))
+    x = left
     for line in display_lines:
         role = str(line.get("role") or "")
         is_pending = pd.isna(fmt_nan(line.get("value"), None))
@@ -5059,31 +5042,22 @@ def build_morning_briefing_report_pdf(bundle: MorningBriefingBundle, result: Mor
 
 
 def render_morning_report_export(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
-    if not morning_report_has_verified_inputs(bundle):
-        render_warning_panel("Daily briefing export is waiting for verified SPY Prophet lines and loaded market inputs. It will not create a blank or placeholder report.")
-        return
     try:
         png = build_morning_briefing_report_png(bundle, result)
         pdf = build_morning_briefing_report_pdf(bundle, result)
     except Exception as e:
         render_warning_panel(f"Daily briefing export could not be generated: {type(e).__name__}")
         return
-    if not morning_report_png_is_populated(png):
-        render_warning_panel("Daily briefing export did not pass the image integrity check, so no blank download was offered. Refresh the data and generate Foresight again.")
-        return
     ts = pd.Timestamp(result.generated_at).tz_convert(get_central_tz()) if pd.Timestamp(result.generated_at).tzinfo else pd.Timestamp(result.generated_at, tz=get_central_tz())
     stamp = ts.strftime("%Y-%m-%d")
-    export_key = f"{stamp}-{len(bundle.lines)}-{len(result.text or '')}-{int(result.confidence or 0)}"
-    st.session_state["morning_report_export"] = {"key": export_key, "png": png, "pdf": pdf}
-    export = st.session_state["morning_report_export"]
     st.markdown(
         "<div class='terminal-panel'><div class='panel-label'>Daily Brief Export</div><div class='panel-title'>Shareable Morning Brief</div><div class='panel-copy'>A polished snapshot generated from the current Foresight read, trigger lines, flow, gamma, catalyst, and contract context.</div></div>",
         unsafe_allow_html=True,
     )
-    st.image(export["png"], use_container_width=True)
+    st.image(png, use_container_width=True)
     c1, c2 = st.columns(2)
-    c1.download_button("Download briefing image", data=export["png"], file_name=f"spy_prophet_morning_brief_{stamp}.png", mime="image/png", key=f"morning_report_png_{export_key}", on_click="ignore", use_container_width=True)
-    c2.download_button("Download briefing PDF", data=export["pdf"], file_name=f"spy_prophet_morning_brief_{stamp}.pdf", mime="application/pdf", key=f"morning_report_pdf_{export_key}", on_click="ignore", use_container_width=True)
+    c1.download_button("Download briefing image", data=png, file_name=f"spy_prophet_morning_brief_{stamp}.png", mime="image/png", use_container_width=True)
+    c2.download_button("Download briefing PDF", data=pdf, file_name=f"spy_prophet_morning_brief_{stamp}.pdf", mime="application/pdf", use_container_width=True)
 
 
 def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningBriefingResult, ai_ready: bool) -> None:

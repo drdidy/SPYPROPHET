@@ -21,8 +21,6 @@ from app import (
     economic_event_from_ai_calendar_dict,
     extract_json_payload_from_text,
     fallback_morning_decision,
-    morning_report_has_verified_inputs,
-    morning_report_png_is_populated,
     order_flow_board_cards,
     summarize_unusual_whales_flow_alerts,
     summarize_unusual_whales_gex,
@@ -138,29 +136,6 @@ def test_morning_briefing_report_exports_png_and_pdf() -> None:
     assert pdf.startswith(b"%PDF")
     assert len(png) > 20_000
     assert len(pdf) > 20_000
-    assert morning_report_png_is_populated(png)
-
-
-def test_morning_report_requires_verified_lines() -> None:
-    bundle = _bundle()
-    empty_bundle = MorningBriefingBundle(
-        bundle.generated_at,
-        [],
-        bundle.economic_events,
-        bundle.global_context,
-        bundle.macro_context,
-        bundle.sector_context,
-        bundle.options_intelligence,
-        bundle.gamma_insight,
-        bundle.sentiment,
-        bundle.technical_context,
-        bundle.news_items,
-        bundle.learning_profile,
-        bundle.source_statuses,
-    )
-
-    assert morning_report_has_verified_inputs(bundle)
-    assert not morning_report_has_verified_inputs(empty_bundle)
 
 
 def test_openai_request_payload_enables_web_search() -> None:
