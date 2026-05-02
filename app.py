@@ -5334,8 +5334,8 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         signal_title = f"{active_signal.signal_type} {_humanize(active_signal.status)}"
         signal_copy = display_line_name(active_signal.line_name)
         signal_marker = (
-            f"<g class='signal-pulse' transform='translate({sig_x:.2f} {sig_y:.2f})'>"
-            f"<circle r='18' fill='{sig_color}' opacity='.16'/><circle r='8' fill='{sig_color}'/>"
+            f"<g class='signal-marker' transform='translate({sig_x:.2f} {sig_y:.2f})'>"
+            f"<circle r='10' fill='{sig_color}' opacity='.18'/><circle r='5' fill='{sig_color}'/>"
             f"<text x='18' y='5' class='marker-label' fill='{sig_color}'>{_svg_text(active_signal.signal_type)}</text></g>"
         )
 
@@ -5384,7 +5384,6 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
       .rail-label,.marker-label{{font-size:12px;font-weight:850;letter-spacing:0}}
       .map-label{{fill:#d9ecff;font-size:13px;font-weight:800}}
       .map-muted{{fill:#8ba9c8;font-size:12px;font-weight:650}}
-      .signal-pulse circle:first-child{{animation:pulse 2.2s ease-in-out infinite;transform-origin:center}}
       .svg-map-cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px;align-items:stretch}}
       .svg-map-card{{border:1px solid #243244;background:#151f2b;border-radius:8px;padding:11px 12px;min-height:92px;overflow:visible}}
       .svg-card-label{{font-size:11px;color:#9aa7b5;text-transform:uppercase;letter-spacing:.08em}}
@@ -5417,6 +5416,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         {signal_marker}
         <text x='{x0}' y='{height - 132}' class='map-muted'>{_svg_text(first_label)}</text>
         <text x='{x1}' y='{height - 132}' text-anchor='end' class='map-muted'>{_svg_text(latest_label)}</text>
+        <circle r='5' fill='#f4c76b'><animateMotion dur='7s' repeatCount='indefinite' path='{spy_path}'/></circle>
       </svg>
       <div class='svg-map-cards'>{card_html}</div>
     </div>
