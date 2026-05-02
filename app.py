@@ -467,7 +467,7 @@ def market_moving_news_score(title: str, summary: str | None = None) -> int:
         "futures fall", "wall street", "nasdaq", "dow jones", "russell", "stocks open", "stocks rise",
         "stocks fall", "market rally", "market selloff",
     ]
-    volatility_terms = ["vix", "volatility", "treasury", "yield", "yields", "bond auction", "dollar", "dxy", "oil", "geopolitical"]
+    volatility_terms = ["vix", "volatility", "treasury", "yield", "yields", "bond auction", "dollar", "dxy"]
     mega_cap_terms = ["nvidia", "nvda", "apple", "aapl", "microsoft", "msft", "amazon", "amzn", "meta", "tesla", "tsla", "alphabet", "googl"]
     personal_finance_terms = ["mortgage", "retirement", "homeowner", "credit card", "personal finance", "social security"]
     stale_investor_terms = ["if i had invested", "turn $", "turned $", "portfolio over"]
@@ -475,7 +475,8 @@ def market_moving_news_score(title: str, summary: str | None = None) -> int:
         "airline", "airlines", "spirit airlines", "restaurant", "retailer", "bankruptcy", "chapter 11",
         "merger", "acquisition", "ceo", "analyst says", "shares of", "stock jumps", "stock falls",
     ]
-    asset_noise_terms = ["gold", "bitcoin", "crypto", "ethereum", "forex"]
+    asset_noise_terms = ["gold", "bitcoin", "crypto", "ethereum", "forex", "oil", "yen"]
+    topic_noise_terms = ["socialism", "mayor", "hedge-fund manager", "unsinkable", "band-aid"]
 
     score = 0
     macro_hit = any(term in text for term in macro_terms)
@@ -498,13 +499,15 @@ def market_moving_news_score(title: str, summary: str | None = None) -> int:
         score -= 100
     if any(term in title_text for term in asset_noise_terms) and not (title_macro_hit or title_index_hit):
         score -= 180
+    if any(term in title_text for term in topic_noise_terms) and not (title_macro_hit or title_index_hit):
+        score -= 140
     return score
 
 
 def classify_news_relevance(title: str, summary: str | None = None) -> str:
     text = f"{title or ''} {summary or ''}".lower()
     high_impact = ["fed", "fomc", "powell", "cpi", "pce", "payroll", "jobs report", "unemployment", "inflation", "rate cut", "rate hike"]
-    volatility = ["vix", "volatility", "treasury", "yield", "auction", "dollar", "oil", "geopolitical"]
+    volatility = ["vix", "volatility", "treasury", "yield", "auction", "dollar", "dxy"]
     spy_market = ["spy", "spx", "s&p", "s&p 500", "nasdaq", "stock futures", "equity futures", "wall street"]
     if any(word in text for word in high_impact):
         return "Macro catalyst"
@@ -516,7 +519,7 @@ def classify_news_relevance(title: str, summary: str | None = None) -> str:
 
 
 def is_market_news_relevant(title: str, summary: str | None = None) -> bool:
-    return market_moving_news_score(title, summary) >= 60
+    return classify_news_relevance(title, summary) != "General market" and market_moving_news_score(title, summary) >= 60
 
 
 def parse_rss_items(xml_text: str, source: str = "Yahoo Finance", limit: int = 8) -> list[NewsItem]:
@@ -2069,12 +2072,24 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     external_reads = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
     opposing = [row for row in external_reads if row.get("state") in {"opposes", "risk"}]
     supporting = [row for row in external_reads if row.get("state") == "aligned"]
-    flow_reason = (
-        f"Flow pressure reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}."
-        if isinstance(flow, dict) and flow.get("flow_bias")
-        else f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}."
-    )
+    reasons = [
+        f"Structure learning is {bundle.learning_profile.confidence_label} with TP1+ {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
+    ]
+    if isinstance(flow, dict) and flow.get("flow_bias"):
+        reasons.append(f"Flow pressure reads {flow.get('flow_bias')} with net pressure {fmt_money_short(flow.get('net_premium_pressure'))}.")
+    elif not pd.isna(_finite_float(bundle.options_intelligence.max_pain)):
+        reasons.append(f"Options context shows max pain near {fmt_price(bundle.options_intelligence.max_pain)}.")
     darkpool_reason = str(darkpool_read.get("copy") or "")
+    if darkpool_read.get("state") != "unavailable" and darkpool_reason:
+        reasons.append(darkpool_reason)
+    if supporting or opposing:
+        reasons.append(f"External read: {len(supporting)} support, {len(opposing)} caution/refute the setup.")
+    if event:
+        reasons.append(f"Macro timing: {event.event} at {event.time_label}.")
+    risk_flags = []
+    if event:
+        risk_flags.append(f"High-impact macro event: {event.event} at {event.time_label}.")
+    risk_flags.extend(f"{row.get('source')}: {row.get('copy')}" for row in opposing[:2])
     return {
         "stance": "WAIT",
         "headline": "Wait for a confirmed hourly rejection before choosing a same-day contract.",
@@ -2089,20 +2104,11 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             "target": "Nearest valid SPY Prophet target line",
             "confidence": confidence,
         },
-        "why": [
-            f"Structure learning is {bundle.learning_profile.confidence_label} with TP1+ {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)}.",
-            flow_reason,
-            darkpool_reason if darkpool_reason else "No large dark-pool level loaded near the active trigger.",
-            f"External read: {len(supporting)} support, {len(opposing)} caution/refute the setup.",
-            f"Macro timing: {event.event} at {event.time_label}." if event else "No sourced catalyst loaded for this session.",
-        ],
+        "why": reasons,
         "avoid": [
             {"label": "Chasing between lines", "reason": "The edge is at the structure trigger, not in the middle of the channel."},
         ],
-        "risk_flags": [
-            f"High-impact macro event: {event.event} at {event.time_label}." if event else "No sourced catalyst loaded for this session.",
-            *[f"{row.get('source')}: {row.get('copy')}" for row in opposing[:2]],
-        ],
+        "risk_flags": risk_flags,
         "source_notes": ["Rule-based summary from the loaded SPY Prophet data bundle."],
         "novice_summary": "Await confirmed line rejection, then evaluate the nearest valid OTM contract.",
     }
@@ -2881,7 +2887,7 @@ def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side
     read = premium_flow_direction(options_intel)
     side = read.get("side")
     if not side:
-        return {"state": "unavailable", "title": "Flow Pressure", "copy": "Flow unavailable. Do not use flow as confirmation.", **read}
+        return {"state": "unavailable", "title": "Unavailable", "copy": "Flow unavailable. Do not use flow as confirmation.", **read}
     if not watch_side or side == "MIXED":
         title = str(read.get("label") or "Mixed pressure")
         copy = "; ".join(read.get("reasons") or ["Flow is loaded, but not directional enough to overrule structure."])
@@ -3778,6 +3784,8 @@ def inject_global_css() -> None:
     .terminal-section{margin-top:14px}
     .command-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
     .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:none}
+    .empty-state,.warning-panel{padding:16px;color:var(--text);line-height:1.45;margin:10px 0}
+    .empty-state b,.warning-panel b{display:block;margin-bottom:4px}
     .terminal-panel{padding:16px;min-height:184px;display:flex;flex-direction:column;gap:10px}
     .panel-head{min-width:0}
     .panel-head>div{min-width:0}
@@ -4685,8 +4693,8 @@ def render_live_command_center(
           <div class='terminal-panel'>
             <div class='panel-head'>
               <div>
-                <div class='panel-label'>Flow Pressure</div>
-                <div class='panel-title'>{escape(str(flow_alignment.get('title') or 'Flow Pressure'))}</div>
+                <div class='panel-label'>Order Flow</div>
+                <div class='panel-title'>{escape(str(flow_alignment.get('title') or 'Unavailable'))}</div>
               </div>
               {ui_icon('pulse', flow_tone, 'md')}
             </div>
@@ -5422,7 +5430,7 @@ def render_morning_context_deck(bundle: MorningBriefingBundle) -> None:
 
 def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
     watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
-    verdicts = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
+    verdicts = [row for row in external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price) if str(row.get("state") or "") != "unavailable"]
     if not verdicts:
         return
     tone_map = {"aligned": "green", "opposes": "red", "risk": "amber", "neutral": "blue", "unavailable": "blue"}
@@ -5856,21 +5864,35 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         times.append(current_ts)
 
     close_values = [float(v) for v in df[close_col].dropna().tolist()]
-    level_values = []
-    relevant_lines = list(primary_lines or []) + select_secondary_lines_for_chart(secondary_lines or [], current_price if current_price is not None else float("nan"), current_ts, secondary_mode)
-    for line in relevant_lines:
+    primary_values = []
+    secondary_values = []
+    selected_secondary = select_secondary_lines_for_chart(secondary_lines or [], current_price if current_price is not None else float("nan"), current_ts, secondary_mode)
+    for line in primary_lines or []:
         for ts in times:
             v = line.tradable_value_at(ts)
             if not pd.isna(v):
-                level_values.append(float(v))
+                primary_values.append(float(v))
+    for line in selected_secondary:
+        for ts in times:
+            v = line.tradable_value_at(ts)
+            if not pd.isna(v):
+                secondary_values.append(float(v))
+    signal_values = []
     if current_price is not None and not pd.isna(current_price):
-        level_values.append(float(current_price))
+        signal_values.append(float(current_price))
     for sg in signals or []:
         for v in [sg.entry_price, sg.stop_price, sg.target_price, sg.line_value_at_rejection]:
             if v is not None and not pd.isna(v):
-                level_values.append(float(v))
+                signal_values.append(float(v))
 
-    all_values = close_values + level_values
+    core_values = close_values + primary_values + signal_values
+    if not core_values:
+        core_values = secondary_values or [0.0]
+    core_lo, core_hi = min(core_values), max(core_values)
+    core_span = max(core_hi - core_lo, 1.0)
+    secondary_pad = max(core_span * 0.75, 8.0)
+    visible_secondary = [v for v in secondary_values if core_lo - secondary_pad <= v <= core_hi + secondary_pad]
+    all_values = core_values + visible_secondary
     lo, hi = min(all_values), max(all_values)
     span = max(hi - lo, 1.0)
     pad = max(span * 0.18, 1.5)
@@ -6953,6 +6975,11 @@ def main() -> None:
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
         if not session_has_candles:
             render_data_notice("Preview mode: live option setup is disabled until the selected session prints candles.", tone="warn")
+            render_empty_state(
+                "Options cockpit pending",
+                "Contracts, marks, bid/ask, spread, and Greeks appear after the selected session has candles and a confirmed or pending structure rejection.",
+                "Use SPY Foresight and the structure map for pre-session planning.",
+            )
         elif strikes:
             state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([

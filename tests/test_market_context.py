@@ -101,6 +101,8 @@ def test_parse_rss_items_and_relevance() -> None:
     assert not is_market_news_relevant("If I had invested my Social Security in the S&P 500")
     assert not is_market_news_relevant("Spirit Airlines shuts down routes after bankruptcy filing")
     assert not is_market_news_relevant("Gold faces headwinds from higher yields and fading fear")
+    assert not is_market_news_relevant("Japan just put a Band-Aid on the yen. Why high oil prices could soon rip it off.")
+    assert not is_market_news_relevant("Why do Americans think we can do socialism? asks hedge-fund manager Ken Griffin")
 
 
 def test_reliable_news_feeds_include_official_and_market_sources() -> None:
