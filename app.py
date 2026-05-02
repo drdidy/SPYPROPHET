@@ -3698,8 +3698,9 @@ def inject_global_css() -> None:
       --mono-font:"Roboto Mono","Cascadia Mono","Consolas",monospace;
     }
     html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
-    .stMarkdown,.stText,.stCaption,.stDataFrame,p,span,button,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
-    [data-testid],[data-baseweb],.stDataFrame,.stDataFrame *,.ag-root,.ag-root *,.dash-table-container,.dash-table-container *{font-family:var(--ui-font)}
+    .stMarkdown,.stText,.stCaption,.stDataFrame,.stMetric,p,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
+    div[data-testid="stButton"] button,div[data-testid="stDownloadButton"] button,div[data-testid="stSelectbox"],div[data-testid="stDateInput"],div[data-testid="stToggle"],div[data-baseweb="tab-list"],.stDataFrame,.stDataFrame *,.ag-root,.ag-root *,.dash-table-container,.dash-table-container *{font-family:var(--ui-font)}
+    span[class*="material-symbols"],span[class*="material-icons"],i[class*="material-icons"],[data-testid="stIconMaterial"]{font-family:"Material Symbols Rounded","Material Symbols Outlined","Material Icons" !important;font-weight:400 !important;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;-webkit-font-feature-settings:"liga";font-feature-settings:"liga";-webkit-font-smoothing:antialiased}
     h1,h2,h3,.brand-title,.morning-title,.section-title,.prophet-header h3,.flow-board-title,.action-headline,.decision-main{font-family:var(--display-font)}
     .block-container{padding-top:2.25rem;max-width:1240px}
     [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
