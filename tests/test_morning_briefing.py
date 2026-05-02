@@ -19,6 +19,7 @@ from app import (
     economic_event_from_ai_calendar_dict,
     darkpool_entry_read,
     darkpool_ranked_levels,
+    external_context_verdicts,
     extract_json_payload_from_text,
     fallback_morning_decision,
     order_flow_board_cards,
@@ -63,6 +64,50 @@ def test_darkpool_entry_read_supports_near_trigger() -> None:
 
     assert read["state"] == "aligned"
     assert "Upper Put Trigger" in read["copy"]
+
+
+def test_external_context_verdicts_support_and_refute_entry() -> None:
+    bundle = _bundle()
+    options = OptionsIntelligence(
+        bundle.options_intelligence.status,
+        bundle.options_intelligence.put_call_open_interest_ratio,
+        bundle.options_intelligence.put_call_volume_ratio,
+        bundle.options_intelligence.max_pain,
+        bundle.options_intelligence.call_wall,
+        bundle.options_intelligence.put_wall,
+        bundle.options_intelligence.selected_quotes,
+        unusual_whales={
+            "flow_alerts": {"flow_bias": "Bullish flow", "alert_count": 3, "net_premium_pressure": 500000},
+            "market_tide": {"tone": "Risk-on options tide"},
+            "net_premium_ticks": {"tone": "Call premium building"},
+            "options_volume": {"put_call_volume_ratio": 0.7},
+            "darkpool": {"key_levels": [{"price": 587.5, "premium": 10_000_000}]},
+            "gex": {"net_gex": -1000000},
+        },
+    )
+    bundle = MorningBriefingBundle(
+        bundle.generated_at,
+        bundle.lines,
+        bundle.economic_events,
+        bundle.global_context,
+        [MarketMove("Dollar Index", "DX-Y.NYB", 100.0, 0.5, 0.3, bundle.generated_at, "Yahoo Finance")],
+        bundle.sector_context,
+        options,
+        bundle.gamma_insight,
+        SentimentContext(SourceStatus("Headline sentiment", "connected", "Headline score."), -2, "Bearish headlines", 1, 3),
+        bundle.technical_context,
+        bundle.news_items,
+        bundle.learning_profile,
+        bundle.source_statuses,
+    )
+
+    verdicts = external_context_verdicts(bundle, "CALL", 587.42, "Upper Call Trigger", 587.42)
+    by_source = {row["source"]: row for row in verdicts}
+
+    assert by_source["Option Flow"]["state"] == "aligned"
+    assert by_source["Dark Pool"]["state"] == "aligned"
+    assert by_source["Headlines"]["state"] == "opposes"
+    assert by_source["Catalyst Clock"]["state"] == "risk"
 
 
 def test_calculate_max_pain_uses_open_interest() -> None:
