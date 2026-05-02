@@ -61,7 +61,7 @@ def test_mock_provider_quotes_are_rejected():
 
     state=build_options_cockpit_state(Strikes(712.61,717,708,_ts("2026-04-29").date()), provider=MockProvider())
     assert state.call_quote is None and state.put_quote is None
-    assert "Mock option quotes are disabled" in state.warning
+    assert "Demo option quotes are disabled" in state.warning
 
 
 def test_truncated_mock_provider_quotes_are_rejected():
@@ -76,13 +76,13 @@ def test_truncated_mock_provider_quotes_are_rejected():
 
     state=build_options_cockpit_state(Strikes(712.61,717,708,_ts("2026-04-29").date()), provider=MockProvider())
     assert state.call_quote is None and state.put_quote is None
-    assert "Mock option quotes are disabled" in state.warning
+    assert "Demo option quotes are disabled" in state.warning
 
 
 def test_state_selection_signal_types_and_no_signal():
     st=Strikes(712.61,717,708,_ts("2026-04-29").date())
     s=build_options_cockpit_state(st)
-    assert s.selected_trade_quote is None and 'Tastytrade quotes unavailable' in s.warning
+    assert s.selected_trade_quote is None and 'Live quote feed unavailable' in s.warning
     cs=TradeSignal('1','CALL','CONFIRMED','UD',0,_ts("2026-04-29T10:00:00"),0,0,0,0,_ts("2026-04-29T11:00:00"),0,0,None,float('nan'),0,0,0,'','')
     ps=TradeSignal('2','PUT','CONFIRMED','UA',0,_ts("2026-04-29T10:00:00"),0,0,0,0,_ts("2026-04-29T11:00:00"),0,0,None,float('nan'),0,0,0,'','')
     assert build_options_cockpit_state(st, latest_signal=cs, provider=FakeOptionProvider()).selected_trade_quote.option_type=='CALL'

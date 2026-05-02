@@ -1496,7 +1496,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     now = pd.Timestamp(now_ct if now_ct is not None else datetime.now(tz=get_central_tz()))
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if not get_unusual_whales_token():
-        return None, unusual_whales_status(False, "Premium order-flow feed is not configured.", skipped=True)
+        return None, unusual_whales_status(False, "Order-flow feed inactive.", skipped=True)
     today = str(now.date())
     errors = []
     flow_payload, err = fetch_unusual_whales_json(
@@ -1743,7 +1743,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
     calendar_detail = (
         f"{len(economic_events)} verified calendar rows loaded from local calendar or Trading Economics."
         if economic_events
-        else "No sourced macro calendar event loaded for this session."
+        else "No scheduled catalyst loaded for this session."
     )
     source_statuses.append(source_status("Economic calendar", bool(economic_events), calendar_detail))
     news_sources = sorted({item.source for item in news_items})
@@ -1979,7 +1979,7 @@ def economic_event_from_ai_calendar_dict(raw: dict) -> EconomicEvent | None:
 def call_openai_calendar_scout(now_ct, days: int = 0) -> tuple[list[EconomicEvent], list[dict], str | None]:
     api_key = get_secret_or_env("OPENAI_API_KEY")
     if not api_key:
-        return [], [], "Live synthesis key is not configured."
+        return [], [], "Live synthesis connection is not configured."
     if not openai_web_search_enabled():
         return [], [], "Current source scan is not enabled."
     model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
@@ -2015,7 +2015,7 @@ def bundle_with_economic_events(bundle: MorningBriefingBundle, events: list[Econ
     calendar_detail = (
         f"{len(events)} verified calendar rows found by current source scan for today's same-day session."
         if events
-        else scout_warning or "No sourced macro calendar events returned for today's same-day session."
+        else scout_warning or "No scheduled catalyst was found for today's same-day session."
     )
     statuses.append(source_status("Economic calendar", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
     statuses.append(source_status("Calendar scout", bool(events), calendar_detail, pd.Timestamp.now(tz=get_central_tz())))
@@ -2117,7 +2117,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
 def call_openai_morning_briefing(prompt: str) -> tuple[str | None, str | None, list[dict]]:
     api_key = get_secret_or_env("OPENAI_API_KEY")
     if not api_key:
-        return None, "Live synthesis key is not configured.", []
+        return None, "Live synthesis connection is not configured.", []
     model = get_secret_or_env("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
     try:
         response = requests.post(
@@ -2158,7 +2158,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
         readiness_score -= 3
     readiness_score = int(max(15, min(85, readiness_score)))
     lines = "\n".join(f"- {row['name']}: {fmt_price(row['value'])} ({row['role']}, anchor {fmt_price(row['anchor_price'])})" for row in bundle.lines) or "- Structure lines unavailable."
-    event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No dated macro events loaded."
+    event_lines = "\n".join(f"- {event.event} at {event.time_label} ({event.impact})" for event in bundle.economic_events[:6]) or "- No scheduled catalyst loaded."
     global_lines = "\n".join(f"- {move_line(move)}" for move in bundle.global_context[:8]) or "- Global market data unavailable."
     top_sectors = ", ".join(move_line(move) for move in bundle.sector_context[:3]) or "Unavailable"
     weak_sectors = ", ".join(move_line(move) for move in bundle.sector_context[-3:]) or "Unavailable"
@@ -2898,8 +2898,8 @@ def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side
         copy = "Flow agrees with the current structure watch. Still wait for SPY Prophet confirmation at the line."
         state = "aligned"
     else:
-        title = f"Against {display_state_label(watch_side).lower()} setup"
-        copy = "Flow is leaning the other way, so require a cleaner rejection or wait."
+        title = f"Conflicts with {display_state_label(watch_side).lower()} setup"
+        copy = "Flow leans the other way, so require a cleaner rejection or wait."
         state = "opposes"
     reason_text = "; ".join(read.get("reasons") or [])
     if reason_text:
@@ -4572,7 +4572,7 @@ def darkpool_entry_read(
         state = "opposes"
         direction = "below" if nearest["price"] < anchor else "above"
         copy = f"Nearest large dark-pool level is {direction} the {display_state_label(side).lower()} entry at {fmt_price(nearest['price'])}; treat it as a pullback/chop risk unless rejection is strong."
-        title = f"Against {display_state_label(side).lower()} setup"
+        title = f"Conflicts with {display_state_label(side).lower()} setup"
     else:
         state = "neutral"
         title = f"Largest level {fmt_price(largest['price'])}"
@@ -4636,7 +4636,7 @@ def render_live_command_center(
         if options_market_data
         else "Live quote feed unavailable. Delayed prices appear when available."
     )
-    provider_text = option_provider_label(options_state, {}) if options_state else "TASTYTRADE setup needed"
+    provider_text = option_provider_label(options_state, {}) if options_state else "Live quotes inactive"
     direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
     setup_tone = _tone_for_text(signal_title)
     options_tone = "green" if options_live else "amber"
@@ -4838,7 +4838,7 @@ def render_economic_calendar(events: list[EconomicEvent]) -> None:
             "<div class='calendar-row'>"
             "<div class='calendar-event'>No scheduled catalyst</div>"
             "<div class='calendar-meta'><span>Current session</span></div>"
-            "<div class='calendar-notes'>No sourced macro calendar event loaded for this session.</div>"
+            "<div class='calendar-notes'>No scheduled catalyst loaded for this session.</div>"
             "</div>"
         )
     st.markdown(f"<div class='terminal-panel'>{head}<div class='calendar-list'>{''.join(rows)}</div></div>", unsafe_allow_html=True)
@@ -5362,7 +5362,7 @@ def render_ai_verification_panel(result: MorningBriefingResult, ai_ready: bool, 
         _ai_verify_card(
             "Synthesis",
             "Live" if ai_ready else "Offline",
-            "SPY Foresight synthesis can refresh the read." if ai_ready else "Live synthesis unavailable; API key not configured.",
+            "SPY Foresight synthesis can refresh the read." if ai_ready else "Live synthesis unavailable; connection not configured.",
             "good" if ai_ready else "warn",
         ),
         _ai_verify_card(
@@ -5480,7 +5480,7 @@ def _evidence_card(label: str, value: str, detail: str, as_of=None, state: str =
 def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     event = _first_high_impact_event(bundle.economic_events)
     event_source = "Macro Calendar" if event else "No scheduled catalyst"
-    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No sourced macro calendar event loaded for this session."
+    event_detail = f"{event.event} at {event.time_label} ({event.impact})" if event else "No scheduled catalyst loaded for this session."
     event_state = "connected" if event else "watch"
     quote_providers = sorted({display_state_label(str(q.get("provider") or "quote")) for q in (bundle.options_intelligence.selected_quotes or [])})
     quote_detail = ", ".join(quote_providers) if quote_providers else "No selected contract quote loaded."
@@ -5494,7 +5494,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         if whale_flow
         else f"Recent tape {whale_recent.get('tone')}; premium tape {whale_premium.get('tone')}."
         if whale_recent or whale_premium
-        else "Premium order-flow feed was not loaded into this run."
+        else "Order-flow context was not part of this read."
     )
     news_asof = bundle.news_items[0].published if bundle.news_items else None
     global_asof = bundle.global_context[0].as_of if bundle.global_context else None
@@ -5565,16 +5565,6 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
             rows.append(_source_row_html(citation_title(citation), "connected", "Current source scan referenced this page in the generated read.", result.generated_at, citation.get("url"), "scout"))
     else:
         rows.append(_source_row_html("Current source scan", "not used", "No current source references were returned for this run.", result.generated_at, state="scout"))
-    upgrades = [
-        ("Macro calendar", "Generate SPY Foresight for current calendar scanning, or connect a structured calendar source for scheduled releases."),
-        ("Flow pressure", "Connect the premium flow token for same-day alerts, recent tape, net premium, market tide, dark-pool, IV, Greeks, and GEX context."),
-        ("Options depth", "Live broker data gives bid, ask, spread, and Greeks. Premium flow adds order-flow context; market data remains the delayed backup."),
-        ("Current scan", "Keep live synthesis enabled so the engine can cite current public pages when accessible."),
-    ]
-    upgrade_html = "".join(
-        f"<div class='upgrade-card'><div class='upgrade-name'>{escape(name)}</div><div class='upgrade-meta'>{escape(copy)}</div></div>"
-        for name, copy in upgrades
-    )
     st.markdown(
         f"""
         <div class='source-ledger'>
@@ -5586,8 +5576,6 @@ def render_actual_source_ledger(bundle: MorningBriefingBundle, result: MorningBr
             {ui_icon('compass', 'blue', 'md')}
           </div>
           <div class='source-ledger-grid'>{''.join(rows)}</div>
-          <div class='source-ledger-title' style='margin-top:12px'>Data Coverage Gaps</div>
-          <div class='upgrade-grid'>{upgrade_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -6299,7 +6287,7 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
     if selected_strikes is None or pd.isna(selected_strikes.underlying_price):
         return OptionsCockpitState(provider_name,float('nan'),None,None,None,None,[],None,'Invalid/missing strikes or underlying.', 'No options cockpit available.')
     if provider is None:
-        return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Tastytrade quotes unavailable. Check credentials or provider connection.', 'No live options provider available.')
+        return OptionsCockpitState(provider_name, selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Live quote feed unavailable. Delayed quote context will appear when available.', 'No live options feed available.')
     try:
         q = provider.get_selected_quotes(selected_strikes.underlying_price, selected_strikes.expiration_date, selected_strikes.call_strike, selected_strikes.put_strike)
     except Exception as e:
@@ -6312,7 +6300,7 @@ def build_options_cockpit_state(selected_strikes, latest_signal=None, decision_s
         provider_name = call_q.provider
     provider_names = [provider_name, getattr(call_q, "provider", None), getattr(put_q, "provider", None)]
     if any(is_mock_option_provider_name(name) for name in provider_names):
-        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Mock option quotes are disabled. Configure live Tastytrade credentials for options data.', 'No live options provider available.')
+        return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Demo option quotes are disabled. Live or delayed market data is required.', 'No live options feed available.')
     if (call_q or put_q) and not any(provider_is_allowed_option_data(name) for name in provider_names):
         return OptionsCockpitState("TASTYTRADE", selected_strikes.underlying_price, selected_strikes.expiration_date, None, None, None, [], None, 'Unsupported option quote provider. Use live Tastytrade or delayed yfinance data.', 'No supported options provider available.')
     missing_market_data = (call_q or put_q) and not (quote_has_live_market_data(call_q) or quote_has_live_market_data(put_q))
@@ -6380,7 +6368,7 @@ def option_provider_label(state: OptionsCockpitState | None, provider_status: di
     if state and (state.call_quote or state.put_quote):
         return state.provider
     if provider_status.get("missing_secrets"):
-        return "TASTYTRADE setup needed"
+        return "Live quotes inactive"
     if provider_status.get("last_error") or (state and state.warning):
         return "TASTYTRADE unavailable"
     return provider_status.get("provider") or "TASTYTRADE"
@@ -6396,7 +6384,7 @@ def friendly_provider_error(error: str | None) -> str:
     if "timeout" in lowered:
         return "Tastytrade took too long to respond. Refresh once or continue with delayed quote context."
     if "auth" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
-        return "Tastytrade authentication failed. Verify live quote credentials."
+        return "Tastytrade authentication failed. Verify the live quote connection."
     return "Tastytrade live quotes are not active for this run. Delayed quote context remains available when yfinance has the chain."
 
 
@@ -6765,7 +6753,7 @@ def main() -> None:
     structure_projection_time = get_structure_projection_time(now_ct)
     session_has_candles = selected_session_day in available_session_days
     is_live_session = selected_session_day == real_now_ct.date()
-    st.sidebar.caption("Provider: TASTYTRADE")
+    st.sidebar.caption("Options feed: Tastytrade")
     st.sidebar.caption("Structure calibration: Protected")
     st.sidebar.caption(f"Actual CT: {real_now_ct.strftime('%H:%M:%S %Z')}")
     st.sidebar.caption(f"Session clock: {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")

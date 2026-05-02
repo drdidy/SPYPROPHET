@@ -165,7 +165,7 @@ def test_flow_aware_contracts_use_nearby_otm_flow_not_far_chase() -> None:
     assert s.put_strike == 716
 
 
-def test_flow_alignment_warns_when_pressure_fights_watch_side() -> None:
+def test_flow_alignment_warns_when_pressure_conflicts_with_watch_side() -> None:
     options = OptionsIntelligence(
         SourceStatus("Options intelligence", "connected", ""),
         1,
@@ -180,4 +180,4 @@ def test_flow_alignment_warns_when_pressure_fights_watch_side() -> None:
     read = premium_flow_alignment(options, "CALL")
 
     assert read["state"] == "opposes"
-    assert "Against call setup" in read["title"]
+    assert "Conflicts with call setup" in read["title"]

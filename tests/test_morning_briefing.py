@@ -199,10 +199,10 @@ def test_prompt_carries_truthful_source_statuses() -> None:
 
 
 def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
-    result = rule_based_morning_briefing(_bundle(), ai_warning="Live synthesis key is not configured.")
+    result = rule_based_morning_briefing(_bundle(), ai_warning="Live synthesis connection is not configured.")
 
     assert result.provider == "Rule-based verified briefing"
-    assert any("Live synthesis key is not configured" in warning for warning in result.warnings)
+    assert any("Live synthesis connection is not configured" in warning for warning in result.warnings)
     assert "True dealer GEX is not available" not in result.text
     assert any("GEX_API_URL is not configured" in warning for warning in result.warnings)
     assert "CPI at 8:30 AM ET / 7:30 AM CT" in result.text
