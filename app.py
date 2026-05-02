@@ -4204,6 +4204,26 @@ def inject_global_css() -> None:
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
     .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
     .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+    .morning-control,.morning-hero,.morning-line-card,.morning-card,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
+    .morning-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
+    .morning-title{font-size:1.9rem}
+    .action-headline{font-size:1.22rem}
+    .flow-board-title,.evidence-title{font-size:1.06rem}
+    .ai-verify-title,.morning-narrative-title,.source-ledger-title{font-size:1rem}
+    .morning-kicker,.morning-stat-label,.morning-line-role,.morning-card-title,.flow-read-label,.flow-label,.action-kicker,.action-ticket-label,.ai-verify-label,.evidence-label,.briefing-mini-label,.source-name{font-family:var(--ui-font);font-size:.74rem;font-weight:700;letter-spacing:.01em;text-transform:none;line-height:1.25;color:#aeb9c6}
+    .action-kicker{color:var(--amber)}
+    .morning-stat-value,.morning-line-value,.morning-orb-value,.morning-card-value,.flow-read-value,.flow-value,.action-ticket-value,.ai-verify-value,.evidence-value,.briefing-mini-value{font-family:var(--ui-font);font-variant-numeric:tabular-nums;font-weight:780;letter-spacing:0;line-height:1.22;color:var(--text)}
+    .morning-line-value{font-size:1.62rem}
+    .morning-orb-value{font-size:1.9rem}
+    .morning-stat-value{font-size:clamp(.94rem,1.15vw,1.05rem);overflow-wrap:anywhere}
+    .morning-card-value,.flow-read-value,.flow-value,.action-ticket-value,.ai-verify-value,.evidence-value{font-size:1rem}
+    .morning-subtitle,.morning-stat-copy,.morning-line-anchor,.morning-card-copy,.flow-board-copy,.flow-read-copy,.flow-copy,.flow-means,.action-summary,.action-ticket-copy,.action-reason,.ai-verify-copy,.ai-verify-note,.morning-narrative-body,.evidence-copy,.evidence-detail,.source-row-meta,.scout-role,.citation-url{font-size:.82rem;line-height:1.46;color:#9fb0c2}
+    .morning-chip,.flow-read-bullets span{font-size:.74rem;line-height:1.25}
+    .section-kicker{font-family:var(--ui-font);font-size:.95rem;font-weight:760;letter-spacing:0;color:var(--text);margin:16px 0 8px}
+    .morning-card,.evidence-card{min-height:152px}
+    .flow-card{min-height:196px}
+    .action-ticket{min-height:94px}
+    .evidence-asof{font-family:var(--ui-font);font-variant-numeric:tabular-nums;font-size:.76rem}
     .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
     .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
@@ -5159,7 +5179,7 @@ def _line_tone(role: str | None) -> str:
 def _first_quote_label(options: OptionsIntelligence) -> tuple[str, str, list[str]]:
     quotes = options.selected_quotes or []
     if not quotes:
-        return "No contract loaded", "Tastytrade/yfinance quote will appear when the option chain is available.", []
+        return "No contract loaded", "Contract quote appears when the option chain is available.", []
     call_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "CALL"), None)
     put_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "PUT"), None)
     if call_quote and put_quote:
