@@ -6114,7 +6114,15 @@ def _wrap_text(text: str, max_chars: int, max_lines: int) -> list[str]:
     words = re.split(r"\s+", str(text or "").strip())
     lines: list[str] = []
     current = ""
+
+    def trim_line(value: str) -> str:
+        value = str(value or "").strip()
+        if max_chars <= 3:
+            return value[:max_chars]
+        return value if len(value) <= max_chars else value[: max_chars - 3].rstrip() + "..."
+
     for word in words:
+        word = trim_line(word)
         candidate = f"{current} {word}".strip()
         if len(candidate) <= max_chars:
             current = candidate
@@ -6129,8 +6137,10 @@ def _wrap_text(text: str, max_chars: int, max_lines: int) -> list[str]:
     if len(lines) > max_lines:
         lines = lines[:max_lines]
     if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
-        lines[-1] = lines[-1][: max(0, max_chars - 3)].rstrip() + "..."
-    return lines or [""]
+        lines[-1] = trim_line(lines[-1])
+        if not lines[-1].endswith("...") and max_chars > 3:
+            lines[-1] = lines[-1][: max(0, max_chars - 3)].rstrip() + "..."
+    return [trim_line(line) for line in lines] or [""]
 
 
 def _svg_text(x: int, y: int, text, size: int, fill: str = "#f8fafc", weight: int = 700, anchor: str = "start", opacity: float = 1.0) -> str:
@@ -6145,11 +6155,35 @@ def _svg_multiline(x: int, y: int, text: str, size: int, fill: str, max_chars: i
     return "".join(_svg_text(x, y + (idx * line_height), line, size, fill, weight) for idx, line in enumerate(_wrap_text(text, max_chars, max_lines)))
 
 
+def _brief_poster_text(value, max_chars: int, fallback: str = "Pending") -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text or text.lower() in {"-", "none", "nan"}:
+        text = fallback
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)].rstrip() + "..."
+
+
+def _brief_poster_bullet(value, max_chars: int = 70) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = text.replace("High-impact macro event:", "Macro:")
+    text = text.replace("Catalyst Clock:", "Catalyst:")
+    text = text.replace("External context:", "Context:")
+    text = re.sub(r";\s*avoid entries.*", "; wait for clear timing.", text, flags=re.IGNORECASE)
+    if text.lower().startswith("catalyst:") and "wait for clear timing" in text.lower():
+        return "Catalyst timing: wait until clear."
+    text = re.sub(r"\bconfirmation\b", "confirm", text, flags=re.IGNORECASE)
+    text = text.replace("Structure confirmation", "Structure confirm")
+    return _brief_poster_text(text, max_chars, "Confirm at trigger.")
+
+
 def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str, accent: str, value_size: int = 58) -> str:
     value_size = min(value_size, 36 if len(str(value)) > 14 else value_size, 30 if len(str(value)) > 22 else value_size)
     compact = h <= 190
+    value_chars = max(10, int((w - 68) / max(10, value_size * 0.52)))
+    copy_chars = max(16, int((w - 68) / 9.5))
     if compact and len(str(value)) > 14:
-        value_svg = _svg_multiline(x + 34, y + 88, value, value_size, "#f8fafc", 18, 2, 34, 900)
+        value_svg = _svg_multiline(x + 34, y + 88, value, value_size, "#f8fafc", value_chars, 2, 34, 900)
         copy_y = y + 150
     else:
         value_svg = _svg_text(x + 34, y + (120 if compact else 122), value, value_size, "#f8fafc", 900)
@@ -6160,7 +6194,7 @@ def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str,
         f"<rect x='{x}' y='{y}' width='{w}' height='5' rx='3' fill='{accent}' opacity='.8'/>"
         f"{_svg_text(x + 34, y + (44 if compact else 52), title.upper(), 25, accent, 900)}"
         f"{value_svg}"
-        f"{_svg_multiline(x + 34, copy_y, copy, 24 if h > 190 else 18, '#d7e6f7', 27, 3 if h > 190 else 1, 30, 500)}"
+        f"{_svg_multiline(x + 34, copy_y, copy, 24 if h > 190 else 18, '#d7e6f7', copy_chars if compact else 27, 3 if h > 190 else 1, 30, 500)}"
         f"</g>"
     )
 
@@ -6210,13 +6244,20 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
     for idx, item in enumerate(why_items[:3]):
         yy = 1650 + idx * 80
         why_svg += _svg_text(76, yy, str(idx + 1), 24, "#23b7ff", 900)
-        why_svg += _svg_multiline(120, yy, item, 20, "#e8f1ff", 36, 2, 29, 500)
+        why_svg += _svg_multiline(120, yy, _brief_poster_bullet(item), 20, "#e8f1ff", 36, 2, 29, 500)
     risk_items = ctx["risks"] or [ctx["invalidation"]]
     risk_svg = ""
     for idx, item in enumerate(risk_items[:3]):
         yy = 1650 + idx * 80
         risk_svg += f"<circle cx='858' cy='{yy - 8}' r='7' fill='#ff554a'/>"
-        risk_svg += _svg_multiline(884, yy, item, 20, "#e8f1ff", 31, 2, 29, 500)
+        risk_svg += _svg_multiline(884, yy, _brief_poster_bullet(item, 60), 20, "#e8f1ff", 31, 2, 29, 500)
+    flow_value = _brief_poster_text(ctx["flow_value"], 30, "Flow pending")
+    flow_copy = "Confirm at trigger." if "pending" in flow_value.lower() else _brief_poster_text(ctx["flow_copy"], 42, "Confirm at trigger.")
+    darkpool_value = _brief_poster_text(ctx["darkpool_value"], 24, "Pending")
+    darkpool_copy = "Levels pending." if darkpool_value == "Pending" else _brief_poster_text(ctx["darkpool_copy"], 34, "Levels pending.")
+    event_value = _brief_poster_text(ctx["event_value"], 36, "No scheduled catalyst")
+    event_copy = _brief_poster_text(ctx["event_copy"], 34, "Timing risk clear.")
+    gex_value = _brief_poster_text(ctx["gex_value"], 24, "Pending")
     return f"""
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200" preserveAspectRatio="xMidYMin meet" style="width:100%;max-width:1600px;height:auto;display:block;">
   <defs>
@@ -6252,13 +6293,13 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
       "Avoid forcing direction while price is between triggers.",
       f"Best {side_name.lower()} idea: wait for rejection near {upper}.",
       "Confirmation requires rejection and failed reclaim.",
-  ], f"{side_name} Entry A", f"Rejection near {upper} after opening above {primary}.", branch_a_contract)}
+  ], f"{side_name} Entry A", f"Reject {upper}; confirm next candle.", branch_a_contract)}
   {_svg_branch(830, 860, 720, 620, "red", f"If RTH opens below {primary}", f"Below {primary} -> retest", [
       f"Below the line, {primary} becomes resistance.",
       f"Wait for a retest of {primary} from underneath.",
       "A clean rejection confirms the setup path.",
       f"Then price can press toward {lower} and {ctx['tp1']}.",
-  ], f"{side_name} Entry B", f"Retest and rejection at {primary} after opening below.", branch_b_contract)}
+  ], f"{side_name} Entry B", f"Retest {primary}; reject from below.", branch_b_contract)}
   <rect x="26" y="1530" width="432" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
   {_svg_text(72, 1588, "ACTIONABLE TRADE PLAN", 29, "#23b7ff", 900)}
   {why_svg}
@@ -6274,10 +6315,10 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
   <rect x="1170" y="1530" width="404" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
   {_svg_text(1216, 1588, "KEY LEVELS", 29, "#23b7ff", 900)}
   {key_rows}
-  {_svg_card(26, 1920, 430, 190, "Flow", ctx["flow_value"], ctx["flow_copy"], "#ff554a" if ctx["flow_tone"] == "red" else "#39ff7a" if ctx["flow_tone"] == "green" else "#23b7ff", 32)}
-  {_svg_card(480, 1920, 350, 190, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], "#23b7ff", 34)}
-  {_svg_card(854, 1920, 330, 190, "Catalyst", ctx["event_value"], ctx["event_copy"], "#f5c451", 30)}
-  {_svg_card(1208, 1920, 366, 190, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", "#b86cff", 30)}
+  {_svg_card(26, 1920, 430, 190, "Flow", flow_value, flow_copy, "#ff554a" if ctx["flow_tone"] == "red" else "#39ff7a" if ctx["flow_tone"] == "green" else "#23b7ff", 32)}
+  {_svg_card(480, 1920, 350, 190, "Dark Pool", darkpool_value, darkpool_copy, "#23b7ff", 34)}
+  {_svg_card(854, 1920, 330, 190, "Catalyst", event_value, event_copy, "#f5c451", 30)}
+  {_svg_card(1208, 1920, 366, 190, "GEX / Reminder", gex_value, "Outside data confirms or cautions.", "#b86cff", 30)}
   <line x1="350" y1="2142" x2="1250" y2="2142" stroke="rgba(215,230,247,.25)" stroke-width="1"/>
   {_svg_text(800, 2164, "Educational market brief. Wait for confirmation before acting.", 26, "#d7e6f7", 600, "middle", .9)}
 </svg>
@@ -6311,9 +6352,49 @@ def _pil_text(draw, xy, text, size, fill, bold=False, anchor=None):
     draw.text(xy, str(text), font=font, fill=fill, anchor=anchor)
 
 
-def _pil_text_lines(draw, x, y, text, size, fill, max_chars, max_lines, line_gap=8, bold=False):
+def _pil_text_width(draw, text: str, font) -> int:
+    left, _, right, _ = draw.textbbox((0, 0), str(text), font=font)
+    return max(0, right - left)
+
+
+def _pil_ellipsize(draw, text: str, font, max_width: int) -> str:
+    text = str(text or "").strip()
+    if _pil_text_width(draw, text, font) <= max_width:
+        return text
+    suffix = "..."
+    available = max(1, max_width - _pil_text_width(draw, suffix, font))
+    while text and _pil_text_width(draw, text, font) > available:
+        text = text[:-1].rstrip()
+    return f"{text}{suffix}" if text else suffix
+
+
+def _pil_wrap_lines(draw, text: str, font, max_width: int, max_lines: int) -> list[str]:
+    words = re.split(r"\s+", str(text or "").strip())
+    lines: list[str] = []
+    current = ""
+    for raw_word in words:
+        word = _pil_ellipsize(draw, raw_word, font, max_width)
+        candidate = f"{current} {word}".strip()
+        if not current or _pil_text_width(draw, candidate, font) <= max_width:
+            current = candidate
+            continue
+        lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
+        lines[-1] = _pil_ellipsize(draw, lines[-1], font, max_width)
+        if not lines[-1].endswith("..."):
+            lines[-1] = _pil_ellipsize(draw, f"{lines[-1]}...", font, max_width)
+    return lines or [""]
+
+
+def _pil_text_lines(draw, x, y, text, size, fill, max_chars, max_lines, line_gap=8, bold=False, max_width=None):
     font = _load_pil_font(size, bold)
-    for idx, line in enumerate(_wrap_text(text, max_chars, max_lines)):
+    lines = _pil_wrap_lines(draw, text, font, max_width, max_lines) if max_width else _wrap_text(text, max_chars, max_lines)
+    for idx, line in enumerate(lines):
         draw.text((x, y + idx * (size + line_gap)), line, font=font, fill=fill)
 
 
@@ -6321,16 +6402,20 @@ def _pil_card(draw, x, y, w, h, title, value, copy, accent, value_size=54):
     value_text = str(value)
     value_size = min(value_size, 36 if len(value_text) > 14 else value_size, 30 if len(value_text) > 22 else value_size)
     compact = h <= 190
+    text_width = max(40, w - 68)
     draw.rounded_rectangle((x, y, x + w, y + h), radius=22, fill=(2, 12, 25, 255), outline=accent, width=3)
     draw.rounded_rectangle((x, y, x + w, y + 8), radius=4, fill=accent)
     _pil_text(draw, (x + 34, y + 48), str(title).upper(), 25, accent, True)
     if compact and len(value_text) > 18:
-        _pil_text_lines(draw, x + 34, y + 86, value_text, 24, (248, 251, 255, 255), 22, 2, bold=True)
+        _pil_text_lines(draw, x + 34, y + 86, value_text, 24, (248, 251, 255, 255), 22, 2, line_gap=5, bold=True, max_width=text_width)
         copy_y = y + 146
     else:
-        _pil_text(draw, (x + 34, y + (88 if compact else 122)), value_text, value_size, (248, 251, 255, 255), True)
+        if compact:
+            _pil_text_lines(draw, x + 34, y + 90, value_text, value_size, (248, 251, 255, 255), 22, 1, bold=True, max_width=text_width)
+        else:
+            _pil_text(draw, (x + 34, y + 122), value_text, value_size, (248, 251, 255, 255), True)
         copy_y = y + (128 if compact else 222)
-    _pil_text_lines(draw, x + 34, copy_y, copy, 18 if compact else 24, (215, 230, 247, 255), 31 if compact else 27, 1 if compact else 3)
+    _pil_text_lines(draw, x + 34, copy_y, copy, 18 if compact else 24, (215, 230, 247, 255), 31 if compact else 27, 1 if compact else 3, max_width=text_width if compact else None)
 
 
 def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes | None:
@@ -6387,19 +6472,19 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
         "Avoid forcing direction while price is between triggers.",
         f"Best {side_name.lower()} idea: wait for rejection near {upper}.",
         "Confirmation requires rejection and failed reclaim.",
-    ], f"{side_name} Entry A", f"Rejection near {upper} after opening above {primary}.", contract)
+    ], f"{side_name} Entry A", f"Reject {upper}; confirm next candle.", contract)
     branch(830, 860, "red", f"If RTH opens below {primary}", f"Below {primary} -> retest", [
         f"Below the line, {primary} becomes resistance.",
         f"Wait for a retest of {primary} from underneath.",
         "A clean rejection confirms the setup path.",
         f"Then price can press toward {lower} and {ctx['tp1']}.",
-    ], f"{side_name} Entry B", f"Retest and rejection at {primary} after opening below.", contract)
+    ], f"{side_name} Entry B", f"Retest {primary}; reject from below.", contract)
     draw.rounded_rectangle((26, 1530, 458, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
     _pil_text(draw, (72, 1588), "ACTIONABLE TRADE PLAN", 29, blue, True)
     for idx, item in enumerate((ctx["why"] or [ctx["score_read"]])[:3]):
         yy = 1640 + idx * 80
         _pil_text(draw, (76, yy), str(idx + 1), 24, blue, True)
-        _pil_text_lines(draw, 120, yy - 12, item, 20, (232, 241, 255, 255), 36, 2)
+        _pil_text_lines(draw, 120, yy - 12, _brief_poster_bullet(item), 20, (232, 241, 255, 255), 36, 2)
     draw.rounded_rectangle((482, 1530, 782, 1890), radius=18, fill=(2, 12, 25, 255), outline=green, width=3)
     _pil_text(draw, (532, 1588), "TARGETS", 29, green, True)
     for idx, (label, value) in enumerate([("TP1", ctx["tp1"]), ("TP2", ctx["tp2"]), ("TARGET", ctx["target"])]):
@@ -6411,7 +6496,7 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
     for idx, item in enumerate((ctx["risks"] or [ctx["invalidation"]])[:3]):
         yy = 1640 + idx * 80
         draw.ellipse((852, yy - 8, 866, yy + 6), fill=red)
-        _pil_text_lines(draw, 884, yy - 12, item, 18, (232, 241, 255, 255), 30, 2)
+        _pil_text_lines(draw, 884, yy - 12, _brief_poster_bullet(item, 60), 18, (232, 241, 255, 255), 30, 2)
     draw.rounded_rectangle((1170, 1530, 1574, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
     _pil_text(draw, (1216, 1588), "KEY LEVELS", 29, blue, True)
     for idx, (label, value) in enumerate(ctx["key_levels"] or [("Structure", "Pending")]):
@@ -6421,10 +6506,12 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
         _pil_text(draw, (1216, yy - 34), value, 28, (248, 251, 255, 255), True)
         _pil_text_lines(draw, 1332, yy - 33, label, 17, (215, 230, 247, 255), 18, 2, bold=True)
     flow_accent = red if ctx["flow_tone"] == "red" else green if ctx["flow_tone"] == "green" else blue
-    _pil_card(draw, 26, 1920, 430, 190, "Flow", ctx["flow_value"], ctx["flow_copy"], flow_accent, 32)
-    _pil_card(draw, 480, 1920, 350, 190, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], blue, 34)
-    _pil_card(draw, 854, 1920, 330, 190, "Catalyst", ctx["event_value"], ctx["event_copy"], amber, 30)
-    _pil_card(draw, 1208, 1920, 366, 190, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", purple, 30)
+    flow_value = _brief_poster_text(ctx["flow_value"], 30, "Flow pending")
+    darkpool_value = _brief_poster_text(ctx["darkpool_value"], 24, "Pending")
+    _pil_card(draw, 26, 1920, 430, 190, "Flow", flow_value, "Confirm at trigger." if "pending" in flow_value.lower() else _brief_poster_text(ctx["flow_copy"], 42, "Confirm at trigger."), flow_accent, 32)
+    _pil_card(draw, 480, 1920, 350, 190, "Dark Pool", darkpool_value, "Levels pending." if darkpool_value == "Pending" else _brief_poster_text(ctx["darkpool_copy"], 34, "Levels pending."), blue, 34)
+    _pil_card(draw, 854, 1920, 330, 190, "Catalyst", _brief_poster_text(ctx["event_value"], 36, "No scheduled catalyst"), _brief_poster_text(ctx["event_copy"], 34, "Timing risk clear."), amber, 30)
+    _pil_card(draw, 1208, 1920, 366, 190, "GEX / Reminder", _brief_poster_text(ctx["gex_value"], 24, "Pending"), "Outside data confirms or cautions.", purple, 30)
     draw.line((350, 2142, 1250, 2142), fill=(215, 230, 247, 70), width=1)
     _pil_text(draw, (800, 2164), "Educational market brief. Wait for confirmation before acting.", 26, (215, 230, 247, 230), False, "mm")
     out = BytesIO()
