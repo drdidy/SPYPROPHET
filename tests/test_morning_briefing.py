@@ -263,6 +263,66 @@ def test_daily_brief_renderer_exports_visual_files() -> None:
     assert pdf and pdf.startswith(b"%PDF")
 
 
+def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
+    bundle = _bundle()
+    lines = [
+        {"code": "UP", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
+        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "LC", "name": "Lower Call Trigger", "role": "Call Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+    ]
+    bundle = MorningBriefingBundle(
+        bundle.generated_at,
+        lines,
+        bundle.economic_events,
+        bundle.global_context,
+        bundle.macro_context,
+        bundle.sector_context,
+        bundle.options_intelligence,
+        bundle.gamma_insight,
+        bundle.sentiment,
+        bundle.technical_context,
+        bundle.news_items,
+        bundle.learning_profile,
+        bundle.source_statuses,
+    )
+    result = MorningBriefingResult(
+        bundle.generated_at,
+        "OpenAI",
+        "gpt-5.2",
+        json.dumps({
+            "stance": "WATCH_PUT",
+            "headline": "Wait for a put rejection.",
+            "primary_trade": {
+                "trigger_line": "Upper Put Trigger",
+                "trigger_price": "727.87",
+                "contract": "PUT 725",
+                "confidence": 66,
+            },
+            "why": ["Opening pivot decides whether price can reach the upper put trigger."],
+            "risk_flags": [],
+        }),
+        66,
+        [],
+        [],
+        [],
+    )
+
+    context = build_daily_brief_context(bundle, result)
+    svg = render_daily_brief_svg(bundle, result)
+
+    assert context["primary_value"] == "722.47"
+    assert context["entry_value"] == "727.87"
+    assert context["upper_value"] == "727.87"
+    assert context["contract_value"] == "PUT 725 / PUT 720"
+    assert context["entry_a_contract"] == "PUT 725"
+    assert context["entry_b_contract"] == "PUT 720"
+    assert "722.47 -&gt; 727.87" in svg
+    key_values = [value for _, value in context["key_levels"]]
+    assert key_values == list(dict.fromkeys(key_values))
+    assert ("Opening Pivot / Lower Put Trigger", "722.47") in context["key_levels"]
+
+
 def test_openai_request_payload_enables_web_search() -> None:
     payload = build_openai_request_payload("brief me", "gpt-4.1-mini", enable_web_search=True)
 

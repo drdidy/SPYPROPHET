@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -5980,6 +5981,95 @@ def _brief_neighbor_lines(bundle: MorningBriefingBundle, value: float) -> tuple[
     return upper, lower
 
 
+def _brief_sorted_lines(bundle: MorningBriefingBundle) -> list[dict]:
+    rows = []
+    for line in bundle.lines or []:
+        value = _finite_float(line.get("value"))
+        if not pd.isna(value):
+            rows.append({**line, "_value": value})
+    return sorted(rows, key=lambda row: row["_value"])
+
+
+def _brief_role_lines(lines: list[dict], side: str | None) -> list[dict]:
+    side = str(side or "").upper()
+    if not side:
+        return []
+    return [line for line in lines if side in str(line.get("role") or line.get("name") or "").upper()]
+
+
+def _brief_line_identity(line: dict | None) -> tuple[str, str]:
+    if not isinstance(line, dict):
+        return ("", "")
+    return (str(line.get("name") or ""), str(line.get("code") or ""))
+
+
+def _brief_same_line(left: dict | None, right: dict | None) -> bool:
+    return bool(_brief_line_identity(left)[0] or _brief_line_identity(left)[1]) and _brief_line_identity(left) == _brief_line_identity(right)
+
+
+def _brief_opening_pivot_line(lines: list[dict], entry_line: dict, side: str | None) -> dict:
+    side = str(side or "").upper()
+    entry_value = _finite_float(entry_line.get("_value", entry_line.get("value")))
+    if pd.isna(entry_value):
+        return entry_line
+    same_side = _brief_role_lines(lines, side)
+    if side == "PUT":
+        lower_same_side = [line for line in same_side if line["_value"] < entry_value and not _brief_same_line(line, entry_line)]
+        if lower_same_side:
+            return max(lower_same_side, key=lambda line: line["_value"])
+        lower_any = [line for line in lines if line["_value"] < entry_value and not _brief_same_line(line, entry_line)]
+        return max(lower_any, key=lambda line: line["_value"]) if lower_any else entry_line
+    if side == "CALL":
+        upper_same_side = [line for line in same_side if line["_value"] > entry_value and not _brief_same_line(line, entry_line)]
+        if upper_same_side:
+            return min(upper_same_side, key=lambda line: line["_value"])
+        upper_any = [line for line in lines if line["_value"] > entry_value and not _brief_same_line(line, entry_line)]
+        return min(upper_any, key=lambda line: line["_value"]) if upper_any else entry_line
+    return entry_line
+
+
+def _brief_path_and_target_lines(lines: list[dict], pivot_line: dict, entry_line: dict, side: str | None) -> tuple[dict, dict]:
+    side = str(side or "").upper()
+    pivot_value = _finite_float(pivot_line.get("_value", pivot_line.get("value")))
+    entry_value = _finite_float(entry_line.get("_value", entry_line.get("value")))
+    if pd.isna(pivot_value):
+        return entry_line, entry_line
+    if side == "PUT":
+        path_line = entry_line if not pd.isna(entry_value) and entry_value >= pivot_value else pivot_line
+        below = [line for line in lines if line["_value"] < pivot_value and not _brief_same_line(line, pivot_line) and not _brief_same_line(line, path_line)]
+        call_below = [line for line in below if "CALL" in str(line.get("role") or line.get("name") or "").upper()]
+        target_line = max(call_below or below, key=lambda line: line["_value"]) if below else pivot_line
+        return path_line, target_line
+    if side == "CALL":
+        path_line = entry_line if not pd.isna(entry_value) and entry_value <= pivot_value else pivot_line
+        above = [line for line in lines if line["_value"] > pivot_value and not _brief_same_line(line, pivot_line) and not _brief_same_line(line, path_line)]
+        put_above = [line for line in above if "PUT" in str(line.get("role") or line.get("name") or "").upper()]
+        target_line = min(put_above or above, key=lambda line: line["_value"]) if above else pivot_line
+        return path_line, target_line
+    return entry_line, pivot_line
+
+
+def _brief_key_level_label(line: dict, prefix: str | None = None) -> str:
+    name = str(line.get("name") or "Structure Level")
+    return f"{prefix} / {name}" if prefix and prefix not in name else name
+
+
+def _brief_unique_key_levels(candidates: list[tuple[str, object]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    seen_values: set[str] = set()
+    for label, value in candidates:
+        numeric = _finite_float(value)
+        value_text = fmt_price(numeric) if not pd.isna(numeric) else str(value or "-")
+        value_key = value_text
+        if value_key in seen_values or value_text in {"-", "nan"}:
+            continue
+        seen_values.add(value_key)
+        rows.append((str(label or "Structure Level"), value_text))
+        if len(rows) >= 4:
+            break
+    return rows
+
+
 def _brief_watch_side(primary_line: dict, decision: dict) -> str | None:
     stance = str(decision.get("stance") or "").upper()
     role = str(primary_line.get("role") or "").upper()
@@ -6021,6 +6111,18 @@ def _brief_contract_watch(bundle: MorningBriefingBundle, decision: dict, side: s
     return "Contract pending", "Live contract appears when the option chain and setup are available."
 
 
+def _brief_otm_contract_for_price(side: str | None, entry_price: float | int | str | None) -> str:
+    side = str(side or "").upper()
+    price = _finite_float(entry_price)
+    if side not in {"CALL", "PUT"} or pd.isna(price):
+        return ""
+    increment = max(0.01, _finite_float(SPY_STRIKE_INCREMENT, 1.0))
+    distance = max(0.0, _finite_float(TARGET_OTM_STRIKE_DISTANCE, 2.0))
+    raw_strike = price + distance if side == "CALL" else price - distance
+    strike = math.ceil(raw_strike / increment) * increment if side == "CALL" else math.floor(raw_strike / increment) * increment
+    return f"{side} {fmt_price(strike, 0)}"
+
+
 def _brief_target_stack(entry: float, target: float) -> tuple[str, str, str]:
     if pd.isna(entry) or pd.isna(target):
         return "Pending", "Pending", "Pending"
@@ -6032,17 +6134,29 @@ def _brief_target_stack(entry: float, target: float) -> tuple[str, str, str]:
 def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
-    primary_line = _brief_primary_line(bundle, trade)
-    primary_value = _brief_price_from_text(trade.get("trigger_price"))
-    if pd.isna(primary_value):
-        primary_value = _finite_float(primary_line.get("value"))
-    upper_line, lower_line = _brief_neighbor_lines(bundle, primary_value)
-    side = _brief_watch_side(primary_line, decision)
+    structure_lines = _brief_sorted_lines(bundle)
+    entry_line = _brief_primary_line(bundle, trade)
+    entry_value = _brief_price_from_text(trade.get("trigger_price"))
+    if pd.isna(entry_value):
+        entry_value = _finite_float(entry_line.get("value"))
+    entry_line = {**entry_line, "_value": entry_value} if isinstance(entry_line, dict) else {}
+    side = _brief_watch_side(entry_line, decision)
+    pivot_line = _brief_opening_pivot_line(structure_lines, entry_line, side) if structure_lines else entry_line
+    pivot_value = _finite_float(pivot_line.get("_value", pivot_line.get("value")))
+    if pd.isna(pivot_value):
+        pivot_value = entry_value
+    path_line, target_line = _brief_path_and_target_lines(structure_lines, pivot_line, entry_line, side) if structure_lines else (entry_line, entry_line)
+    path_value = _finite_float(path_line.get("_value", path_line.get("value")))
+    target_line_value = _finite_float(target_line.get("_value", target_line.get("value")))
     target_price = _brief_price_from_text(trade.get("target"))
     if pd.isna(target_price):
-        target_price = _finite_float((lower_line if side == "PUT" else upper_line if side == "CALL" else lower_line or upper_line or {}).get("value"))
-    tp1, tp2, target = _brief_target_stack(primary_value, target_price)
+        target_price = target_line_value
+    tp1, tp2, target = _brief_target_stack(entry_value, target_price)
     contract_value, contract_copy = _brief_contract_watch(bundle, decision, side)
+    entry_a_contract = _brief_otm_contract_for_price(side, path_value) or contract_value
+    entry_b_contract = _brief_otm_contract_for_price(side, pivot_value) or contract_value
+    if entry_a_contract and entry_b_contract and entry_a_contract != entry_b_contract:
+        contract_value = f"{entry_a_contract} / {entry_b_contract}"
     event = _first_high_impact_event(bundle.economic_events)
     flow_value, flow_copy, flow_chips, flow_tone = unusual_whales_card_data(bundle.options_intelligence)
     if not flow_value:
@@ -6050,22 +6164,26 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
         flow_value = str(flow_read.get("label") or "Flow pending")
         flow_copy = "; ".join(flow_read.get("reasons") or ["Structure confirmation remains primary."])
         flow_tone = "amber"
-    darkpool = darkpool_context_label(bundle.options_intelligence, entry_price=primary_value, watch_side=side, entry_label=str(primary_line.get("name") or "Primary trigger"))
+    darkpool = darkpool_context_label(bundle.options_intelligence, entry_price=entry_value, watch_side=side, entry_label=str(entry_line.get("name") or "Primary trigger"))
     gex_card = unusual_whales_gex_card_data(bundle.options_intelligence)
     gex_value = gex_card[0] if gex_card else bundle.gamma_insight.dealer_tone
-    scorecard = support_refute_scorecard(external_context_verdicts(bundle, side, primary_value, str(primary_line.get("name") or ""), primary_value))
-    key_levels = []
-    for line in [primary_line, upper_line, lower_line]:
-        if isinstance(line, dict) and not pd.isna(_finite_float(line.get("value"))):
-            key_levels.append((str(line.get("name") or "Structure Level"), fmt_price(line.get("value"))))
+    scorecard = support_refute_scorecard(external_context_verdicts(bundle, side, entry_value, str(entry_line.get("name") or ""), entry_value))
+    key_candidates = [
+        (str(entry_line.get("name") or "Active Trigger"), entry_value),
+        (_brief_key_level_label(pivot_line, "Opening Pivot"), pivot_value),
+        (str(target_line.get("name") or "Target Level"), target_line_value),
+    ]
     if darkpool.get("value") and darkpool.get("value") != "-":
-        key_levels.append(("Dark-Pool Level", str(darkpool.get("value"))))
-    if not pd.isna(_finite_float(bundle.options_intelligence.max_pain)):
-        key_levels.append(("Max Pain", fmt_price(bundle.options_intelligence.max_pain)))
-    key_levels = key_levels[:4]
+        key_candidates.append(("Dark-Pool Level", str(darkpool.get("value"))))
+    max_pain_value = _finite_float(bundle.options_intelligence.max_pain)
+    if not pd.isna(max_pain_value) and (
+        pd.isna(pivot_value)
+        or abs(max_pain_value - pivot_value) <= 25
+        or (not pd.isna(entry_value) and abs(max_pain_value - entry_value) <= 25)
+    ):
+        key_candidates.append(("Max Pain", max_pain_value))
+    key_levels = _brief_unique_key_levels(key_candidates)
     stance = str(decision.get("stance") or "WAIT").upper()
-    above_value = _finite_float((upper_line or {}).get("value"))
-    below_value = _finite_float((lower_line or {}).get("value"))
     return {
         "date": _brief_date_label(bundle),
         "generated": fmt_time(result.generated_at),
@@ -6073,16 +6191,21 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
         "headline": str(decision.get("headline") or "Wait for a confirmed structure trigger."),
         "confidence": int(max(0, min(100, trade.get("confidence", result.confidence) or result.confidence or 0))),
         "confidence_label": _morning_confidence_tone(result.confidence)[1].upper(),
-        "primary_label": str(primary_line.get("name") or trade.get("trigger_line") or "Primary Trigger"),
-        "primary_value": fmt_price(primary_value),
-        "primary_raw": primary_value,
-        "upper_label": str((upper_line or {}).get("name") or "Upper Trigger"),
-        "upper_value": fmt_price(above_value),
-        "lower_label": str((lower_line or {}).get("name") or "Lower Trigger"),
-        "lower_value": fmt_price(below_value),
+        "primary_label": _brief_key_level_label(pivot_line, "Opening Pivot"),
+        "primary_value": fmt_price(pivot_value),
+        "primary_raw": pivot_value,
+        "entry_label": str(entry_line.get("name") or trade.get("trigger_line") or "Primary Trigger"),
+        "entry_value": fmt_price(entry_value),
+        "entry_raw": entry_value,
+        "upper_label": str(path_line.get("name") or "Path Trigger"),
+        "upper_value": fmt_price(path_value),
+        "lower_label": str(target_line.get("name") or "Target Trigger"),
+        "lower_value": fmt_price(target_line_value),
         "side": side or "WAIT",
         "contract_value": contract_value,
         "contract_copy": contract_copy,
+        "entry_a_contract": entry_a_contract,
+        "entry_b_contract": entry_b_contract,
         "entry_rule": str(trade.get("entry_rule") or "Wait for rejection and confirmation."),
         "invalidation": str(trade.get("stop") or "Invalid if price closes back through the trigger after entry."),
         "tp1": tp1,
@@ -6169,6 +6292,7 @@ def _brief_poster_bullet(value, max_chars: int = 70) -> str:
     text = text.replace("High-impact macro event:", "Macro:")
     text = text.replace("Catalyst Clock:", "Catalyst:")
     text = text.replace("External context:", "Context:")
+    text = re.sub(r"Invalid if SPY closes back through the trigger.*", "Invalid: close back through trigger.", text, flags=re.IGNORECASE)
     text = re.sub(r";\s*avoid entries.*", "; wait for clear timing.", text, flags=re.IGNORECASE)
     if text.lower().startswith("catalyst:") and "wait for clear timing" in text.lower():
         return "Catalyst timing: wait until clear."
@@ -6177,9 +6301,18 @@ def _brief_poster_bullet(value, max_chars: int = 70) -> str:
     return _brief_poster_text(text, max_chars, "Confirm at trigger.")
 
 
+def _svg_fit_size(text, desired_size: int, box_width: int, min_size: int = 34) -> int:
+    size = desired_size
+    text_len = max(1, len(str(text)))
+    while size > min_size and text_len * size * 0.58 > box_width:
+        size -= 2
+    return size
+
+
 def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str, accent: str, value_size: int = 58) -> str:
     value_size = min(value_size, 36 if len(str(value)) > 14 else value_size, 30 if len(str(value)) > 22 else value_size)
     compact = h <= 190
+    value_size = _svg_fit_size(value, value_size, w - 68, 28 if compact else 34)
     value_chars = max(10, int((w - 68) / max(10, value_size * 0.52)))
     copy_chars = max(16, int((w - 68) / 9.5))
     if compact and len(str(value)) > 14:
@@ -6230,8 +6363,8 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
     upper = ctx["upper_value"]
     lower = ctx["lower_value"]
     side_name = "Put" if ctx["side"] == "PUT" else "Call" if ctx["side"] == "CALL" else "Setup"
-    branch_a_contract = ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending"
-    branch_b_contract = branch_a_contract
+    branch_a_contract = ctx.get("entry_a_contract") or (ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending")
+    branch_b_contract = ctx.get("entry_b_contract") or branch_a_contract
     key_rows = ""
     for idx, (label, value) in enumerate(ctx["key_levels"] or [("Structure", "Pending")]):
         yy = 1632 + idx * 64
@@ -6277,7 +6410,7 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
   <rect x="545" y="298" width="510" height="62" rx="18" fill="rgba(2,12,25,.82)" stroke="#23d9ff" stroke-width="2"/>
   {_svg_text(800, 339, ctx["date"], 30, "#d7e6f7", 900, "middle")}
   {_svg_card(26, 410, 382, 330, "Primary Action", ctx["stance"], ctx["headline"], "#23b7ff", 72)}
-  {_svg_card(426, 410, 350, 330, "Decision Pivot", primary, f"{ctx['primary_label']} controls the first valid setup.", "#39ff7a", 70)}
+  {_svg_card(426, 410, 350, 330, "Opening Pivot", primary, f"{ctx['primary_label']} controls the first valid setup.", "#39ff7a", 70)}
   {_svg_card(794, 410, 382, 330, "Contract Watch", ctx["contract_value"], ctx["contract_copy"], "#16f3d6", 56)}
   <g filter="url(#softGlow)">
     <rect x="1194" y="410" width="380" height="330" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
@@ -6298,7 +6431,7 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
       f"Below the line, {primary} becomes resistance.",
       f"Wait for a retest of {primary} from underneath.",
       "A clean rejection confirms the setup path.",
-      f"Then price can press toward {lower} and {ctx['tp1']}.",
+      f"Then price can press toward {lower}.",
   ], f"{side_name} Entry B", f"Retest {primary}; reject from below.", branch_b_contract)}
   <rect x="26" y="1530" width="432" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
   {_svg_text(72, 1588, "ACTIONABLE TRADE PLAN", 29, "#23b7ff", 900)}
@@ -6357,6 +6490,13 @@ def _pil_text_width(draw, text: str, font) -> int:
     return max(0, right - left)
 
 
+def _pil_fit_font_size(draw, text: str, desired_size: int, max_width: int, bold: bool = False, min_size: int = 28) -> int:
+    size = desired_size
+    while size > min_size and _pil_text_width(draw, text, _load_pil_font(size, bold)) > max_width:
+        size -= 2
+    return size
+
+
 def _pil_ellipsize(draw, text: str, font, max_width: int) -> str:
     text = str(text or "").strip()
     if _pil_text_width(draw, text, font) <= max_width:
@@ -6403,6 +6543,7 @@ def _pil_card(draw, x, y, w, h, title, value, copy, accent, value_size=54):
     value_size = min(value_size, 36 if len(value_text) > 14 else value_size, 30 if len(value_text) > 22 else value_size)
     compact = h <= 190
     text_width = max(40, w - 68)
+    value_size = _pil_fit_font_size(draw, value_text, value_size, text_width, True, 26 if compact else 34)
     draw.rounded_rectangle((x, y, x + w, y + h), radius=22, fill=(2, 12, 25, 255), outline=accent, width=3)
     draw.rounded_rectangle((x, y, x + w, y + 8), radius=4, fill=accent)
     _pil_text(draw, (x + 34, y + 48), str(title).upper(), 25, accent, True)
@@ -6441,7 +6582,7 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
     draw.rounded_rectangle((545, 298, 1055, 360), radius=18, fill=(2, 12, 25, 230), outline=blue, width=2)
     _pil_text(draw, (800, 330), ctx["date"], 30, (215, 230, 247, 255), True, "mm")
     _pil_card(draw, 26, 410, 382, 330, "Primary Action", ctx["stance"], ctx["headline"], blue, 72)
-    _pil_card(draw, 426, 410, 350, 330, "Decision Pivot", ctx["primary_value"], f"{ctx['primary_label']} controls the first valid setup.", green, 70)
+    _pil_card(draw, 426, 410, 350, 330, "Opening Pivot", ctx["primary_value"], f"{ctx['primary_label']} controls the first valid setup.", green, 70)
     _pil_card(draw, 794, 410, 382, 330, "Contract Watch", ctx["contract_value"], ctx["contract_copy"], (22, 243, 214, 255), 56)
     draw.rounded_rectangle((1194, 410, 1574, 740), radius=22, fill=(2, 12, 25, 232), outline=blue, width=3)
     _pil_text(draw, (1384, 462), "CONFIDENCE", 29, blue, True, "mm")
@@ -6466,19 +6607,21 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
         _pil_text(draw, (x + 672, y + 548), contract, 26, accent, True, "ra")
     side_name = "Put" if ctx["side"] == "PUT" else "Call" if ctx["side"] == "CALL" else "Setup"
     contract = ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending"
+    entry_a_contract = ctx.get("entry_a_contract") or contract
+    entry_b_contract = ctx.get("entry_b_contract") or contract
     primary, upper, lower = ctx["primary_value"], ctx["upper_value"], ctx["lower_value"]
     branch(50, 860, "green", f"If RTH opens above {primary}", f"{primary} -> {upper}", [
         f"Acceptance above {primary} opens the path toward {upper}.",
         "Avoid forcing direction while price is between triggers.",
         f"Best {side_name.lower()} idea: wait for rejection near {upper}.",
         "Confirmation requires rejection and failed reclaim.",
-    ], f"{side_name} Entry A", f"Reject {upper}; confirm next candle.", contract)
+    ], f"{side_name} Entry A", f"Reject {upper}; confirm next candle.", entry_a_contract)
     branch(830, 860, "red", f"If RTH opens below {primary}", f"Below {primary} -> retest", [
         f"Below the line, {primary} becomes resistance.",
         f"Wait for a retest of {primary} from underneath.",
         "A clean rejection confirms the setup path.",
-        f"Then price can press toward {lower} and {ctx['tp1']}.",
-    ], f"{side_name} Entry B", f"Retest {primary}; reject from below.", contract)
+        f"Then price can press toward {lower}.",
+    ], f"{side_name} Entry B", f"Retest {primary}; reject from below.", entry_b_contract)
     draw.rounded_rectangle((26, 1530, 458, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
     _pil_text(draw, (72, 1588), "ACTIONABLE TRADE PLAN", 29, blue, True)
     for idx, item in enumerate((ctx["why"] or [ctx["score_read"]])[:3]):
