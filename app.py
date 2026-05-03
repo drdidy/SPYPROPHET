@@ -6147,14 +6147,20 @@ def _svg_multiline(x: int, y: int, text: str, size: int, fill: str, max_chars: i
 
 def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str, accent: str, value_size: int = 58) -> str:
     value_size = min(value_size, 36 if len(str(value)) > 14 else value_size, 30 if len(str(value)) > 22 else value_size)
-    copy_y = y + 160 if h <= 190 else y + 184
+    compact = h <= 190
+    if compact and len(str(value)) > 14:
+        value_svg = _svg_multiline(x + 34, y + 88, value, value_size, "#f8fafc", 18, 2, 34, 900)
+        copy_y = y + 150
+    else:
+        value_svg = _svg_text(x + 34, y + (120 if compact else 122), value, value_size, "#f8fafc", 900)
+        copy_y = y + (156 if compact else 184)
     return (
         f"<g filter='url(#softGlow)'>"
         f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='18' fill='rgba(2,12,25,.88)' stroke='{accent}' stroke-width='2'/>"
         f"<rect x='{x}' y='{y}' width='{w}' height='5' rx='3' fill='{accent}' opacity='.8'/>"
-        f"{_svg_text(x + 34, y + 52, title.upper(), 25, accent, 900)}"
-        f"{_svg_text(x + 34, y + 122, value, value_size, '#f8fafc', 900)}"
-        f"{_svg_multiline(x + 34, copy_y, copy, 24 if h > 190 else 19, '#d7e6f7', 27, 3 if h > 190 else 1, 32, 500)}"
+        f"{_svg_text(x + 34, y + (44 if compact else 52), title.upper(), 25, accent, 900)}"
+        f"{value_svg}"
+        f"{_svg_multiline(x + 34, copy_y, copy, 24 if h > 190 else 18, '#d7e6f7', 27, 3 if h > 190 else 1, 30, 500)}"
         f"</g>"
     )
 
@@ -6162,10 +6168,10 @@ def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str,
 def _svg_branch(x: int, y: int, w: int, h: int, tone: str, title: str, path: str, bullets: list[str], entry_title: str, entry_copy: str, contract: str) -> str:
     accent = "#39ff7a" if tone == "green" else "#ff554a"
     bullet_svg = ""
-    for idx, item in enumerate(bullets[:4]):
-        by = y + 184 + (idx * 45)
+    for idx, item in enumerate(bullets[:3]):
+        by = y + 204 + (idx * 78)
         bullet_svg += f"<circle cx='{x + 44}' cy='{by - 8}' r='8' fill='{accent}'/>"
-        bullet_svg += _svg_multiline(x + 72, by, item, 25, "#e8f1ff", 43, 2, 31, 500)
+        bullet_svg += _svg_multiline(x + 72, by, item, 23, "#e8f1ff", 46, 2, 30, 500)
     return (
         f"<g filter='url(#softGlow)'>"
         f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='20' fill='rgba(1,10,22,.90)' stroke='{accent}' stroke-width='2.5'/>"
@@ -6175,7 +6181,7 @@ def _svg_branch(x: int, y: int, w: int, h: int, tone: str, title: str, path: str
         f"{bullet_svg}"
         f"<rect x='{x + 32}' y='{y + h - 132}' width='{w - 64}' height='98' rx='16' fill='rgba(255,255,255,.04)' stroke='{accent}' stroke-width='1.5'/>"
         f"{_svg_text(x + 70, y + h - 82, entry_title, 31, accent, 900)}"
-        f"{_svg_multiline(x + 70, y + h - 44, entry_copy, 22, '#d7e6f7', 36, 2, 27, 500)}"
+        f"{_svg_multiline(x + 70, y + h - 44, entry_copy, 21, '#d7e6f7', 40, 1, 27, 500)}"
         f"{_svg_text(x + w - 48, y + h - 52, contract, 28, accent, 900, 'end')}"
         f"</g>"
     )
@@ -6201,16 +6207,18 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
         key_rows += _svg_multiline(1332, yy - 12, label, 18, "#d7e6f7", 18, 2, 22, 600)
     why_items = ctx["why"] or [ctx["score_read"]]
     why_svg = ""
-    for idx, item in enumerate(why_items[:4]):
-        why_svg += _svg_text(76, 1548 + idx * 48, str(idx + 1), 24, "#23b7ff", 900)
-        why_svg += _svg_multiline(120, 1548 + idx * 48, item, 22, "#e8f1ff", 31, 2, 28, 500)
+    for idx, item in enumerate(why_items[:3]):
+        yy = 1650 + idx * 80
+        why_svg += _svg_text(76, yy, str(idx + 1), 24, "#23b7ff", 900)
+        why_svg += _svg_multiline(120, yy, item, 20, "#e8f1ff", 36, 2, 29, 500)
     risk_items = ctx["risks"] or [ctx["invalidation"]]
     risk_svg = ""
-    for idx, item in enumerate(risk_items[:4]):
-        risk_svg += f"<circle cx='858' cy='{1540 + idx * 48}' r='7' fill='#ff554a'/>"
-        risk_svg += _svg_multiline(884, 1548 + idx * 48, item, 22, "#e8f1ff", 29, 2, 28, 500)
+    for idx, item in enumerate(risk_items[:3]):
+        yy = 1650 + idx * 80
+        risk_svg += f"<circle cx='858' cy='{yy - 8}' r='7' fill='#ff554a'/>"
+        risk_svg += _svg_multiline(884, yy, item, 20, "#e8f1ff", 31, 2, 29, 500)
     return f"""
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200" preserveAspectRatio="xMidYMin meet" style="width:100%;max-width:1600px;height:auto;display:block;">
   <defs>
     <radialGradient id="bgGlow" cx="50%" cy="8%" r="70%"><stop offset="0%" stop-color="#123d68"/><stop offset="45%" stop-color="#061424"/><stop offset="100%" stop-color="#020713"/></radialGradient>
     <linearGradient id="titleGrad" x1="0" x2="1"><stop offset="0%" stop-color="#f8fbff"/><stop offset="45%" stop-color="#14c8ff"/><stop offset="100%" stop-color="#39ff7a"/></linearGradient>
@@ -6236,7 +6244,7 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
     <circle cx="1384" cy="590" r="84" fill="none" stroke="rgba(35,183,255,.28)" stroke-width="24"/>
     <circle cx="1384" cy="590" r="84" fill="none" stroke="#15c8ff" stroke-width="24" stroke-linecap="round" stroke-dasharray="{dash} {circumference}" transform="rotate(-90 1384 590)"/>
     {_svg_text(1384, 606, f"{conf}%", 60, "#f8fafc", 1000, "middle")}
-    {_svg_text(1384, 654, ctx["confidence_label"], 22, "#23b7ff", 900, "middle")}
+    {_svg_text(1384, 704, ctx["confidence_label"], 22, "#23b7ff", 900, "middle")}
   </g>
   {_svg_text(800, 825, "OPENING DECISION MAP", 49, "#23b7ff", 1000, "middle")}
   {_svg_branch(50, 860, 720, 620, "green", f"If RTH opens above {primary}", f"{primary} -> {upper}", [
@@ -6266,10 +6274,10 @@ def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefin
   <rect x="1170" y="1530" width="404" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
   {_svg_text(1216, 1588, "KEY LEVELS", 29, "#23b7ff", 900)}
   {key_rows}
-  {_svg_card(26, 1930, 430, 170, "Flow", ctx["flow_value"], ctx["flow_copy"], "#ff554a" if ctx["flow_tone"] == "red" else "#39ff7a" if ctx["flow_tone"] == "green" else "#23b7ff", 32)}
-  {_svg_card(480, 1930, 350, 170, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], "#23b7ff", 34)}
-  {_svg_card(854, 1930, 330, 170, "Catalyst", ctx["event_value"], ctx["event_copy"], "#f5c451", 30)}
-  {_svg_card(1208, 1930, 366, 170, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", "#b86cff", 30)}
+  {_svg_card(26, 1920, 430, 190, "Flow", ctx["flow_value"], ctx["flow_copy"], "#ff554a" if ctx["flow_tone"] == "red" else "#39ff7a" if ctx["flow_tone"] == "green" else "#23b7ff", 32)}
+  {_svg_card(480, 1920, 350, 190, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], "#23b7ff", 34)}
+  {_svg_card(854, 1920, 330, 190, "Catalyst", ctx["event_value"], ctx["event_copy"], "#f5c451", 30)}
+  {_svg_card(1208, 1920, 366, 190, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", "#b86cff", 30)}
   <line x1="350" y1="2142" x2="1250" y2="2142" stroke="rgba(215,230,247,.25)" stroke-width="1"/>
   {_svg_text(800, 2164, "Educational market brief. Wait for confirmation before acting.", 26, "#d7e6f7", 600, "middle", .9)}
 </svg>
@@ -6355,7 +6363,7 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
     draw.ellipse((1298, 504, 1470, 676), outline=(35, 183, 255, 80), width=24)
     draw.arc((1298, 504, 1470, 676), -90, -90 + (360 * int(ctx["confidence"]) / 100), fill=(21, 200, 255, 255), width=24)
     _pil_text(draw, (1384, 596), f"{ctx['confidence']}%", 60, (248, 251, 255, 255), True, "mm")
-    _pil_text(draw, (1384, 654), ctx["confidence_label"], 22, blue, True, "mm")
+    _pil_text(draw, (1384, 704), ctx["confidence_label"], 22, blue, True, "mm")
     _pil_text(draw, (800, 825), "OPENING DECISION MAP", 49, blue, True, "mm")
     def branch(x, y, tone, title, path, bullets, entry_title, entry_copy, contract):
         accent = green if tone == "green" else red
@@ -6363,13 +6371,13 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
         draw.ellipse((x + 22, y + 28, x + 102, y + 108), outline=accent, width=5)
         _pil_text(draw, (x + 124, y + 58), title.upper(), 31, accent, True)
         _pil_text(draw, (x + 124, y + 125), path, 50 if len(path) < 24 else 42, (248, 251, 255, 255), True)
-        for idx, item in enumerate(bullets[:4]):
-            yy = y + 248 + idx * 54
+        for idx, item in enumerate(bullets[:3]):
+            yy = y + 248 + idx * 78
             draw.ellipse((x + 38, yy - 14, x + 54, yy + 2), fill=accent)
-            _pil_text_lines(draw, x + 72, yy - 20, item, 24, (232, 241, 255, 255), 44, 2)
+            _pil_text_lines(draw, x + 72, yy - 20, item, 22, (232, 241, 255, 255), 48, 2)
         draw.rounded_rectangle((x + 32, y + 488, x + 688, y + 586), radius=16, fill=(4, 22, 34, 255), outline=accent, width=2)
         _pil_text(draw, (x + 70, y + 508), entry_title, 30, accent, True)
-        _pil_text_lines(draw, x + 70, y + 546, entry_copy, 21, (215, 230, 247, 255), 34, 1)
+        _pil_text_lines(draw, x + 70, y + 546, entry_copy, 20, (215, 230, 247, 255), 40, 1)
         _pil_text(draw, (x + 672, y + 548), contract, 26, accent, True, "ra")
     side_name = "Put" if ctx["side"] == "PUT" else "Call" if ctx["side"] == "CALL" else "Setup"
     contract = ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending"
@@ -6388,9 +6396,10 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
     ], f"{side_name} Entry B", f"Retest and rejection at {primary} after opening below.", contract)
     draw.rounded_rectangle((26, 1530, 458, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
     _pil_text(draw, (72, 1588), "ACTIONABLE TRADE PLAN", 29, blue, True)
-    for idx, item in enumerate((ctx["why"] or [ctx["score_read"]])[:4]):
-        _pil_text(draw, (76, 1640 + idx * 58), str(idx + 1), 24, blue, True)
-        _pil_text_lines(draw, 120, 1628 + idx * 58, item, 20, (232, 241, 255, 255), 32, 2)
+    for idx, item in enumerate((ctx["why"] or [ctx["score_read"]])[:3]):
+        yy = 1640 + idx * 80
+        _pil_text(draw, (76, yy), str(idx + 1), 24, blue, True)
+        _pil_text_lines(draw, 120, yy - 12, item, 20, (232, 241, 255, 255), 36, 2)
     draw.rounded_rectangle((482, 1530, 782, 1890), radius=18, fill=(2, 12, 25, 255), outline=green, width=3)
     _pil_text(draw, (532, 1588), "TARGETS", 29, green, True)
     for idx, (label, value) in enumerate([("TP1", ctx["tp1"]), ("TP2", ctx["tp2"]), ("TARGET", ctx["target"])]):
@@ -6399,9 +6408,10 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
     _pil_text_lines(draw, 532, 1834, "Confirmation first. Scale gradually.", 20, (215, 230, 247, 255), 22, 2)
     draw.rounded_rectangle((806, 1530, 1146, 1890), radius=18, fill=(2, 12, 25, 255), outline=red, width=3)
     _pil_text(draw, (856, 1588), "ENTRY VALIDATION", 29, red, True)
-    for idx, item in enumerate((ctx["risks"] or [ctx["invalidation"]])[:4]):
-        draw.ellipse((852, 1632 + idx * 58, 866, 1646 + idx * 58), fill=red)
-        _pil_text_lines(draw, 884, 1622 + idx * 58, item, 18, (232, 241, 255, 255), 26, 2)
+    for idx, item in enumerate((ctx["risks"] or [ctx["invalidation"]])[:3]):
+        yy = 1640 + idx * 80
+        draw.ellipse((852, yy - 8, 866, yy + 6), fill=red)
+        _pil_text_lines(draw, 884, yy - 12, item, 18, (232, 241, 255, 255), 30, 2)
     draw.rounded_rectangle((1170, 1530, 1574, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
     _pil_text(draw, (1216, 1588), "KEY LEVELS", 29, blue, True)
     for idx, (label, value) in enumerate(ctx["key_levels"] or [("Structure", "Pending")]):
@@ -6411,10 +6421,10 @@ def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningB
         _pil_text(draw, (1216, yy - 34), value, 28, (248, 251, 255, 255), True)
         _pil_text_lines(draw, 1332, yy - 33, label, 17, (215, 230, 247, 255), 18, 2, bold=True)
     flow_accent = red if ctx["flow_tone"] == "red" else green if ctx["flow_tone"] == "green" else blue
-    _pil_card(draw, 26, 1930, 430, 170, "Flow", ctx["flow_value"], ctx["flow_copy"], flow_accent, 32)
-    _pil_card(draw, 480, 1930, 350, 170, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], blue, 34)
-    _pil_card(draw, 854, 1930, 330, 170, "Catalyst", ctx["event_value"], ctx["event_copy"], amber, 30)
-    _pil_card(draw, 1208, 1930, 366, 170, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", purple, 30)
+    _pil_card(draw, 26, 1920, 430, 190, "Flow", ctx["flow_value"], ctx["flow_copy"], flow_accent, 32)
+    _pil_card(draw, 480, 1920, 350, 190, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], blue, 34)
+    _pil_card(draw, 854, 1920, 330, 190, "Catalyst", ctx["event_value"], ctx["event_copy"], amber, 30)
+    _pil_card(draw, 1208, 1920, 366, 190, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", purple, 30)
     draw.line((350, 2142, 1250, 2142), fill=(215, 230, 247, 70), width=1)
     _pil_text(draw, (800, 2164), "Educational market brief. Wait for confirmation before acting.", 26, (215, 230, 247, 230), False, "mm")
     out = BytesIO()
@@ -6469,7 +6479,7 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
     else:
         d3.button("Download PDF", disabled=True, use_container_width=True)
     components.html(
-        f"<div style='width:100%;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px'>{svg}</div>",
+        f"<div style='width:100%;box-sizing:border-box;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px;overflow-x:hidden'>{svg}</div>",
         height=1280,
         scrolling=True,
     )
