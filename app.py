@@ -5717,21 +5717,6 @@ def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: Morni
         )
         for row in reviews[:5]
     )
-    st.markdown(
-        f"""
-        <div class='decision-summary'>
-          <div class='decision-summary-head'>
-            <div>
-              <div class='decision-summary-title'>Evidence Summary</div>
-              <div class='decision-summary-copy'>Support, risk, and execution status behind the Action Brief.</div>
-            </div>
-            {ui_icon('shield', 'blue', 'sm')}
-          </div>
-          <div class='decision-summary-grid'>{summary_html}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     cards = [
         _morning_card_html(
             str(row.get("desk") or "Read"),
@@ -5742,7 +5727,22 @@ def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: Morni
         )
         for row in reviews[:5]
     ]
-    with st.expander("Decision Rationale", expanded=False):
+    with st.expander("Decision Support", expanded=False):
+        st.markdown(
+            f"""
+            <div class='decision-summary'>
+              <div class='decision-summary-head'>
+                <div>
+                  <div class='decision-summary-title'>Decision Support</div>
+                  <div class='decision-summary-copy'>Support, risk, and execution status behind the Action Brief.</div>
+                </div>
+                {ui_icon('shield', 'blue', 'sm')}
+              </div>
+              <div class='decision-summary-grid'>{summary_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown(f"<div class='decision-stack-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
@@ -5820,7 +5820,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         f"Model: {result.model or 'internal engine'}."
     )
     cards = [
-        _evidence_card("SPY Prophet Lines", f"{len(bundle.lines)} internal lines", "Generated from the pivot/structure engine and passed into the briefing JSON.", bundle.generated_at, "internal"),
+        _evidence_card("SPY Foresight Lines", f"{len(bundle.lines)} internal lines", "Generated from the pivot and structure engine for this assessment.", bundle.generated_at, "internal"),
         _evidence_card("Economic Calendar", event_source, event_detail, bundle.generated_at, event_state),
         _evidence_card("Options Data", bundle.options_intelligence.status.name, options_detail, bundle.options_intelligence.status.as_of, "connected" if bundle.options_intelligence.status.status == "connected" else "watch"),
         _evidence_card("Flow Pressure", "Connected" if whales else "Not used", whale_detail, bundle.options_intelligence.status.as_of, "connected" if whales else "watch"),
@@ -5845,7 +5845,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         <div class='evidence-shell'>
           <div class='evidence-head'>
             <div>
-              <div class='evidence-title'>Input Audit</div>
+              <div class='evidence-title'>Data Verification</div>
               <div class='evidence-copy'>Source timestamps and decision relevance for this assessment.</div>
             </div>
             {ui_icon('shield', 'blue', 'md')}
