@@ -17,6 +17,7 @@ from app import (
     TechnicalContext,
     build_openai_calendar_prompt,
     build_openai_request_payload,
+    build_daily_brief_context,
     build_morning_briefing_prompt,
     build_app_decision_context,
     build_foresight_audit_record,
@@ -40,6 +41,9 @@ from app import (
     normalize_morning_decision,
     calculate_max_pain,
     filter_near_spy_strikes,
+    render_daily_brief_pdf_bytes,
+    render_daily_brief_png_bytes,
+    render_daily_brief_svg,
     rule_based_morning_briefing,
     save_foresight_decision_audit,
     support_refute_scorecard,
@@ -240,6 +244,23 @@ def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
     assert "True dealer GEX is not available" not in result.text
     assert any("GEX_API_URL is not configured" in warning for warning in result.warnings)
     assert "CPI at 8:30 AM ET / 7:30 AM CT" in result.text
+
+
+def test_daily_brief_renderer_exports_visual_files() -> None:
+    bundle = _bundle()
+    result = rule_based_morning_briefing(bundle)
+
+    context = build_daily_brief_context(bundle, result)
+    svg = render_daily_brief_svg(bundle, result)
+    png = render_daily_brief_png_bytes(bundle, result)
+    pdf = render_daily_brief_pdf_bytes(png)
+
+    assert context["primary_value"] == "587.42"
+    assert "SPY PROPHET" in svg
+    assert "DAILY ONE-PAGE TRADING BRIEF" in svg
+    assert "fake" not in svg.lower()
+    assert png and png.startswith(b"\x89PNG")
+    assert pdf and pdf.startswith(b"%PDF")
 
 
 def test_openai_request_payload_enables_web_search() -> None:

@@ -236,6 +236,7 @@ class MorningBriefingBundle:
     news_items: list[NewsItem]
     learning_profile: "StructureLearningProfile"
     source_statuses: list[SourceStatus]
+    session_date: object | None = None
 
 
 @dataclass(frozen=True)
@@ -1783,6 +1784,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
         news_items,
         learning_profile,
         source_statuses,
+        pd.Timestamp(projection_time).date(),
     )
 
 
@@ -5927,6 +5929,552 @@ def render_briefing_citations(citations: list[dict] | None) -> None:
     st.markdown(f"<div class='citation-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
+def _brief_price_from_text(value) -> float:
+    if value is None:
+        return float("nan")
+    numeric = _finite_float(value)
+    if not pd.isna(numeric):
+        return numeric
+    match = re.search(r"\d+(?:\.\d+)?", str(value))
+    return float(match.group(0)) if match else float("nan")
+
+
+def _brief_session_date(bundle: MorningBriefingBundle) -> pd.Timestamp:
+    raw = getattr(bundle, "session_date", None) or bundle.generated_at
+    return pd.Timestamp(raw)
+
+
+def _brief_date_label(bundle: MorningBriefingBundle) -> str:
+    ts = _brief_session_date(bundle)
+    return ts.strftime("%A - %Y-%m-%d").upper()
+
+
+def _brief_line_by_name(bundle: MorningBriefingBundle, name: str | None) -> dict | None:
+    needle = str(name or "").strip().lower()
+    if not needle:
+        return None
+    for line in bundle.lines or []:
+        if str(line.get("name") or "").strip().lower() == needle or str(line.get("code") or "").strip().lower() == needle:
+            return line
+    return None
+
+
+def _brief_primary_line(bundle: MorningBriefingBundle, trade: dict) -> dict:
+    return _brief_line_by_name(bundle, trade.get("trigger_line")) or (bundle.lines[0] if bundle.lines else {})
+
+
+def _brief_neighbor_lines(bundle: MorningBriefingBundle, value: float) -> tuple[dict | None, dict | None]:
+    rows = [
+        {**line, "_value": _finite_float(line.get("value"))}
+        for line in bundle.lines or []
+        if not pd.isna(_finite_float(line.get("value")))
+    ]
+    if not rows:
+        return None, None
+    if pd.isna(value):
+        return rows[-1], rows[0]
+    above = [line for line in rows if line["_value"] > value]
+    below = [line for line in rows if line["_value"] < value]
+    upper = min(above, key=lambda line: line["_value"] - value) if above else max(rows, key=lambda line: line["_value"])
+    lower = max(below, key=lambda line: value - line["_value"]) if below else min(rows, key=lambda line: line["_value"])
+    return upper, lower
+
+
+def _brief_watch_side(primary_line: dict, decision: dict) -> str | None:
+    stance = str(decision.get("stance") or "").upper()
+    role = str(primary_line.get("role") or "").upper()
+    if "PUT" in stance or "PUT" in role:
+        return "PUT"
+    if "CALL" in stance or "CALL" in role:
+        return "CALL"
+    return None
+
+
+def _brief_contract_token(quote: dict | None) -> str:
+    if not quote:
+        return ""
+    side = str(quote.get("type") or quote.get("option_type") or "").upper()
+    suffix = "C" if side == "CALL" else "P" if side == "PUT" else ""
+    strike = quote.get("strike")
+    if strike is None:
+        return ""
+    return f"{fmt_price(strike, 0)}{suffix}"
+
+
+def _brief_contract_watch(bundle: MorningBriefingBundle, decision: dict, side: str | None = None) -> tuple[str, str]:
+    quotes = bundle.options_intelligence.selected_quotes or []
+    call_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "CALL"), None)
+    put_quote = next((quote for quote in quotes if str(quote.get("type") or "").upper() == "PUT"), None)
+    if side == "CALL" and call_quote:
+        token = _brief_contract_token(call_quote)
+        return token, f"CALL mark {fmt_price(call_quote.get('mark'))}; delta {fmt_float(call_quote.get('delta'))}."
+    if side == "PUT" and put_quote:
+        token = _brief_contract_token(put_quote)
+        return token, f"PUT mark {fmt_price(put_quote.get('mark'))}; delta {fmt_float(put_quote.get('delta'))}."
+    if call_quote or put_quote:
+        tokens = [token for token in [_brief_contract_token(call_quote), _brief_contract_token(put_quote)] if token]
+        return " / ".join(tokens) if tokens else "Contract pending", "Use the listed OTM contract only after confirmation."
+    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    contract = str(trade.get("contract") or "").strip()
+    if contract and contract not in {"-", "No contract until confirmation"}:
+        return contract, "Use only after the entry rule confirms."
+    return "Contract pending", "Live contract appears when the option chain and setup are available."
+
+
+def _brief_target_stack(entry: float, target: float) -> tuple[str, str, str]:
+    if pd.isna(entry) or pd.isna(target):
+        return "Pending", "Pending", "Pending"
+    tp1 = entry + ((target - entry) * TP1_TARGET_FRACTION)
+    tp2 = entry + ((target - entry) * TP2_TARGET_FRACTION)
+    return fmt_price(tp1), fmt_price(tp2), fmt_price(target)
+
+
+def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
+    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    primary_line = _brief_primary_line(bundle, trade)
+    primary_value = _brief_price_from_text(trade.get("trigger_price"))
+    if pd.isna(primary_value):
+        primary_value = _finite_float(primary_line.get("value"))
+    upper_line, lower_line = _brief_neighbor_lines(bundle, primary_value)
+    side = _brief_watch_side(primary_line, decision)
+    target_price = _brief_price_from_text(trade.get("target"))
+    if pd.isna(target_price):
+        target_price = _finite_float((lower_line if side == "PUT" else upper_line if side == "CALL" else lower_line or upper_line or {}).get("value"))
+    tp1, tp2, target = _brief_target_stack(primary_value, target_price)
+    contract_value, contract_copy = _brief_contract_watch(bundle, decision, side)
+    event = _first_high_impact_event(bundle.economic_events)
+    flow_value, flow_copy, flow_chips, flow_tone = unusual_whales_card_data(bundle.options_intelligence)
+    if not flow_value:
+        flow_read = premium_flow_direction(bundle.options_intelligence)
+        flow_value = str(flow_read.get("label") or "Flow pending")
+        flow_copy = "; ".join(flow_read.get("reasons") or ["Structure confirmation remains primary."])
+        flow_tone = "amber"
+    darkpool = darkpool_context_label(bundle.options_intelligence, entry_price=primary_value, watch_side=side, entry_label=str(primary_line.get("name") or "Primary trigger"))
+    gex_card = unusual_whales_gex_card_data(bundle.options_intelligence)
+    gex_value = gex_card[0] if gex_card else bundle.gamma_insight.dealer_tone
+    scorecard = support_refute_scorecard(external_context_verdicts(bundle, side, primary_value, str(primary_line.get("name") or ""), primary_value))
+    key_levels = []
+    for line in [primary_line, upper_line, lower_line]:
+        if isinstance(line, dict) and not pd.isna(_finite_float(line.get("value"))):
+            key_levels.append((str(line.get("name") or "Structure Level"), fmt_price(line.get("value"))))
+    if darkpool.get("value") and darkpool.get("value") != "-":
+        key_levels.append(("Dark-Pool Level", str(darkpool.get("value"))))
+    if not pd.isna(_finite_float(bundle.options_intelligence.max_pain)):
+        key_levels.append(("Max Pain", fmt_price(bundle.options_intelligence.max_pain)))
+    key_levels = key_levels[:4]
+    stance = str(decision.get("stance") or "WAIT").upper()
+    above_value = _finite_float((upper_line or {}).get("value"))
+    below_value = _finite_float((lower_line or {}).get("value"))
+    return {
+        "date": _brief_date_label(bundle),
+        "generated": fmt_time(result.generated_at),
+        "stance": display_state_label(stance).upper(),
+        "headline": str(decision.get("headline") or "Wait for a confirmed structure trigger."),
+        "confidence": int(max(0, min(100, trade.get("confidence", result.confidence) or result.confidence or 0))),
+        "confidence_label": _morning_confidence_tone(result.confidence)[1].upper(),
+        "primary_label": str(primary_line.get("name") or trade.get("trigger_line") or "Primary Trigger"),
+        "primary_value": fmt_price(primary_value),
+        "primary_raw": primary_value,
+        "upper_label": str((upper_line or {}).get("name") or "Upper Trigger"),
+        "upper_value": fmt_price(above_value),
+        "lower_label": str((lower_line or {}).get("name") or "Lower Trigger"),
+        "lower_value": fmt_price(below_value),
+        "side": side or "WAIT",
+        "contract_value": contract_value,
+        "contract_copy": contract_copy,
+        "entry_rule": str(trade.get("entry_rule") or "Wait for rejection and confirmation."),
+        "invalidation": str(trade.get("stop") or "Invalid if price closes back through the trigger after entry."),
+        "tp1": tp1,
+        "tp2": tp2,
+        "target": target,
+        "event_value": f"{event.event} at {event.time_label}" if event else "No scheduled catalyst",
+        "event_copy": f"{event.impact} impact timing risk" if event else "Structure and flow remain primary.",
+        "flow_value": flow_value,
+        "flow_copy": flow_copy,
+        "flow_tone": flow_tone,
+        "darkpool_value": str(darkpool.get("value") or "Pending"),
+        "darkpool_copy": str(darkpool.get("copy") or "Dark-pool levels are pending for this session."),
+        "gex_value": str(gex_value or "Pending"),
+        "score_read": str(scorecard.get("read") or "Structure confirmation remains primary."),
+        "support": int(scorecard.get("support") or 0),
+        "caution": int(scorecard.get("caution") or 0),
+        "risk": int(scorecard.get("risk") or 0),
+        "why": [str(item) for item in decision.get("why", []) if str(item).strip()][:4],
+        "risks": [str(item) for item in decision.get("risk_flags", []) if str(item).strip()][:4],
+        "key_levels": key_levels,
+    }
+
+
+def _svg_safe(value) -> str:
+    return escape(str(value), quote=False)
+
+
+def _wrap_text(text: str, max_chars: int, max_lines: int) -> list[str]:
+    words = re.split(r"\s+", str(text or "").strip())
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+    if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
+        lines[-1] = lines[-1][: max(0, max_chars - 3)].rstrip() + "..."
+    return lines or [""]
+
+
+def _svg_text(x: int, y: int, text, size: int, fill: str = "#f8fafc", weight: int = 700, anchor: str = "start", opacity: float = 1.0) -> str:
+    return (
+        f"<text x='{x}' y='{y}' text-anchor='{anchor}' font-family='Manrope, Aptos, Segoe UI, Arial, sans-serif' "
+        f"font-size='{size}' font-weight='{weight}' fill='{fill}' opacity='{opacity}'>{_svg_safe(text)}</text>"
+    )
+
+
+def _svg_multiline(x: int, y: int, text: str, size: int, fill: str, max_chars: int, max_lines: int, line_height: int | None = None, weight: int = 500) -> str:
+    line_height = line_height or int(size * 1.35)
+    return "".join(_svg_text(x, y + (idx * line_height), line, size, fill, weight) for idx, line in enumerate(_wrap_text(text, max_chars, max_lines)))
+
+
+def _svg_card(x: int, y: int, w: int, h: int, title: str, value: str, copy: str, accent: str, value_size: int = 58) -> str:
+    value_size = min(value_size, 36 if len(str(value)) > 14 else value_size, 30 if len(str(value)) > 22 else value_size)
+    copy_y = y + 160 if h <= 190 else y + 184
+    return (
+        f"<g filter='url(#softGlow)'>"
+        f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='18' fill='rgba(2,12,25,.88)' stroke='{accent}' stroke-width='2'/>"
+        f"<rect x='{x}' y='{y}' width='{w}' height='5' rx='3' fill='{accent}' opacity='.8'/>"
+        f"{_svg_text(x + 34, y + 52, title.upper(), 25, accent, 900)}"
+        f"{_svg_text(x + 34, y + 122, value, value_size, '#f8fafc', 900)}"
+        f"{_svg_multiline(x + 34, copy_y, copy, 24 if h > 190 else 19, '#d7e6f7', 27, 3 if h > 190 else 1, 32, 500)}"
+        f"</g>"
+    )
+
+
+def _svg_branch(x: int, y: int, w: int, h: int, tone: str, title: str, path: str, bullets: list[str], entry_title: str, entry_copy: str, contract: str) -> str:
+    accent = "#39ff7a" if tone == "green" else "#ff554a"
+    bullet_svg = ""
+    for idx, item in enumerate(bullets[:4]):
+        by = y + 184 + (idx * 45)
+        bullet_svg += f"<circle cx='{x + 44}' cy='{by - 8}' r='8' fill='{accent}'/>"
+        bullet_svg += _svg_multiline(x + 72, by, item, 25, "#e8f1ff", 43, 2, 31, 500)
+    return (
+        f"<g filter='url(#softGlow)'>"
+        f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='20' fill='rgba(1,10,22,.90)' stroke='{accent}' stroke-width='2.5'/>"
+        f"<circle cx='{x + 62}' cy='{y + 68}' r='40' fill='rgba(255,255,255,.03)' stroke='{accent}' stroke-width='5'/>"
+        f"{_svg_text(x + 124, y + 75, title.upper(), 31, accent, 900)}"
+        f"{_svg_text(x + 124, y + 142, path, 54, '#f8fafc', 900)}"
+        f"{bullet_svg}"
+        f"<rect x='{x + 32}' y='{y + h - 132}' width='{w - 64}' height='98' rx='16' fill='rgba(255,255,255,.04)' stroke='{accent}' stroke-width='1.5'/>"
+        f"{_svg_text(x + 70, y + h - 82, entry_title, 31, accent, 900)}"
+        f"{_svg_multiline(x + 70, y + h - 44, entry_copy, 22, '#d7e6f7', 36, 2, 27, 500)}"
+        f"{_svg_text(x + w - 48, y + h - 52, contract, 28, accent, 900, 'end')}"
+        f"</g>"
+    )
+
+
+def render_daily_brief_svg(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> str:
+    ctx = build_daily_brief_context(bundle, result)
+    conf = int(ctx["confidence"])
+    circumference = 527
+    dash = int(circumference * (conf / 100))
+    primary = ctx["primary_value"]
+    upper = ctx["upper_value"]
+    lower = ctx["lower_value"]
+    side_name = "Put" if ctx["side"] == "PUT" else "Call" if ctx["side"] == "CALL" else "Setup"
+    branch_a_contract = ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending"
+    branch_b_contract = branch_a_contract
+    key_rows = ""
+    for idx, (label, value) in enumerate(ctx["key_levels"] or [("Structure", "Pending")]):
+        yy = 1632 + idx * 64
+        color = "#39ff7a" if idx % 2 == 0 else "#23b7ff"
+        key_rows += f"<rect x='1195' y='{yy - 42}' width='330' height='52' rx='12' fill='rgba(255,255,255,.04)' stroke='{color}' stroke-width='1'/>"
+        key_rows += _svg_text(1216, yy - 8, value, 30, "#f8fafc", 900)
+        key_rows += _svg_multiline(1332, yy - 12, label, 18, "#d7e6f7", 18, 2, 22, 600)
+    why_items = ctx["why"] or [ctx["score_read"]]
+    why_svg = ""
+    for idx, item in enumerate(why_items[:4]):
+        why_svg += _svg_text(76, 1548 + idx * 48, str(idx + 1), 24, "#23b7ff", 900)
+        why_svg += _svg_multiline(120, 1548 + idx * 48, item, 22, "#e8f1ff", 31, 2, 28, 500)
+    risk_items = ctx["risks"] or [ctx["invalidation"]]
+    risk_svg = ""
+    for idx, item in enumerate(risk_items[:4]):
+        risk_svg += f"<circle cx='858' cy='{1540 + idx * 48}' r='7' fill='#ff554a'/>"
+        risk_svg += _svg_multiline(884, 1548 + idx * 48, item, 22, "#e8f1ff", 29, 2, 28, 500)
+    return f"""
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="8%" r="70%"><stop offset="0%" stop-color="#123d68"/><stop offset="45%" stop-color="#061424"/><stop offset="100%" stop-color="#020713"/></radialGradient>
+    <linearGradient id="titleGrad" x1="0" x2="1"><stop offset="0%" stop-color="#f8fbff"/><stop offset="45%" stop-color="#14c8ff"/><stop offset="100%" stop-color="#39ff7a"/></linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="hardGlow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1600" height="2200" fill="url(#bgGlow)"/>
+  <path d="M60 170 C130 60 220 60 270 150 C220 120 170 140 145 205 C180 180 245 190 302 242 C230 222 160 260 95 344" fill="none" stroke="#23b7ff" stroke-width="5" opacity=".75" filter="url(#hardGlow)"/>
+  <path d="M1325 155 C1398 70 1500 80 1537 170 C1482 142 1437 155 1400 212 C1455 198 1510 224 1555 296 C1482 246 1412 263 1340 342" fill="none" stroke="#ff554a" stroke-width="5" opacity=".75" filter="url(#hardGlow)"/>
+  <g opacity=".16">{"".join(f"<rect x='{860 + i*28}' y='{310 - (i%7)*22}' width='12' height='{90 + (i%7)*22}' fill='#23b7ff'/>" for i in range(20))}</g>
+  <g opacity=".55">{"".join(f"<line x1='{960 + i*42}' y1='{190 + i*18}' x2='{960 + i*42}' y2='{260 + i*18}' stroke='{'#39ff7a' if i%3 else '#ff554a'}' stroke-width='8'/>" for i in range(10))}</g>
+  {_svg_text(800, 140, "SPY PROPHET", 86, "url(#titleGrad)", 1000, "middle")}
+  {_svg_text(800, 205, "WHERE STRUCTURE BECOMES FORESIGHT", 31, "#d7e6f7", 600, "middle", .88)}
+  {_svg_text(800, 260, "DAILY ONE-PAGE TRADING BRIEF", 28, "#23b7ff", 800, "middle")}
+  <rect x="545" y="298" width="510" height="62" rx="18" fill="rgba(2,12,25,.82)" stroke="#23d9ff" stroke-width="2"/>
+  {_svg_text(800, 339, ctx["date"], 30, "#d7e6f7", 900, "middle")}
+  {_svg_card(26, 410, 382, 330, "Primary Action", ctx["stance"], ctx["headline"], "#23b7ff", 72)}
+  {_svg_card(426, 410, 350, 330, "Decision Pivot", primary, f"{ctx['primary_label']} controls the first valid setup.", "#39ff7a", 70)}
+  {_svg_card(794, 410, 382, 330, "Contract Watch", ctx["contract_value"], ctx["contract_copy"], "#16f3d6", 56)}
+  <g filter="url(#softGlow)">
+    <rect x="1194" y="410" width="380" height="330" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
+    {_svg_text(1384, 462, "CONFIDENCE", 29, "#23b7ff", 900, "middle")}
+    <circle cx="1384" cy="590" r="84" fill="none" stroke="rgba(35,183,255,.28)" stroke-width="24"/>
+    <circle cx="1384" cy="590" r="84" fill="none" stroke="#15c8ff" stroke-width="24" stroke-linecap="round" stroke-dasharray="{dash} {circumference}" transform="rotate(-90 1384 590)"/>
+    {_svg_text(1384, 606, f"{conf}%", 60, "#f8fafc", 1000, "middle")}
+    {_svg_text(1384, 654, ctx["confidence_label"], 22, "#23b7ff", 900, "middle")}
+  </g>
+  {_svg_text(800, 825, "OPENING DECISION MAP", 49, "#23b7ff", 1000, "middle")}
+  {_svg_branch(50, 860, 720, 620, "green", f"If RTH opens above {primary}", f"{primary} -> {upper}", [
+      f"Acceptance above {primary} opens the path toward {upper}.",
+      "Avoid forcing direction while price is between triggers.",
+      f"Best {side_name.lower()} idea: wait for rejection near {upper}.",
+      "Confirmation requires rejection and failed reclaim.",
+  ], f"{side_name} Entry A", f"Rejection near {upper} after opening above {primary}.", branch_a_contract)}
+  {_svg_branch(830, 860, 720, 620, "red", f"If RTH opens below {primary}", f"Below {primary} -> retest", [
+      f"Below the line, {primary} becomes resistance.",
+      f"Wait for a retest of {primary} from underneath.",
+      "A clean rejection confirms the setup path.",
+      f"Then price can press toward {lower} and {ctx['tp1']}.",
+  ], f"{side_name} Entry B", f"Retest and rejection at {primary} after opening below.", branch_b_contract)}
+  <rect x="26" y="1530" width="432" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
+  {_svg_text(72, 1588, "ACTIONABLE TRADE PLAN", 29, "#23b7ff", 900)}
+  {why_svg}
+  <rect x="482" y="1530" width="300" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#39ff7a" stroke-width="2"/>
+  {_svg_text(532, 1588, "TARGETS", 29, "#39ff7a", 900)}
+  {_svg_text(532, 1650, "TP1", 28, "#b9f979", 900)}{_svg_text(632, 1650, ctx["tp1"], 31, "#f8fafc", 900)}
+  {_svg_text(532, 1715, "TP2", 28, "#b9f979", 900)}{_svg_text(632, 1715, ctx["tp2"], 31, "#f8fafc", 900)}
+  {_svg_text(532, 1780, "TARGET", 25, "#b9f979", 900)}{_svg_text(650, 1780, ctx["target"], 31, "#f8fafc", 900)}
+  {_svg_multiline(532, 1844, "Scale only after confirmation. No blind entries.", 22, "#d7e6f7", 22, 2, 28, 600)}
+  <rect x="806" y="1530" width="340" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#ff554a" stroke-width="2"/>
+  {_svg_text(856, 1588, "ENTRY VALIDATION", 29, "#ff554a", 900)}
+  {risk_svg}
+  <rect x="1170" y="1530" width="404" height="360" rx="18" fill="rgba(2,12,25,.88)" stroke="#23b7ff" stroke-width="2"/>
+  {_svg_text(1216, 1588, "KEY LEVELS", 29, "#23b7ff", 900)}
+  {key_rows}
+  {_svg_card(26, 1930, 430, 170, "Flow", ctx["flow_value"], ctx["flow_copy"], "#ff554a" if ctx["flow_tone"] == "red" else "#39ff7a" if ctx["flow_tone"] == "green" else "#23b7ff", 32)}
+  {_svg_card(480, 1930, 350, 170, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], "#23b7ff", 34)}
+  {_svg_card(854, 1930, 330, 170, "Catalyst", ctx["event_value"], ctx["event_copy"], "#f5c451", 30)}
+  {_svg_card(1208, 1930, 366, 170, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", "#b86cff", 30)}
+  <line x1="350" y1="2142" x2="1250" y2="2142" stroke="rgba(215,230,247,.25)" stroke-width="1"/>
+  {_svg_text(800, 2164, "Educational market brief. Wait for confirmation before acting.", 26, "#d7e6f7", 600, "middle", .9)}
+</svg>
+"""
+
+
+def _daily_brief_filename(bundle: MorningBriefingBundle, ext: str) -> str:
+    day = _brief_session_date(bundle).strftime("%Y-%m-%d")
+    return f"spy-prophet-daily-brief-{day}.{ext}"
+
+
+def _load_pil_font(size: int, bold: bool = False):
+    from PIL import ImageFont
+
+    candidates = [
+        r"C:\Windows\Fonts\seguisb.ttf" if bold else r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\arialbd.ttf" if bold else r"C:\Windows\Fonts\arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            if path and Path(path).exists():
+                return ImageFont.truetype(path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _pil_text(draw, xy, text, size, fill, bold=False, anchor=None):
+    font = _load_pil_font(size, bold)
+    draw.text(xy, str(text), font=font, fill=fill, anchor=anchor)
+
+
+def _pil_text_lines(draw, x, y, text, size, fill, max_chars, max_lines, line_gap=8, bold=False):
+    font = _load_pil_font(size, bold)
+    for idx, line in enumerate(_wrap_text(text, max_chars, max_lines)):
+        draw.text((x, y + idx * (size + line_gap)), line, font=font, fill=fill)
+
+
+def _pil_card(draw, x, y, w, h, title, value, copy, accent, value_size=54):
+    value_text = str(value)
+    value_size = min(value_size, 36 if len(value_text) > 14 else value_size, 30 if len(value_text) > 22 else value_size)
+    compact = h <= 190
+    draw.rounded_rectangle((x, y, x + w, y + h), radius=22, fill=(2, 12, 25, 255), outline=accent, width=3)
+    draw.rounded_rectangle((x, y, x + w, y + 8), radius=4, fill=accent)
+    _pil_text(draw, (x + 34, y + 48), str(title).upper(), 25, accent, True)
+    if compact and len(value_text) > 18:
+        _pil_text_lines(draw, x + 34, y + 86, value_text, 24, (248, 251, 255, 255), 22, 2, bold=True)
+        copy_y = y + 146
+    else:
+        _pil_text(draw, (x + 34, y + (88 if compact else 122)), value_text, value_size, (248, 251, 255, 255), True)
+        copy_y = y + (128 if compact else 222)
+    _pil_text_lines(draw, x + 34, copy_y, copy, 18 if compact else 24, (215, 230, 247, 255), 31 if compact else 27, 1 if compact else 3)
+
+
+def render_daily_brief_png_bytes(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> bytes | None:
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageDraw, ImageFilter
+    except Exception:
+        return None
+    ctx = build_daily_brief_context(bundle, result)
+    img = Image.new("RGBA", (1600, 2200), (2, 7, 19, 255))
+    bg = Image.new("RGBA", (1600, 2200), (2, 7, 19, 0))
+    bg_draw = ImageDraw.Draw(bg)
+    for radius, alpha in [(760, 55), (520, 45), (320, 35)]:
+        bg_draw.ellipse((800 - radius, -220, 800 + radius, -220 + radius * 2), fill=(18, 61, 104, alpha))
+    img.alpha_composite(bg.filter(ImageFilter.GaussianBlur(28)))
+    draw = ImageDraw.Draw(img)
+    blue, green, red, amber, purple = (35, 183, 255, 255), (57, 255, 122, 255), (255, 85, 74, 255), (245, 196, 81, 255), (184, 108, 255, 255)
+    draw.line([(60, 170), (130, 60), (220, 60), (270, 150), (145, 205), (302, 242), (95, 344)], fill=blue, width=5)
+    draw.line([(1325, 155), (1398, 70), (1500, 80), (1537, 170), (1400, 212), (1555, 296), (1340, 342)], fill=red, width=5)
+    _pil_text(draw, (800, 140), "SPY PROPHET", 88, (248, 251, 255, 255), True, "mm")
+    _pil_text(draw, (800, 210), "WHERE STRUCTURE BECOMES FORESIGHT", 31, (215, 230, 247, 230), False, "mm")
+    _pil_text(draw, (800, 268), "DAILY ONE-PAGE TRADING BRIEF", 28, blue, True, "mm")
+    draw.rounded_rectangle((545, 298, 1055, 360), radius=18, fill=(2, 12, 25, 230), outline=blue, width=2)
+    _pil_text(draw, (800, 330), ctx["date"], 30, (215, 230, 247, 255), True, "mm")
+    _pil_card(draw, 26, 410, 382, 330, "Primary Action", ctx["stance"], ctx["headline"], blue, 72)
+    _pil_card(draw, 426, 410, 350, 330, "Decision Pivot", ctx["primary_value"], f"{ctx['primary_label']} controls the first valid setup.", green, 70)
+    _pil_card(draw, 794, 410, 382, 330, "Contract Watch", ctx["contract_value"], ctx["contract_copy"], (22, 243, 214, 255), 56)
+    draw.rounded_rectangle((1194, 410, 1574, 740), radius=22, fill=(2, 12, 25, 232), outline=blue, width=3)
+    _pil_text(draw, (1384, 462), "CONFIDENCE", 29, blue, True, "mm")
+    draw.ellipse((1298, 504, 1470, 676), outline=(35, 183, 255, 80), width=24)
+    draw.arc((1298, 504, 1470, 676), -90, -90 + (360 * int(ctx["confidence"]) / 100), fill=(21, 200, 255, 255), width=24)
+    _pil_text(draw, (1384, 596), f"{ctx['confidence']}%", 60, (248, 251, 255, 255), True, "mm")
+    _pil_text(draw, (1384, 654), ctx["confidence_label"], 22, blue, True, "mm")
+    _pil_text(draw, (800, 825), "OPENING DECISION MAP", 49, blue, True, "mm")
+    def branch(x, y, tone, title, path, bullets, entry_title, entry_copy, contract):
+        accent = green if tone == "green" else red
+        draw.rounded_rectangle((x, y, x + 720, y + 620), radius=22, fill=(2, 12, 25, 255), outline=accent, width=3)
+        draw.ellipse((x + 22, y + 28, x + 102, y + 108), outline=accent, width=5)
+        _pil_text(draw, (x + 124, y + 58), title.upper(), 31, accent, True)
+        _pil_text(draw, (x + 124, y + 125), path, 50 if len(path) < 24 else 42, (248, 251, 255, 255), True)
+        for idx, item in enumerate(bullets[:4]):
+            yy = y + 248 + idx * 54
+            draw.ellipse((x + 38, yy - 14, x + 54, yy + 2), fill=accent)
+            _pil_text_lines(draw, x + 72, yy - 20, item, 24, (232, 241, 255, 255), 44, 2)
+        draw.rounded_rectangle((x + 32, y + 488, x + 688, y + 586), radius=16, fill=(4, 22, 34, 255), outline=accent, width=2)
+        _pil_text(draw, (x + 70, y + 508), entry_title, 30, accent, True)
+        _pil_text_lines(draw, x + 70, y + 546, entry_copy, 21, (215, 230, 247, 255), 34, 1)
+        _pil_text(draw, (x + 672, y + 548), contract, 26, accent, True, "ra")
+    side_name = "Put" if ctx["side"] == "PUT" else "Call" if ctx["side"] == "CALL" else "Setup"
+    contract = ctx["contract_value"] if ctx["contract_value"] != "Contract pending" else f"{side_name} pending"
+    primary, upper, lower = ctx["primary_value"], ctx["upper_value"], ctx["lower_value"]
+    branch(50, 860, "green", f"If RTH opens above {primary}", f"{primary} -> {upper}", [
+        f"Acceptance above {primary} opens the path toward {upper}.",
+        "Avoid forcing direction while price is between triggers.",
+        f"Best {side_name.lower()} idea: wait for rejection near {upper}.",
+        "Confirmation requires rejection and failed reclaim.",
+    ], f"{side_name} Entry A", f"Rejection near {upper} after opening above {primary}.", contract)
+    branch(830, 860, "red", f"If RTH opens below {primary}", f"Below {primary} -> retest", [
+        f"Below the line, {primary} becomes resistance.",
+        f"Wait for a retest of {primary} from underneath.",
+        "A clean rejection confirms the setup path.",
+        f"Then price can press toward {lower} and {ctx['tp1']}.",
+    ], f"{side_name} Entry B", f"Retest and rejection at {primary} after opening below.", contract)
+    draw.rounded_rectangle((26, 1530, 458, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
+    _pil_text(draw, (72, 1588), "ACTIONABLE TRADE PLAN", 29, blue, True)
+    for idx, item in enumerate((ctx["why"] or [ctx["score_read"]])[:4]):
+        _pil_text(draw, (76, 1640 + idx * 58), str(idx + 1), 24, blue, True)
+        _pil_text_lines(draw, 120, 1628 + idx * 58, item, 20, (232, 241, 255, 255), 32, 2)
+    draw.rounded_rectangle((482, 1530, 782, 1890), radius=18, fill=(2, 12, 25, 255), outline=green, width=3)
+    _pil_text(draw, (532, 1588), "TARGETS", 29, green, True)
+    for idx, (label, value) in enumerate([("TP1", ctx["tp1"]), ("TP2", ctx["tp2"]), ("TARGET", ctx["target"])]):
+        _pil_text(draw, (532, 1650 + idx * 65), label, 27, (185, 249, 121, 255), True)
+        _pil_text(draw, (650, 1650 + idx * 65), value, 31, (248, 251, 255, 255), True)
+    _pil_text_lines(draw, 532, 1834, "Confirmation first. Scale gradually.", 20, (215, 230, 247, 255), 22, 2)
+    draw.rounded_rectangle((806, 1530, 1146, 1890), radius=18, fill=(2, 12, 25, 255), outline=red, width=3)
+    _pil_text(draw, (856, 1588), "ENTRY VALIDATION", 29, red, True)
+    for idx, item in enumerate((ctx["risks"] or [ctx["invalidation"]])[:4]):
+        draw.ellipse((852, 1632 + idx * 58, 866, 1646 + idx * 58), fill=red)
+        _pil_text_lines(draw, 884, 1622 + idx * 58, item, 18, (232, 241, 255, 255), 26, 2)
+    draw.rounded_rectangle((1170, 1530, 1574, 1890), radius=18, fill=(2, 12, 25, 255), outline=blue, width=3)
+    _pil_text(draw, (1216, 1588), "KEY LEVELS", 29, blue, True)
+    for idx, (label, value) in enumerate(ctx["key_levels"] or [("Structure", "Pending")]):
+        yy = 1632 + idx * 64
+        color = green if idx % 2 == 0 else blue
+        draw.rounded_rectangle((1195, yy - 42, 1525, yy + 10), radius=12, fill=(4, 22, 34, 255), outline=color, width=1)
+        _pil_text(draw, (1216, yy - 34), value, 28, (248, 251, 255, 255), True)
+        _pil_text_lines(draw, 1332, yy - 33, label, 17, (215, 230, 247, 255), 18, 2, bold=True)
+    flow_accent = red if ctx["flow_tone"] == "red" else green if ctx["flow_tone"] == "green" else blue
+    _pil_card(draw, 26, 1930, 430, 170, "Flow", ctx["flow_value"], ctx["flow_copy"], flow_accent, 32)
+    _pil_card(draw, 480, 1930, 350, 170, "Dark Pool", ctx["darkpool_value"], ctx["darkpool_copy"], blue, 34)
+    _pil_card(draw, 854, 1930, 330, 170, "Catalyst", ctx["event_value"], ctx["event_copy"], amber, 30)
+    _pil_card(draw, 1208, 1930, 366, 170, "GEX / Reminder", ctx["gex_value"], "Confirmation first. Structure leads; outside context confirms or cautions.", purple, 30)
+    draw.line((350, 2142, 1250, 2142), fill=(215, 230, 247, 70), width=1)
+    _pil_text(draw, (800, 2164), "Educational market brief. Wait for confirmation before acting.", 26, (215, 230, 247, 230), False, "mm")
+    out = BytesIO()
+    img.convert("RGB").save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def render_daily_brief_pdf_bytes(png_bytes: bytes | None) -> bytes | None:
+    if not png_bytes:
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image
+    except Exception:
+        return None
+    image = Image.open(BytesIO(png_bytes)).convert("RGB")
+    out = BytesIO()
+    image.save(out, format="PDF", resolution=144.0)
+    return out.getvalue()
+
+
+def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
+    render_section_title("Daily Brief", "Designed one-page report generated from verified SPY Foresight data")
+    active_bundle = st.session_state.get("morning_briefing_bundle")
+    if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
+        active_bundle = bundle
+    result = st.session_state.get("morning_briefing_result")
+    if not isinstance(result, MorningBriefingResult) or pd.Timestamp(result.generated_at).date() != pd.Timestamp(active_bundle.generated_at).date():
+        result = generate_morning_briefing(active_bundle, use_ai=False)
+    cols = st.columns([0.58, 0.42])
+    with cols[0]:
+        render_data_notice("Daily Brief uses the current SPY Foresight assessment, structure lines, options context, flow, dark pool, catalyst, and learning stats. Missing feeds are not invented.", tone="info")
+    with cols[1]:
+        if st.button("Generate Daily Brief", type="primary", use_container_width=True, key="generate_daily_brief"):
+            ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
+            result = generate_morning_briefing(active_bundle, use_ai=ai_ready)
+            save_morning_briefing(result)
+            save_foresight_decision_audit(active_bundle, result)
+            st.session_state["morning_briefing_result"] = result
+            st.session_state["morning_briefing_bundle"] = active_bundle
+    svg = render_daily_brief_svg(active_bundle, result)
+    png_bytes = render_daily_brief_png_bytes(active_bundle, result)
+    pdf_bytes = render_daily_brief_pdf_bytes(png_bytes)
+    d1, d2, d3 = st.columns(3)
+    d1.download_button("Download SVG", data=svg.encode("utf-8"), file_name=_daily_brief_filename(active_bundle, "svg"), mime="image/svg+xml", use_container_width=True)
+    if png_bytes:
+        d2.download_button("Download PNG", data=png_bytes, file_name=_daily_brief_filename(active_bundle, "png"), mime="image/png", use_container_width=True)
+    else:
+        d2.button("Download PNG", disabled=True, use_container_width=True)
+    if pdf_bytes:
+        d3.download_button("Download PDF", data=pdf_bytes, file_name=_daily_brief_filename(active_bundle, "pdf"), mime="application/pdf", use_container_width=True)
+    else:
+        d3.button("Download PDF", disabled=True, use_container_width=True)
+    components.html(
+        f"<div style='width:100%;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px'>{svg}</div>",
+        height=1280,
+        scrolling=True,
+    )
+
+
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_section_title("SPY Foresight", "Actionable same-day plan for today's SPY Prophet lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
@@ -6146,7 +6694,7 @@ def _svg_polyline_path(points: list[tuple[float, float]]) -> str:
     return " ".join(("M" if i == 0 else "L") + f"{x:.2f},{y:.2f}" for i, (x, y) in enumerate(points))
 
 
-def _svg_text(value: object) -> str:
+def _map_svg_text(value: object) -> str:
     return escape(str(value if value is not None else "-"))
 
 
@@ -6252,7 +6800,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         last_label_y = label_y
         rails.append(
             f"<path d='{path}' class='rail {'rail-hot' if is_closest else ''}' stroke='{color}'/>"
-            f"<text x='{x0 + 14}' y='{label_y:.2f}' class='rail-label' fill='{color}'>{_svg_text(display_line_name(line.name))}</text>"
+            f"<text x='{x0 + 14}' y='{label_y:.2f}' class='rail-label' fill='{color}'>{_map_svg_text(display_line_name(line.name))}</text>"
         )
 
     targets = []
@@ -6287,7 +6835,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         signal_marker = (
             f"<g class='signal-marker' transform='translate({sig_x:.2f} {sig_y:.2f})'>"
             f"<circle r='10' fill='{sig_color}' opacity='.18'/><circle r='5' fill='{sig_color}'/>"
-            f"<text x='18' y='5' class='marker-label' fill='{sig_color}'>{_svg_text(active_signal.signal_type)}</text></g>"
+            f"<text x='18' y='5' class='marker-label' fill='{sig_color}'>{_map_svg_text(active_signal.signal_type)}</text></g>"
         )
 
     decision_title = _humanize(decision_state.final_decision) if decision_state else "Wait"
@@ -6320,7 +6868,7 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         ("Active Setup", signal_title, "Signal engine"),
     ]
     card_html = "".join(
-        f"<div class='svg-map-card'><div class='svg-card-label'>{_svg_text(k)}</div><div class='svg-card-value'>{_svg_text(v)}</div><div class='svg-card-copy'>{_svg_text(c)}</div></div>"
+        f"<div class='svg-map-card'><div class='svg-card-label'>{_map_svg_text(k)}</div><div class='svg-card-value'>{_map_svg_text(v)}</div><div class='svg-card-copy'>{_map_svg_text(c)}</div></div>"
         for k, v, c in cards
     )
 
@@ -6360,8 +6908,8 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
       @media (max-width:760px){{.svg-map-title{{display:block}}.svg-map-badge{{display:inline-block;margin-top:10px}}.svg-map-cards{{grid-template-columns:1fr}}}}
     </style>
     <div class='svg-map-shell'>
-      <div class='svg-map-title'><div><h3>{_svg_text(title)}</h3><p>{_svg_text(subtitle)}</p></div><div class='svg-map-badge'>Animated structure map</div></div>
-      <svg viewBox='0 0 {width} {height}' role='img' aria-label='{_svg_text(title)}'>
+      <div class='svg-map-title'><div><h3>{_map_svg_text(title)}</h3><p>{_map_svg_text(subtitle)}</p></div><div class='svg-map-badge'>Animated structure map</div></div>
+      <svg viewBox='0 0 {width} {height}' role='img' aria-label='{_map_svg_text(title)}'>
         <defs>
           <linearGradient id='spyGradient' x1='0' x2='1'><stop offset='0%' stop-color='#9bdcff'/><stop offset='48%' stop-color='#ffffff'/><stop offset='100%' stop-color='#f4c76b'/></linearGradient>
           <filter id='softGlow'><feGaussianBlur stdDeviation='4' result='blur'/><feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge></filter>
@@ -6380,8 +6928,8 @@ def build_structure_map_svg(candles_df, primary_lines, secondary_lines, signals,
         <circle class='price-dot' cx='{current_x:.2f}' cy='{current_y:.2f}' r='7'/>
         <text x='{x1 - 4}' y='{current_y - 12:.2f}' text-anchor='end' class='map-label'>SPY {fmt_price(current_price)}</text>
         {signal_marker}
-        <text x='{x0}' y='{height - 132}' class='map-muted'>{_svg_text(first_label)}</text>
-        <text x='{x1}' y='{height - 132}' text-anchor='end' class='map-muted'>{_svg_text(latest_label)}</text>
+        <text x='{x0}' y='{height - 132}' class='map-muted'>{_map_svg_text(first_label)}</text>
+        <text x='{x1}' y='{height - 132}' text-anchor='end' class='map-muted'>{_map_svg_text(latest_label)}</text>
         <circle r='5' fill='#f4c76b'><animateMotion dur='7s' repeatCount='indefinite' path='{spy_path}'/></circle>
       </svg>
       <div class='svg-map-cards'>{card_html}</div>
@@ -7160,7 +7708,7 @@ def main() -> None:
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    tab_names = ["Live", "SPY Foresight", "Market", "Chart", "Replay", "Options", "Journal"]
+    tab_names = ["Live", "SPY Foresight", "Daily Brief", "Market", "Chart", "Replay", "Options", "Journal"]
     if show_debug:
         tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
     tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -7216,6 +7764,9 @@ def main() -> None:
         if not session_has_candles:
             render_data_notice("Preview mode: SPY Foresight is informational until session candles print. Live contracts remain unavailable.", tone="warn")
         render_morning_briefing_tab(morning_bundle)
+
+    with tabs["Daily Brief"]:
+        render_daily_brief_tab(morning_bundle)
 
     with tabs["Chart"]:
         render_section_title("Prophet Chart", "Trigger map and candles")

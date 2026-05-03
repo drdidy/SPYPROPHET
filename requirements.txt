@@ -8,3 +8,4 @@ pytest==9.0.3
 requests==2.33.1
 tastytrade==12.3.2
 tzdata==2026.2
+pillow==11.3.0
