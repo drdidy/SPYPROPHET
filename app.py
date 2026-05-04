@@ -1871,7 +1871,7 @@ def support_refute_scorecard(verdicts: list[dict]) -> dict:
 
 
 def build_foresight_desk_reviews(bundle: MorningBriefingBundle, decision: dict | None = None) -> list[dict]:
-    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    watch_side, entry_price, entry_label = _decision_line_context(bundle, decision)
     verdicts = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
     scorecard = support_refute_scorecard(verdicts)
     event = _first_high_impact_event(bundle.economic_events)
@@ -1918,13 +1918,14 @@ def build_foresight_desk_reviews(bundle: MorningBriefingBundle, decision: dict |
 
 
 def build_app_decision_context(bundle: MorningBriefingBundle, decision: dict | None = None) -> dict:
-    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    watch_side, entry_price, entry_label = _decision_line_context(bundle, decision)
     verdicts = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
     enriched = [{**row, "weight": verdict_weight(row.get("source"))} for row in verdicts]
     return {
         "watch_side": watch_side,
         "entry_price": entry_price,
         "entry_label": entry_label,
+        "structure_scenarios": structure_external_scenarios(bundle),
         "external_verdicts": enriched,
         "support_refute": support_refute_scorecard(enriched),
         "desk_reviews": build_foresight_desk_reviews(bundle, decision),
@@ -1944,6 +1945,8 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
         "Every outside input must either support, caution, warn, or be marked neutral for the specific SPY Prophet entry being considered; do not list decorative facts. "
+        "Use APP_DECISION_CONTEXT_JSON.structure_scenarios as the authoritative scenario matrix: compare GEX, max pain, dark-pool levels, OI walls, and option-flow strikes against every SPY Prophet trigger before selecting a primary setup. "
+        "The primary_trade trigger_line and trigger_price must match one of the verified SPY Prophet lines exactly; never invent a trigger price. "
         "Tie every recommendation back to SPY Prophet lines and external context. "
         "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, and cite only pages actually used. "
         "Return ONLY valid JSON. No Markdown, no bullets outside JSON, no long narrative. "
@@ -2212,12 +2215,16 @@ def morning_decision_from_result(result: MorningBriefingResult | None) -> dict |
 
 def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None) -> dict:
     event = _first_high_impact_event(bundle.economic_events)
-    first_line = bundle.lines[0] if bundle.lines else {}
+    scenario = best_structure_scenario(bundle)
+    first_line = (scenario or {}).get("line") if scenario else (bundle.lines[0] if bundle.lines else {})
+    first_line = first_line or {}
     confidence = int(result.confidence if result else 45)
     flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
     whales = bundle.options_intelligence.unusual_whales or {}
     darkpool = whales.get("darkpool", {}) if isinstance(whales, dict) else {}
-    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    watch_side = structure_line_side(first_line) or bundle_primary_entry_context(bundle)[0]
+    entry_price = first_line.get("value")
+    entry_label = first_line.get("name")
     darkpool_read = darkpool_entry_read(darkpool, entry_price, watch_side, entry_label) if isinstance(darkpool, dict) else {}
     external_reads = external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price)
     opposing = [row for row in external_reads if row.get("state") in {"opposes", "risk"}]
@@ -2234,6 +2241,8 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
         reasons.append(darkpool_reason)
     if supporting or opposing:
         reasons.append(f"External context: {len(supporting)} support and {len(opposing)} caution flags for the setup.")
+    if scenario and (scenario.get("support") or scenario.get("caution")):
+        reasons.append(f"Scenario read: {scenario.get('name')} has {str(scenario.get('title') or 'external context').lower()} from external levels.")
     if event:
         reasons.append(f"Macro timing: {event.event} at {event.time_label}.")
     risk_flags = []
@@ -3142,6 +3151,233 @@ def alignment_title(state: str, label: str, direction: str | None = None, watch_
     if state == "risk":
         return "Timing Risk"
     return label
+
+
+def structure_line_side(line: dict | None) -> str | None:
+    text = f"{(line or {}).get('role') or ''} {(line or {}).get('name') or ''}".upper()
+    if "PUT" in text:
+        return "PUT"
+    if "CALL" in text:
+        return "CALL"
+    return None
+
+
+def structure_lines_with_values(bundle: MorningBriefingBundle) -> list[dict]:
+    rows = []
+    for line in bundle.lines or []:
+        value = _finite_float(line.get("value"))
+        if pd.isna(value):
+            continue
+        rows.append({**line, "value": value, "_value": value, "_side": structure_line_side(line)})
+    return sorted(rows, key=lambda row: row["_value"])
+
+
+def _external_level_row(source: str, price, detail: str, weight: float, side: str | None = None, magnitude: float | None = None) -> dict | None:
+    numeric = _finite_float(price)
+    if pd.isna(numeric):
+        return None
+    return {
+        "source": source,
+        "price": float(numeric),
+        "detail": detail,
+        "weight": float(weight),
+        "side": str(side or "").upper() if side else None,
+        "magnitude": _finite_float(magnitude, 0.0),
+    }
+
+
+def external_level_rows(options: OptionsIntelligence | None) -> list[dict]:
+    rows: list[dict] = []
+    whales = premium_flow_payload(options)
+    flow = whales.get("flow_alerts") or {}
+    recent = whales.get("recent_flow") or {}
+    gex = whales.get("gex") or {}
+    darkpool = whales.get("darkpool") or {}
+    if isinstance(gex, dict):
+        for row in gex.get("levels") or []:
+            if not isinstance(row, dict):
+                continue
+            total = _finite_float(row.get("total_gex"))
+            signed = "positive" if total > 0 else "negative" if total < 0 else "neutral"
+            level = _external_level_row(
+                "Dealer GEX",
+                row.get("strike"),
+                f"{signed} GEX {fmt_money_short(total)}",
+                2.25,
+                magnitude=abs(_finite_float(total, 0.0)),
+            )
+            if level:
+                rows.append(level)
+    if isinstance(darkpool, dict):
+        for row in darkpool_ranked_levels(darkpool, 6):
+            level = _external_level_row(
+                "Dark Pool",
+                row.get("price"),
+                f"{fmt_money_short(row.get('premium'))} dark-pool liquidity",
+                1.75,
+                magnitude=row.get("premium"),
+            )
+            if level:
+                rows.append(level)
+    if options is not None:
+        max_pain = _external_level_row("Max Pain", options.max_pain, "option-chain max-pain magnet", 1.2, magnitude=1.0)
+        if max_pain:
+            rows.append(max_pain)
+        for label, price in [("Call Wall", options.call_wall), ("Put Wall", options.put_wall)]:
+            wall = _external_level_row(label, price, f"{label.lower()} open-interest wall", 0.9, "CALL" if label == "Call Wall" else "PUT", 1.0)
+            if wall:
+                rows.append(wall)
+    for source, key_rows in [("Option Flow", flow.get("key_strikes") if isinstance(flow, dict) else []), ("Recent Flow", recent.get("top_strikes") if isinstance(recent, dict) else [])]:
+        for row in key_rows or []:
+            if not isinstance(row, dict):
+                continue
+            call_premium = _finite_float(row.get("call_premium"), 0.0)
+            put_premium = _finite_float(row.get("put_premium"), 0.0)
+            net_pressure = _finite_float(row.get("net_pressure"), call_premium - put_premium)
+            side = "CALL" if call_premium > put_premium or net_pressure > 0 else "PUT" if put_premium > call_premium or net_pressure < 0 else None
+            premium = max(abs(net_pressure), call_premium, put_premium)
+            detail_side = f"{side.lower()} " if side else ""
+            level = _external_level_row(
+                source,
+                row.get("strike"),
+                f"{detail_side}flow {fmt_money_short(premium)}",
+                1.85 if source == "Option Flow" else 1.35,
+                side,
+                premium,
+            )
+            if level:
+                rows.append(level)
+    return rows
+
+
+def _level_threshold(source: str) -> float:
+    if source in {"Option Flow", "Recent Flow", "Call Wall", "Put Wall"}:
+        return 2.5
+    if source == "Max Pain":
+        return 1.75
+    return 1.25
+
+
+def scenario_level_hits(line: dict, levels: list[dict]) -> list[dict]:
+    price = _finite_float(line.get("value"))
+    if pd.isna(price):
+        return []
+    hits = []
+    for level in levels:
+        level_price = _finite_float(level.get("price"))
+        if pd.isna(level_price):
+            continue
+        distance = abs(level_price - price)
+        if distance <= _level_threshold(str(level.get("source") or "")):
+            hits.append({**level, "distance": distance})
+    return sorted(hits, key=lambda row: (row["distance"], -abs(_finite_float(row.get("magnitude"), 0.0))))
+
+
+def _scenario_global_flow_points(options: OptionsIntelligence | None, side: str | None) -> tuple[float, list[str], list[str]]:
+    read = premium_flow_direction(options)
+    flow_side = str(read.get("side") or "").upper()
+    setup_side = str(side or "").upper()
+    support: list[str] = []
+    caution: list[str] = []
+    score = 0.0
+    if flow_side in {"CALL", "PUT"} and setup_side in {"CALL", "PUT"}:
+        if flow_side == setup_side:
+            score += 1.0
+            support.append(f"Broad flow leans {display_state_label(flow_side).lower()}.")
+        else:
+            score -= 1.0
+            caution.append(f"Broad flow leans {display_state_label(flow_side).lower()}, against this setup.")
+    elif flow_side == "MIXED":
+        caution.append("Broad flow is mixed; confirmation quality matters.")
+    return score, support, caution
+
+
+def structure_external_scenarios(bundle: MorningBriefingBundle) -> list[dict]:
+    levels = external_level_rows(bundle.options_intelligence)
+    scenarios: list[dict] = []
+    for line in structure_lines_with_values(bundle):
+        side = structure_line_side(line)
+        score, support, caution = _scenario_global_flow_points(bundle.options_intelligence, side)
+        hits = scenario_level_hits(line, levels)
+        for hit in hits:
+            source = str(hit.get("source") or "")
+            level_side = str(hit.get("side") or "").upper()
+            distance_text = fmt_price(hit.get("distance"))
+            detail = str(hit.get("detail") or source)
+            if source in {"Option Flow", "Recent Flow", "Call Wall", "Put Wall"} and level_side in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
+                if level_side == side:
+                    score += _finite_float(hit.get("weight"), 1.0)
+                    support.append(f"{source} aligns at {fmt_price(hit.get('price'))}, {distance_text} from trigger.")
+                else:
+                    score -= _finite_float(hit.get("weight"), 1.0)
+                    caution.append(f"{source} is opposite-side near {fmt_price(hit.get('price'))}.")
+            elif source == "Max Pain":
+                score += _finite_float(hit.get("weight"), 1.0) * 0.5
+                support.append(f"Max pain is nearby at {fmt_price(hit.get('price'))}; expect magnet or pin behavior.")
+            elif source == "Dealer GEX":
+                score += _finite_float(hit.get("weight"), 1.0)
+                support.append(f"Dealer GEX cluster at {fmt_price(hit.get('price'))} ({detail}).")
+            else:
+                score += _finite_float(hit.get("weight"), 1.0)
+                support.append(f"{source} level at {fmt_price(hit.get('price'))}, {distance_text} from trigger.")
+        if score >= 2.25:
+            state = "aligned"
+            title = "Strong external confluence"
+        elif score <= -1.25:
+            state = "opposes"
+            title = "External caution"
+        elif support:
+            state = "neutral"
+            title = "Partial confluence"
+        else:
+            state = "neutral"
+            title = "Structure only"
+        scenarios.append({
+            "line": line,
+            "name": line.get("name") or "Structure Trigger",
+            "role": line.get("role") or "",
+            "side": side,
+            "price": line.get("value"),
+            "state": state,
+            "title": title,
+            "score": round(score, 2),
+            "support": support[:4],
+            "caution": caution[:3],
+            "hits": hits[:5],
+        })
+    return sorted(scenarios, key=lambda row: (float(row.get("score") or 0.0), len(row.get("hits") or [])), reverse=True)
+
+
+def best_structure_scenario(bundle: MorningBriefingBundle, side: str | None = None) -> dict | None:
+    scenarios = structure_external_scenarios(bundle)
+    if side:
+        filtered = [row for row in scenarios if str(row.get("side") or "").upper() == str(side).upper()]
+        if filtered:
+            return filtered[0]
+    return scenarios[0] if scenarios else None
+
+
+def _decision_line_context(bundle: MorningBriefingBundle, decision: dict | None = None) -> tuple[str | None, float | None, str | None]:
+    trade = (decision or {}).get("primary_trade") if isinstance((decision or {}).get("primary_trade"), dict) else {}
+    line = _brief_line_by_name(bundle, trade.get("trigger_line")) if trade else None
+    if line:
+        side = structure_line_side(line)
+        best = best_structure_scenario(bundle, side)
+        scenarios = structure_external_scenarios(bundle)
+        selected = next((row for row in scenarios if _brief_same_line(row.get("line"), line)), None)
+        if best and not _brief_same_line(best.get("line"), line):
+            best_score = _finite_float(best.get("score"), 0.0)
+            selected_score = _finite_float((selected or {}).get("score"), 0.0)
+            if best.get("state") == "aligned" and best_score >= selected_score + 0.75:
+                line = best.get("line") or line
+                side = structure_line_side(line)
+        return side, _finite_float(line.get("value")), str(line.get("name") or trade.get("trigger_line") or "")
+    trade_side = "PUT" if "PUT" in str((decision or {}).get("stance") or "").upper() else "CALL" if "CALL" in str((decision or {}).get("stance") or "").upper() else None
+    scenario = best_structure_scenario(bundle, trade_side)
+    if scenario:
+        line = scenario.get("line") or {}
+        return scenario.get("side"), _finite_float(line.get("value")), str(line.get("name") or scenario.get("name") or "")
+    return bundle_primary_entry_context(bundle)
 
 
 def global_tape_direction(global_context: list[MarketMove]) -> tuple[str | None, str]:
@@ -4120,6 +4356,20 @@ def inject_global_css() -> None:
     .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px;flex:1}
     .morning-chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .morning-chip{border:1px solid rgba(141,160,184,.18);border-radius:999px;background:rgba(255,255,255,.045);padding:4px 8px;font-size:.72rem;color:var(--text)}
+    .brief-plan-shell{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:linear-gradient(135deg,rgba(8,14,22,.98),rgba(11,21,34,.96));padding:15px;margin:12px 0}
+    .brief-plan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .brief-plan-title{font-size:1.16rem;font-weight:850;color:var(--text);line-height:1.2}
+    .brief-plan-copy{font-size:.84rem;color:var(--muted);line-height:1.45;margin-top:4px}
+    .scenario-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .scenario-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:188px}
+    .scenario-card.call{border-color:rgba(46,204,113,.34)}.scenario-card.put{border-color:rgba(255,95,124,.34)}.scenario-card.selected{box-shadow:0 0 0 1px rgba(103,183,255,.55),0 0 26px rgba(103,183,255,.12)}
+    .scenario-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .scenario-name{font-size:.82rem;font-weight:850;color:var(--text);line-height:1.22}
+    .scenario-price{font-size:1.5rem;font-weight:850;color:var(--text);font-variant-numeric:tabular-nums;margin-top:8px}
+    .scenario-state{font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:3px}
+    .scenario-list{display:grid;gap:5px;margin-top:9px}
+    .scenario-list span{border:1px solid rgba(141,160,184,.14);border-radius:7px;background:rgba(255,255,255,.035);padding:6px 7px;color:#d7e6f7;font-size:.75rem;line-height:1.28}
+    .scenario-list .caution{border-color:rgba(245,196,81,.28);color:#f8dfa0}
     .flow-board{border:1px solid rgba(103,183,255,.26);border-radius:8px;background:linear-gradient(135deg,rgba(9,16,26,.98),rgba(12,22,34,.96));padding:14px;margin:12px 0}
     .flow-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
     .flow-board-title{font-size:1.12rem;font-weight:950;color:var(--text)}
@@ -4216,8 +4466,8 @@ def inject_global_css() -> None:
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
     .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
     .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
-    .morning-control,.morning-hero,.morning-line-card,.morning-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
-    .morning-title,.decision-summary-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
+    .morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
+    .morning-title,.brief-plan-title,.decision-summary-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
     .morning-title{font-size:1.9rem}
     .action-headline{font-size:1.22rem}
     .flow-board-title,.evidence-title{font-size:1.06rem}
@@ -4241,7 +4491,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.scenario-grid,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -5478,6 +5728,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     event_value = f"{event.event} at {event.time_label}" if event else "No scheduled catalyst"
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    _, _, ctx_label = _decision_line_context(bundle, decision)
     raw_stance = str(decision.get("stance") or "WAIT").upper()
     stance = display_state_label(raw_stance)
     contract = str(trade.get("contract") or "Wait for setup")
@@ -5485,7 +5736,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     if not stance_allows_contract(raw_stance):
         contract = "No contract until confirmation"
         contract_copy = "Available after the trade gate allows setup."
-    trigger = str(trade.get("trigger_line") or "No trigger selected")
+    trigger = str(ctx_label or trade.get("trigger_line") or "No trigger selected")
     st.markdown(
         f"""
         <div class='morning-hero'>
@@ -5532,15 +5783,96 @@ def render_morning_lines_deck(bundle: MorningBriefingBundle) -> None:
     st.markdown(f"<div class='morning-lines'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
+def _scenario_card_html(scenario: dict, selected: bool = False) -> str:
+    side = str(scenario.get("side") or "").upper()
+    tone = "call" if side == "CALL" else "put" if side == "PUT" else "neutral"
+    support = [str(item) for item in scenario.get("support", []) if str(item).strip()]
+    caution = [str(item) for item in scenario.get("caution", []) if str(item).strip()]
+    rows = []
+    for item in support[:2]:
+        rows.append(f"<span>{escape(item)}</span>")
+    for item in caution[:1]:
+        rows.append(f"<span class='caution'>{escape(item)}</span>")
+    if not rows:
+        rows.append("<span>External levels are not clustered here yet; wait for price confirmation.</span>")
+    selected_class = " selected" if selected else ""
+    return (
+        f"<div class='scenario-card {tone}{selected_class}'>"
+        f"<div class='scenario-top'><div class='scenario-name'>{escape(str(scenario.get('name') or 'Structure Trigger'))}</div>"
+        f"<div class='scenario-state'>{escape(display_state_label(side) if side else 'Trigger')}</div></div>"
+        f"<div class='scenario-price'>{escape(fmt_price(scenario.get('price')))}</div>"
+        f"<div class='scenario-state'>{escape(str(scenario.get('title') or 'Structure only'))} | score {escape(fmt_float(scenario.get('score'), 2))}</div>"
+        f"<div class='scenario-list'>{''.join(rows)}</div>"
+        "</div>"
+    )
+
+
+def render_structure_scenario_board(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None, title: str = "Trigger Scenario Board") -> None:
+    scenarios = structure_external_scenarios(bundle)
+    if not scenarios:
+        return
+    decision = morning_decision_from_result(result) if result else None
+    ctx_side, ctx_price, ctx_label = _decision_line_context(bundle, decision)
+    selected = next((row for row in scenarios if str(row.get("name") or "") == str(ctx_label or "")), None) or scenarios[0]
+    scenario_by_name = {str(row.get("name") or ""): row for row in scenarios}
+    ordered = []
+    for line in bundle.lines or []:
+        row = scenario_by_name.get(str(line.get("name") or ""))
+        if row:
+            ordered.append(row)
+    ordered = ordered or scenarios
+    selected_name = str(selected.get("name") or "")
+    cards = "".join(_scenario_card_html(row, str(row.get("name") or "") == selected_name) for row in ordered[:4])
+    summary = _morning_card_html(
+        "Validated Focus",
+        f"{selected.get('name') or 'Structure Trigger'} {fmt_price(selected.get('price'))}",
+        "This is the strongest verified confluence from structure plus external levels. Entry still requires confirmation.",
+        "target",
+        "green" if selected.get("state") == "aligned" else "amber" if selected.get("state") == "neutral" else "red",
+        [f"Score {fmt_float(selected.get('score'), 2)}", display_state_label(selected.get("side"))],
+    )
+    gex = unusual_whales_gex_card_data(bundle.options_intelligence)
+    darkpool = darkpool_context_label(bundle.options_intelligence, entry_price=ctx_price, watch_side=ctx_side, entry_label=ctx_label)
+    support = [str(item) for item in selected.get("support", []) if str(item).strip()]
+    focus_copy = support[0] if support else "No external cluster is strong enough to overrule structure confirmation."
+    st.markdown(
+        f"""
+        <div class='brief-plan-shell'>
+          <div class='brief-plan-head'>
+            <div>
+              <div class='brief-plan-title'>{escape(title)}</div>
+              <div class='brief-plan-copy'>Each trigger is checked against GEX, max pain, dark-pool levels, OI walls, and option-flow strikes. External data can support or caution a setup, but entry remains gated by confirmation.</div>
+            </div>
+            {ui_icon('target', 'blue', 'md')}
+          </div>
+          <div class='morning-dashboard'>
+            {summary}
+            {_morning_card_html("Confluence Read", str(selected.get('title') or 'Structure only'), focus_copy, "spark", "blue")}
+            {_morning_card_html("Dark Pool", str(darkpool.get('value') or 'Pending'), str(darkpool.get('copy') or 'Dark-pool levels pending.'), "target", "blue")}
+            {_morning_card_html("Dealer GEX", gex[0] if gex else bundle.gamma_insight.dealer_tone, gex[1] if gex else bundle.gamma_insight.notes, "gauge", gex[3] if gex else "blue", gex[2] if gex else [])}
+          </div>
+          <div class='scenario-grid'>{cards}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    ctx_side, ctx_price, ctx_label = _decision_line_context(bundle, decision)
+    if ctx_label:
+        trade = {**trade, "trigger_line": ctx_label, "trigger_price": fmt_price(ctx_price)}
     stance = str(decision.get("stance") or "WAIT").upper()
     tone = "put" if "PUT" in stance else "green" if "CALL" in stance else "wait" if stance == "WAIT" else "blue"
     headline = str(decision.get("headline") or "Wait for a confirmed structure trigger.")
     novice = str(decision.get("novice_summary") or "Direction pending confirmed structure trigger.")
     confidence = trade.get("confidence", result.confidence)
     contract_value = str(trade.get("contract") or "-")
+    validated_contract = _brief_otm_contract_for_price(ctx_side, ctx_price)
+    if stance_allows_contract(stance) and validated_contract:
+        contract_value = validated_contract
     contract_copy = "Use only the listed OTM contract after the entry rule confirms."
     if not stance_allows_contract(stance):
         contract_value = "No contract until confirmation"
@@ -5747,7 +6079,7 @@ def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: Morni
 
 
 def render_external_verdict_deck(bundle: MorningBriefingBundle) -> None:
-    watch_side, entry_price, entry_label = bundle_primary_entry_context(bundle)
+    watch_side, entry_price, entry_label = _decision_line_context(bundle)
     verdicts = [row for row in external_context_verdicts(bundle, watch_side, entry_price, entry_label, entry_price) if str(row.get("state") or "") != "unavailable"]
     if not verdicts:
         return
@@ -6135,10 +6467,21 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
     decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
     structure_lines = _brief_sorted_lines(bundle)
-    entry_line = _brief_primary_line(bundle, trade)
-    entry_value = _brief_price_from_text(trade.get("trigger_price"))
+    trade_line = _brief_line_by_name(bundle, trade.get("trigger_line"))
+    stance_side = "PUT" if "PUT" in str(decision.get("stance") or "").upper() else "CALL" if "CALL" in str(decision.get("stance") or "").upper() else None
+    scenarios = structure_external_scenarios(bundle)
+    best_scenario = best_structure_scenario(bundle, stance_side)
+    entry_line = trade_line or ((best_scenario or {}).get("line") if best_scenario else None) or (bundle.lines[0] if bundle.lines else {})
+    selected_scenario = next((row for row in scenarios if _brief_same_line(row.get("line"), entry_line)), None)
+    if best_scenario and entry_line and not _brief_same_line(best_scenario.get("line"), entry_line):
+        best_score = _finite_float(best_scenario.get("score"), 0.0)
+        selected_score = _finite_float((selected_scenario or {}).get("score"), 0.0)
+        if best_scenario.get("state") == "aligned" and best_score >= selected_score + 0.75:
+            entry_line = best_scenario.get("line") or entry_line
+            selected_scenario = best_scenario
+    entry_value = _finite_float(entry_line.get("value"))
     if pd.isna(entry_value):
-        entry_value = _finite_float(entry_line.get("value"))
+        entry_value = _brief_price_from_text(trade.get("trigger_price"))
     entry_line = {**entry_line, "_value": entry_value} if isinstance(entry_line, dict) else {}
     side = _brief_watch_side(entry_line, decision)
     pivot_line = _brief_opening_pivot_line(structure_lines, entry_line, side) if structure_lines else entry_line
@@ -6157,6 +6500,8 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
     entry_b_contract = _brief_otm_contract_for_price(side, pivot_value) or contract_value
     if entry_a_contract and entry_b_contract and entry_a_contract != entry_b_contract:
         contract_value = f"{entry_a_contract} / {entry_b_contract}"
+    elif entry_a_contract:
+        contract_value = entry_a_contract
     event = _first_high_impact_event(bundle.economic_events)
     flow_value, flow_copy, flow_chips, flow_tone = unusual_whales_card_data(bundle.options_intelligence)
     if not flow_value:
@@ -6167,7 +6512,10 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
     darkpool = darkpool_context_label(bundle.options_intelligence, entry_price=entry_value, watch_side=side, entry_label=str(entry_line.get("name") or "Primary trigger"))
     gex_card = unusual_whales_gex_card_data(bundle.options_intelligence)
     gex_value = gex_card[0] if gex_card else bundle.gamma_insight.dealer_tone
-    scorecard = support_refute_scorecard(external_context_verdicts(bundle, side, entry_value, str(entry_line.get("name") or ""), entry_value))
+    verdicts = external_context_verdicts(bundle, side, entry_value, str(entry_line.get("name") or ""), entry_value)
+    scorecard = support_refute_scorecard(verdicts)
+    scenario_support = selected_scenario.get("support", []) if isinstance(selected_scenario, dict) else []
+    scenario_caution = selected_scenario.get("caution", []) if isinstance(selected_scenario, dict) else []
     key_candidates = [
         (str(entry_line.get("name") or "Active Trigger"), entry_value),
         (_brief_key_level_label(pivot_line, "Opening Pivot"), pivot_value),
@@ -6223,9 +6571,11 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
         "support": int(scorecard.get("support") or 0),
         "caution": int(scorecard.get("caution") or 0),
         "risk": int(scorecard.get("risk") or 0),
-        "why": [str(item) for item in decision.get("why", []) if str(item).strip()][:4],
-        "risks": [str(item) for item in decision.get("risk_flags", []) if str(item).strip()][:4],
+        "why": ([str(item) for item in scenario_support if str(item).strip()] + [str(item) for item in decision.get("why", []) if str(item).strip()])[:4],
+        "risks": ([str(item) for item in scenario_caution if str(item).strip()] + [str(item) for item in decision.get("risk_flags", []) if str(item).strip()])[:4],
         "key_levels": key_levels,
+        "scenarios": scenarios,
+        "selected_scenario": selected_scenario or {},
     }
 
 
@@ -6695,24 +7045,30 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
             save_foresight_decision_audit(active_bundle, result)
             st.session_state["morning_briefing_result"] = result
             st.session_state["morning_briefing_bundle"] = active_bundle
-    svg = render_daily_brief_svg(active_bundle, result)
-    png_bytes = render_daily_brief_png_bytes(active_bundle, result)
-    pdf_bytes = render_daily_brief_pdf_bytes(png_bytes)
-    d1, d2, d3 = st.columns(3)
-    d1.download_button("Download SVG", data=svg.encode("utf-8"), file_name=_daily_brief_filename(active_bundle, "svg"), mime="image/svg+xml", use_container_width=True)
-    if png_bytes:
-        d2.download_button("Download PNG", data=png_bytes, file_name=_daily_brief_filename(active_bundle, "png"), mime="image/png", use_container_width=True)
-    else:
-        d2.button("Download PNG", disabled=True, use_container_width=True)
-    if pdf_bytes:
-        d3.download_button("Download PDF", data=pdf_bytes, file_name=_daily_brief_filename(active_bundle, "pdf"), mime="application/pdf", use_container_width=True)
-    else:
-        d3.button("Download PDF", disabled=True, use_container_width=True)
-    components.html(
-        f"<div style='width:100%;box-sizing:border-box;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px;overflow-x:hidden'>{svg}</div>",
-        height=1280,
-        scrolling=True,
-    )
+    render_morning_action_panel(active_bundle, result)
+    render_morning_lines_deck(active_bundle)
+    render_structure_scenario_board(active_bundle, result, "Daily Scenario Board")
+    render_morning_context_deck(active_bundle)
+    render_order_flow_board(active_bundle.options_intelligence)
+    with st.expander("Poster Export", expanded=False):
+        svg = render_daily_brief_svg(active_bundle, result)
+        png_bytes = render_daily_brief_png_bytes(active_bundle, result)
+        pdf_bytes = render_daily_brief_pdf_bytes(png_bytes)
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("Download SVG", data=svg.encode("utf-8"), file_name=_daily_brief_filename(active_bundle, "svg"), mime="image/svg+xml", use_container_width=True)
+        if png_bytes:
+            d2.download_button("Download PNG", data=png_bytes, file_name=_daily_brief_filename(active_bundle, "png"), mime="image/png", use_container_width=True)
+        else:
+            d2.button("Download PNG", disabled=True, use_container_width=True)
+        if pdf_bytes:
+            d3.download_button("Download PDF", data=pdf_bytes, file_name=_daily_brief_filename(active_bundle, "pdf"), mime="application/pdf", use_container_width=True)
+        else:
+            d3.button("Download PDF", disabled=True, use_container_width=True)
+        components.html(
+            f"<div style='width:100%;box-sizing:border-box;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px;overflow-x:hidden'>{svg}</div>",
+            height=1280,
+            scrolling=True,
+        )
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
@@ -6762,6 +7118,7 @@ def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
     render_morning_briefing_hero(active_bundle, result, ai_ready)
     render_morning_action_panel(active_bundle, result)
     render_morning_lines_deck(active_bundle)
+    render_structure_scenario_board(active_bundle, result)
     render_foresight_decision_stack(active_bundle, result)
     render_morning_context_deck(active_bundle)
     render_external_verdict_deck(active_bundle)

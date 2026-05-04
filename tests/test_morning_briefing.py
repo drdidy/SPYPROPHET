@@ -15,6 +15,7 @@ from app import (
     SourceStatus,
     StructureLearningProfile,
     TechnicalContext,
+    best_structure_scenario,
     build_openai_calendar_prompt,
     build_openai_request_payload,
     build_daily_brief_context,
@@ -46,6 +47,7 @@ from app import (
     render_daily_brief_svg,
     rule_based_morning_briefing,
     save_foresight_decision_audit,
+    structure_external_scenarios,
     support_refute_scorecard,
 )
 
@@ -321,6 +323,103 @@ def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
     key_values = [value for _, value in context["key_levels"]]
     assert key_values == list(dict.fromkeys(key_values))
     assert ("Opening Pivot / Lower Put Trigger", "722.47") in context["key_levels"]
+
+
+def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
+    bundle = _bundle()
+    lines = [
+        {"code": "UP", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
+        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "LC", "name": "Lower Call Trigger", "role": "Call Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+    ]
+    options = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", "Premium context active."),
+        1.1,
+        1.2,
+        722.50,
+        728.0,
+        722.0,
+        [],
+        [],
+        {
+            "flow_alerts": {"flow_bias": "Bearish flow", "alert_count": 4, "net_premium_pressure": -250000},
+            "gex": {"levels": [{"strike": 722.47, "total_gex": -4_200_000}, {"strike": 727.87, "total_gex": -250_000}], "net_gex": -4_450_000},
+            "darkpool": {"key_levels": [{"price": 722.40, "premium": 8_000_000}]},
+        },
+    )
+    bundle = MorningBriefingBundle(
+        bundle.generated_at,
+        lines,
+        bundle.economic_events,
+        bundle.global_context,
+        bundle.macro_context,
+        bundle.sector_context,
+        options,
+        bundle.gamma_insight,
+        bundle.sentiment,
+        bundle.technical_context,
+        bundle.news_items,
+        bundle.learning_profile,
+        bundle.source_statuses,
+    )
+
+    scenarios = structure_external_scenarios(bundle)
+    best = best_structure_scenario(bundle, "PUT")
+
+    assert best["name"] == "Lower Put Trigger"
+    assert best["state"] == "aligned"
+    assert any("Dealer GEX cluster" in item for item in best["support"])
+    assert scenarios[0]["name"] == "Lower Put Trigger"
+
+
+def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
+    bundle = _bundle()
+    lines = [
+        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+    ]
+    bundle = MorningBriefingBundle(
+        bundle.generated_at,
+        lines,
+        bundle.economic_events,
+        bundle.global_context,
+        bundle.macro_context,
+        bundle.sector_context,
+        bundle.options_intelligence,
+        bundle.gamma_insight,
+        bundle.sentiment,
+        bundle.technical_context,
+        bundle.news_items,
+        bundle.learning_profile,
+        bundle.source_statuses,
+    )
+    result = MorningBriefingResult(
+        bundle.generated_at,
+        "OpenAI",
+        "gpt-5.2",
+        json.dumps({
+            "stance": "WATCH_PUT",
+            "headline": "Watch the lower put trigger.",
+            "primary_trade": {
+                "trigger_line": "Lower Put Trigger",
+                "trigger_price": "999.99",
+                "contract": "PUT 998",
+                "confidence": 60,
+            },
+        }),
+        60,
+        [],
+        [],
+        [],
+    )
+
+    context = build_daily_brief_context(bundle, result)
+
+    assert context["entry_value"] == "722.47"
+    assert context["entry_label"] == "Lower Put Trigger"
+    assert context["contract_value"] != "PUT 998"
+    assert "999.99" not in render_daily_brief_svg(bundle, result)
 
 
 def test_openai_request_payload_enables_web_search() -> None:
