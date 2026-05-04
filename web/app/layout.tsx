@@ -23,7 +23,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "SPY Prophet — Same-day SPY structure terminal",
   description:
-    "Structure-led decision support for same-day SPY. Prior-session anchors, dynamic projection, signal confirmation, and an options cockpit. Analysis only — no order execution.",
+    "Structure-led decision support for same-day SPY. Prior-session anchors, dynamic projection, signal confirmation, and a live options cockpit.",
   metadataBase: new URL("https://spyprophet.app"),
   applicationName: "SPY Prophet",
   authors: [{ name: "drdidy" }],

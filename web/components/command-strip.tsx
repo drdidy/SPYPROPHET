@@ -82,7 +82,7 @@ export function CommandStrip({ spyPrice, spyChangePct, vix, decisionLabel }: Com
             <span className="text-[0.78rem] font-bold uppercase tracking-[0.12em] text-green-bright">Live data</span>
           </div>
           <div className="mt-1.5 text-[0.74rem] text-muted leading-snug">
-            yfinance hourly candles · Tastytrade live options chain
+            Hourly candles · Live options chain
           </div>
         </div>
       </div>

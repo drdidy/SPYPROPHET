@@ -12,7 +12,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
             <span className="font-semibold text-text">SPY Prophet</span>
             <span className="text-muted">
-              Analysis only · No order execution · Hourly candles · US/Central display
+              Hourly candles · US/Central display · © {new Date().getFullYear()}
             </span>
           </div>
         </footer>

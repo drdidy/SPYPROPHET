@@ -1,11 +1,11 @@
 "use client";
 
+import { BrandMark } from "@/components/brand-mark";
 import { cn } from "@/lib/cn";
 import {
   Activity,
   BarChart3,
   BookOpen,
-  Compass,
   History,
   LineChart,
   Sparkles,
@@ -28,15 +28,17 @@ export function NavRail() {
   const pathname = usePathname();
   return (
     <aside className="sticky top-0 hidden h-screen w-[260px] flex-shrink-0 flex-col border-r border-border/70 bg-surface/40 backdrop-blur-xl lg:flex">
-      <div className="flex h-16 items-center gap-3 border-b border-border/70 px-5">
-        <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="relative h-9 w-9 rounded-lg bg-gradient-to-br from-blue/30 via-surface-2 to-surface-3 grid place-items-center border border-blue/40 shadow-[0_0_0_1px_rgba(78,168,222,0.15),0_8px_22px_-6px_rgba(78,168,222,0.5)] group-hover:shadow-[0_0_0_1px_rgba(78,168,222,0.3),0_12px_32px_-6px_rgba(78,168,222,0.7)] transition-shadow">
-            <Compass className="h-4 w-4 text-blue-bright" strokeWidth={2.5} />
-          </div>
-          <div className="flex flex-col leading-tight">
-            <span className="text-sm font-bold text-text font-[family-name:var(--font-display)]">SPY Prophet</span>
-            <span className="text-[0.62rem] uppercase tracking-[0.16em] text-blue-bright/80 font-bold">Terminal</span>
-          </div>
+      <div className="flex h-20 items-center gap-3 border-b border-border/70 px-5">
+        <Link href="/" className="group inline-flex items-center gap-2.5">
+          <BrandMark size={42} animated={false} />
+          <span className="flex flex-col leading-none">
+            <span className="font-[family-name:var(--font-space-grotesk)] text-base font-extrabold tracking-tight text-text">
+              SPY Prophet
+            </span>
+            <span className="mt-1 text-[0.62rem] font-bold uppercase tracking-[0.22em] text-blue-bright/85">
+              Terminal
+            </span>
+          </span>
         </Link>
       </div>
       <nav className="flex-1 overflow-y-auto p-3" aria-label="Primary">
@@ -78,10 +80,10 @@ export function NavRail() {
         <div className="rounded-xl border border-border/70 bg-surface-2/60 p-3 text-[0.7rem] text-muted">
           <div className="flex items-center gap-2 text-[0.62rem] font-bold uppercase tracking-[0.1em] text-green-bright">
             <span className="live-pulse-dot" aria-hidden />
-            <span>Analysis only</span>
+            <span>Live data</span>
           </div>
           <p className="mt-1.5 leading-snug">
-            No order execution is implemented. Hourly candles · US/Central display.
+            Hourly candles · US/Central display
           </p>
         </div>
       </div>

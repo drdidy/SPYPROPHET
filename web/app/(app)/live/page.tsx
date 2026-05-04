@@ -1,18 +1,18 @@
-import { CommandStrip } from "@/components/command-strip";
+import { AnimatedNumber } from "@/components/animated-number";
+import { Reveal, StaggerGroup, StaggerItem } from "@/components/reveal";
+import { SpotlightCard } from "@/components/spotlight-card";
 import { Card, CardBody, CardHeader, CardKicker, CardTitle } from "@/components/ui/card";
 import { DirectionGlyph } from "@/components/ui/direction-glyph";
 import { Pill } from "@/components/ui/pill";
 import {
   Activity,
   ArrowRight,
-  Compass,
   Layers,
   ShieldCheck,
   Target,
   Timer,
   TrendingDown,
   TrendingUp,
-  Zap,
 } from "lucide-react";
 
 // Demo data — replaced with real API once FastAPI is wired up.
@@ -45,36 +45,72 @@ export default function LivePage() {
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
       {/* Page heading */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <CardKicker className="mb-1.5 flex items-center gap-2">
-            <Activity className="h-3 w-3" strokeWidth={3} /> Live Console
-          </CardKicker>
-          <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight text-text md:text-4xl">
-            Today’s structure read.
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted md:text-base">
-            Pre-checked, pre-projected, and gated by wait discipline. Trigger fires only on hourly close confirmation.
-          </p>
+      <Reveal>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <CardKicker className="mb-1.5 flex items-center gap-2">
+              <Activity className="h-3 w-3" strokeWidth={3} /> Live Console
+            </CardKicker>
+            <h1 className="font-[family-name:var(--font-space-grotesk)] text-3xl font-extrabold tracking-tight text-text md:text-4xl">
+              Today&apos;s structure read.
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-muted md:text-base">
+              Pre-checked, pre-projected, and gated by wait discipline. Trigger fires only on hourly close confirmation.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill tone="live" pulse>Streaming</Pill>
+            <Pill tone="blue">Live · Connected</Pill>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Pill tone="live" pulse>Streaming</Pill>
-          <Pill tone="blue">Tastytrade · Connected</Pill>
-        </div>
-      </div>
+      </Reveal>
 
-      {/* Command strip */}
-      <CommandStrip
-        spyPrice={DEMO.spyPrice}
-        spyChangePct={DEMO.spyChangePct}
-        vix={DEMO.vix}
-        decisionLabel={DEMO.decisionLabel}
-      />
+      {/* Command strip — animated */}
+      <Reveal delay={0.1}>
+        <SpotlightCard premium tilt={false} className="overflow-hidden">
+          <div className="grid grid-cols-2 gap-px bg-border/60 md:grid-cols-4">
+            <div className="bg-surface/80 p-5">
+              <div className="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-muted">SPY · Last</div>
+              <div className="mt-1 font-[family-name:var(--font-space-grotesk)] text-3xl font-extrabold tabular text-text">
+                $<AnimatedNumber value={DEMO.spyPrice} decimals={2} startDelay={300} />
+              </div>
+              <div className="mt-1 inline-flex items-center gap-1.5 text-[0.78rem] font-bold tabular text-green-bright">
+                ▲ +<AnimatedNumber value={DEMO.spyChangePct} decimals={2} startDelay={400} />%
+                <span className="font-medium text-muted">today</span>
+              </div>
+            </div>
+            <div className="bg-surface/80 p-5">
+              <div className="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-muted">VIX</div>
+              <div className="mt-1 font-[family-name:var(--font-space-grotesk)] text-3xl font-extrabold tabular text-green-bright">
+                <AnimatedNumber value={DEMO.vix} decimals={2} startDelay={400} />
+              </div>
+              <div className="mt-1 text-[0.78rem] font-medium text-muted">Calm regime</div>
+            </div>
+            <div className="bg-surface/80 p-5 col-span-2 md:col-span-1">
+              <div className="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-muted">Decision</div>
+              <div className="mt-1 font-[family-name:var(--font-space-grotesk)] text-lg font-bold leading-tight text-text">
+                {DEMO.decisionLabel}
+              </div>
+              <div className="mt-1 text-[0.78rem] font-medium text-muted">Live read · update on each close</div>
+            </div>
+            <div className="bg-surface/80 p-5 col-span-2 md:col-span-1 flex flex-col justify-center">
+              <div className="flex items-center gap-2">
+                <span className="live-pulse-dot" aria-hidden />
+                <span className="text-[0.78rem] font-bold uppercase tracking-[0.12em] text-green-bright">Live data</span>
+              </div>
+              <div className="mt-1.5 text-[0.74rem] text-muted leading-snug">
+                Hourly candles · Live options chain
+              </div>
+            </div>
+          </div>
+        </SpotlightCard>
+      </Reveal>
 
       {/* Headline decision row */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.4fr_1fr]">
-        <Card premium className="overflow-hidden">
-          <CardHeader>
+        <Reveal delay={0.18}>
+          <SpotlightCard premium className="overflow-hidden">
+            <CardHeader>
             <div>
               <CardKicker>Decision</CardKicker>
               <CardTitle className="mt-1.5 text-2xl md:text-3xl text-bullish-gradient">
@@ -110,69 +146,71 @@ export default function LivePage() {
             </div>
 
             {/* Wait discipline gates */}
-            <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <StaggerGroup className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3" delayChildren={0.1}>
               {DEMO.guardrails.map((g) => (
-                <div
-                  key={g.label}
-                  className="rounded-xl border border-green/20 bg-green/[0.04] p-3.5"
-                >
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4 text-green-bright" strokeWidth={2.5} />
-                    <span className="text-[0.7rem] font-bold uppercase tracking-[0.12em] text-muted">
-                      {g.label}
-                    </span>
+                <StaggerItem key={g.label}>
+                  <div className="rounded-xl border border-green/20 bg-green/[0.04] p-3.5">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-green-bright" strokeWidth={2.5} />
+                      <span className="text-[0.7rem] font-bold uppercase tracking-[0.12em] text-muted">
+                        {g.label}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-sm font-bold text-green-bright">{g.state}</div>
                   </div>
-                  <div className="mt-1 text-sm font-bold text-green-bright">{g.state}</div>
-                </div>
+                </StaggerItem>
               ))}
-            </div>
+            </StaggerGroup>
           </CardBody>
-        </Card>
+          </SpotlightCard>
+        </Reveal>
 
         {/* Trigger panel */}
-        <Card glow="amber" className="overflow-hidden">
-          <CardHeader>
-            <div>
-              <CardKicker className="text-amber">Trigger Line</CardKicker>
-              <CardTitle className="mt-1.5">{DEMO.trigger.name}</CardTitle>
-            </div>
-            <Target className="h-6 w-6 text-amber" strokeWidth={2.5} />
-          </CardHeader>
-          <CardBody>
-            <div className="font-[family-name:var(--font-display)] text-4xl font-extrabold tabular text-text">
-              ${DEMO.trigger.value.toFixed(2)}
-            </div>
-            <div className="mt-1.5 text-sm text-muted">
-              {DEMO.trigger.distance > 0 ? "+" : ""}
-              {DEMO.trigger.distance.toFixed(2)} from spot
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <div className="rounded-lg border border-border/70 bg-surface-2/50 p-3">
-                <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">Stop</div>
-                <div className="mt-0.5 font-[family-name:var(--font-display)] text-lg font-bold tabular text-red-bright">
-                  ${DEMO.stop.toFixed(2)}
+        <Reveal delay={0.26}>
+          <SpotlightCard className="overflow-hidden shadow-[0_0_0_1px_rgba(245,196,81,0.32),0_18px_60px_-10px_rgba(245,196,81,0.32)]">
+            <CardHeader>
+              <div>
+                <CardKicker className="text-amber">Trigger Line</CardKicker>
+                <CardTitle className="mt-1.5">{DEMO.trigger.name}</CardTitle>
+              </div>
+              <Target className="h-6 w-6 text-amber" strokeWidth={2.5} />
+            </CardHeader>
+            <CardBody>
+              <div className="font-[family-name:var(--font-space-grotesk)] text-4xl font-extrabold tabular text-text">
+                $<AnimatedNumber value={DEMO.trigger.value} decimals={2} startDelay={500} />
+              </div>
+              <div className="mt-1.5 text-sm text-muted">
+                {DEMO.trigger.distance > 0 ? "+" : ""}
+                {DEMO.trigger.distance.toFixed(2)} from spot
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-border/70 bg-surface-2/50 p-3">
+                  <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">Stop</div>
+                  <div className="mt-0.5 font-[family-name:var(--font-space-grotesk)] text-lg font-bold tabular text-red-bright">
+                    $<AnimatedNumber value={DEMO.stop} decimals={2} startDelay={600} />
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border/70 bg-surface-2/50 p-3">
+                  <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">R:R</div>
+                  <div className="mt-0.5 font-[family-name:var(--font-space-grotesk)] text-lg font-bold tabular text-text">
+                    1 : <AnimatedNumber value={DEMO.target.rr} decimals={2} startDelay={650} />
+                  </div>
                 </div>
               </div>
-              <div className="rounded-lg border border-border/70 bg-surface-2/50 p-3">
-                <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">R:R</div>
-                <div className="mt-0.5 font-[family-name:var(--font-display)] text-lg font-bold tabular text-text">
-                  1 : {DEMO.target.rr.toFixed(2)}
+              <div className="mt-3 rounded-lg border border-blue/30 bg-blue/[0.06] p-3">
+                <div className="flex items-center gap-2 text-[0.62rem] font-bold uppercase tracking-[0.14em] text-blue-bright">
+                  <ArrowRight className="h-3 w-3" strokeWidth={3} /> Target
+                </div>
+                <div className="mt-0.5 flex items-baseline gap-2 text-sm">
+                  <span className="font-[family-name:var(--font-space-grotesk)] text-xl font-bold tabular text-text">
+                    $<AnimatedNumber value={DEMO.target.value} decimals={2} startDelay={700} />
+                  </span>
+                  <span className="text-muted">{DEMO.target.name}</span>
                 </div>
               </div>
-            </div>
-            <div className="mt-3 rounded-lg border border-blue/30 bg-blue/[0.06] p-3">
-              <div className="flex items-center gap-2 text-[0.62rem] font-bold uppercase tracking-[0.14em] text-blue-bright">
-                <ArrowRight className="h-3 w-3" strokeWidth={3} /> Target
-              </div>
-              <div className="mt-0.5 flex items-baseline gap-2 text-sm">
-                <span className="font-[family-name:var(--font-display)] text-xl font-bold tabular text-text">
-                  ${DEMO.target.value.toFixed(2)}
-                </span>
-                <span className="text-muted">{DEMO.target.name}</span>
-              </div>
-            </div>
-          </CardBody>
-        </Card>
+            </CardBody>
+          </SpotlightCard>
+        </Reveal>
       </div>
 
       {/* Intel grid */}
@@ -211,7 +249,7 @@ export default function LivePage() {
             </CardKicker>
             <CardTitle className="mt-1.5">OTM contracts armed</CardTitle>
           </div>
-          <Pill tone="violet">Tastytrade live</Pill>
+          <Pill tone="violet">Live quotes</Pill>
         </CardHeader>
         <CardBody>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
