@@ -1,0 +1,33 @@
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system app && useradd --system --gid app --create-home app
+
+WORKDIR /app
+
+COPY requirements.txt requirements-api.txt ./
+RUN pip install --upgrade pip && pip install -r requirements-api.txt
+
+COPY --chown=app:app . .
+
+RUN mkdir -p /app/data && chown -R app:app /app/data
+
+USER app
+
+ENV SPYPROPHET_LOG_LEVEL=INFO \
+    PORT=8000
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl --fail http://localhost:${PORT}/api/health || exit 1
+
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT}"]

@@ -25,11 +25,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-api.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -r requirements-api.txt
 
       - name: Lint (ruff)
         run: ruff check .
@@ -51,5 +52,7 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Build Docker image (smoke)
+      - name: Build Streamlit image (smoke)
         run: docker build -t spyprophet:ci .
+      - name: Build API image (smoke)
+        run: docker build -f Dockerfile.api -t spyprophet-api:ci .
