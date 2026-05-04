@@ -21,6 +21,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 import plotly.graph_objects as go
+from spyprophet_core.secrets import (
+    _read_secret,
+    _streamlit_secrets_available,
+)
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -393,39 +397,6 @@ def get_central_tz():
 
     import pytz
     return pytz.timezone(CENTRAL_TZ_NAME)
-
-
-def _read_secret(name: str) -> str:
-    """Read a secret from environment first, then Streamlit secrets.
-
-    Env-vars take precedence so Docker / Render / k8s / Fly deployments work
-    cleanly. We only consult ``st.secrets`` as a fallback for local dev with a
-    populated ``.streamlit/secrets.toml`` — and only if the file actually
-    exists, to avoid noisy "No secrets found" warnings on every lookup.
-    """
-    env_val = (os.getenv(name) or "").strip()
-    if env_val:
-        return env_val
-    if not _streamlit_secrets_available():
-        return ""
-    try:
-        value = st.secrets.get(name, "")
-    except Exception:
-        return ""
-    return str(value or "").strip()
-
-
-@st.cache_data(show_spinner=False)
-def _streamlit_secrets_available() -> bool:
-    """Return True only if a real secrets.toml exists at one of the standard
-    Streamlit lookup paths. Cached so we check the filesystem once per session
-    instead of triggering Streamlit's noisy warning on every read."""
-    candidates = (
-        Path.home() / ".streamlit" / "secrets.toml",
-        Path("/app/.streamlit/secrets.toml"),
-        Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
-    )
-    return any(p.exists() for p in candidates)
 
 
 def get_missing_tastytrade_secrets() -> list[str]:
