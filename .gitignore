@@ -1,8 +1,17 @@
 .streamlit/secrets.toml
+.env
 .venv/
 __pycache__/
 tests/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 .playwright-cli/
 output/
 data/signal_journal.json
 data/*.corrupt.*.json
+data/morning_briefings.json
+data/foresight_audits/

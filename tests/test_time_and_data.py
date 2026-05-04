@@ -39,14 +39,18 @@ def test_timezone_conversion_to_central_from_aware_utc() -> None:
     assert out.index[0].hour == 8
 
 
-def test_timezone_conversion_to_central_from_naive_assumed_utc() -> None:
+def test_timezone_conversion_to_central_from_naive_assumed_eastern() -> None:
+    # Naive timestamps are assumed to be US/Eastern (the actual yfinance source
+    # timezone) rather than UTC, to avoid silently shifting candles 4-6 hours
+    # when an upstream library returns naive bars.
     naive_idx = pd.date_range("2026-04-28 13:00", periods=1, freq="60min")
     df = pd.DataFrame({"Close": [1.0]}, index=naive_idx)
 
     out = ensure_central_index(df)
 
     assert out.index.tz is not None
-    assert out.index[0].hour == 8
+    # 2026-04-28 13:00 EDT (UTC-4) = 12:00 CDT (UTC-5)
+    assert out.index[0].hour == 12
 
 
 def test_rth_filter_boundaries() -> None:
