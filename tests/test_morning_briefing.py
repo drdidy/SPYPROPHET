@@ -16,6 +16,7 @@ from app import (
     StructureLearningProfile,
     TechnicalContext,
     best_structure_scenario,
+    build_daily_brief_explainer,
     build_openai_calendar_prompt,
     build_openai_request_payload,
     build_daily_brief_context,
@@ -257,11 +258,15 @@ def test_daily_brief_renderer_exports_visual_files() -> None:
     result = rule_based_morning_briefing(bundle)
 
     context = build_daily_brief_context(bundle, result)
+    guide = build_daily_brief_explainer(bundle, result)
     svg = render_daily_brief_svg(bundle, result)
     png = render_daily_brief_png_bytes(bundle, result)
     pdf = render_daily_brief_pdf_bytes(png)
 
     assert context["primary_value"] == "587.42"
+    assert "SPY Foresight" in guide["plain_read"]
+    assert "touch it from above" in guide["confirmation"]
+    assert any(item["label"] == "Confirm" for item in guide["checklist"])
     assert "SPY PROPHET" in svg
     assert "DAILY ONE-PAGE TRADING BRIEF" in svg
     assert "fake" not in svg.lower()

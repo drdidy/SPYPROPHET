@@ -4489,7 +4489,30 @@ def inject_global_css() -> None:
     .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
     .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
     .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
-    .morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card{font-family:var(--ui-font)}
+    .daily-guide{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:radial-gradient(circle at 8% 0%,rgba(35,183,255,.18),transparent 30%),linear-gradient(135deg,rgba(9,17,29,.98),rgba(4,9,15,.98));padding:16px;margin:12px 0 14px}
+    .daily-guide-head{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:stretch}
+    .daily-guide-main{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:15px}
+    .daily-guide-kicker{font-size:.72rem;font-weight:850;color:var(--blue);line-height:1.25}
+    .daily-guide-title{font-size:1.65rem;font-weight:900;color:var(--text);line-height:1.1;margin-top:6px}
+    .daily-guide-copy{font-size:.92rem;color:#dbe8f5;line-height:1.48;margin-top:9px}
+    .daily-guide-status{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+    .daily-guide-stat{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:88px}
+    .daily-guide-label{font-size:.72rem;font-weight:750;color:#aeb9c6;line-height:1.25}
+    .daily-guide-value{font-size:1.04rem;font-weight:850;color:var(--text);line-height:1.18;margin-top:5px}
+    .daily-guide-note{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px}
+    .daily-guide-section{margin-top:14px}
+    .daily-guide-section-title{font-size:1.02rem;font-weight:850;color:var(--text);margin-bottom:8px}
+    .daily-guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .daily-guide-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:12px;min-height:142px}
+    .daily-guide-card.green{border-color:rgba(46,204,113,.34)}.daily-guide-card.red{border-color:rgba(244,93,117,.34)}.daily-guide-card.amber{border-color:rgba(245,196,81,.38)}.daily-guide-card.blue{border-color:rgba(103,183,255,.32)}
+    .daily-guide-card-title{font-size:.78rem;font-weight:850;color:#aeb9c6;line-height:1.25}
+    .daily-guide-card-value{font-size:1.05rem;font-weight:900;color:var(--text);line-height:1.22;margin-top:7px}
+    .daily-guide-card-copy{font-size:.82rem;color:var(--muted);line-height:1.38;margin-top:7px}
+    .daily-guide-list{display:grid;gap:8px}
+    .daily-guide-row{display:grid;grid-template-columns:130px 1fr;gap:10px;border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
+    .daily-guide-row-label{font-size:.76rem;font-weight:850;color:var(--blue);line-height:1.25}
+    .daily-guide-row-copy{font-size:.86rem;color:#dbe8f5;line-height:1.4}
+    .morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card,.daily-guide,.daily-guide-card,.daily-guide-stat,.daily-guide-row{font-family:var(--ui-font)}
     .morning-title,.brief-plan-title,.decision-summary-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
     .morning-title{font-size:1.9rem}
     .action-headline{font-size:1.22rem}
@@ -4514,7 +4537,7 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.scenario-grid,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.scenario-grid,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid,.daily-guide-head,.daily-guide-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.daily-guide-row{grid-template-columns:1fr}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
@@ -7067,8 +7090,205 @@ def render_daily_brief_pdf_bytes(png_bytes: bytes | None) -> bytes | None:
     return out.getvalue()
 
 
+def _daily_brief_side_label(side: str | None) -> str:
+    side = str(side or "").upper()
+    if side == "CALL":
+        return "call"
+    if side == "PUT":
+        return "put"
+    return "trade"
+
+
+def _daily_brief_confirmation(ctx: dict) -> str:
+    side = str(ctx.get("side") or "").upper()
+    trigger = f"{ctx.get('entry_label') or 'active trigger'} near {ctx.get('entry_value') or '-'}"
+    if side == "CALL":
+        return f"Look for SPY to stay above {trigger}, touch it from above, and close back above it. That means buyers defended the line."
+    if side == "PUT":
+        return f"Look for SPY to stay below {trigger}, touch it from below, and close back below it. That means sellers defended the line."
+    return f"Wait for SPY to interact with {trigger}. The close must clearly decide the side before any contract is considered."
+
+
+def _daily_brief_main_read(ctx: dict) -> str:
+    stance = str(ctx.get("stance") or "WAIT").upper()
+    side_word = _daily_brief_side_label(ctx.get("side"))
+    trigger = f"{ctx.get('entry_label') or 'active trigger'} at {ctx.get('entry_value') or '-'}"
+    score_read = str(ctx.get("score_read") or "External context is balanced.")
+    if stance == "WAIT":
+        return f"SPY Foresight reads WAIT. The active level is {trigger}; treat the {side_word} idea as inactive until the confirmation candle closes. {score_read}"
+    return f"SPY Foresight is monitoring a {side_word} setup at {trigger}. The trade idea becomes active only after the line is tested and confirmed by the next candle. {score_read}"
+
+
+def _daily_brief_opening_read(bundle: MorningBriefingBundle, ctx: dict) -> str:
+    latest = _finite_float(getattr(bundle, "latest_price", None))
+    entry = _finite_float(ctx.get("entry_raw"))
+    label = str(ctx.get("entry_label") or "active trigger")
+    if pd.isna(latest) or pd.isna(entry):
+        return f"Start by locating SPY relative to {label}. The side of the line determines whether the next setup is call-side or put-side."
+    if latest > entry:
+        return f"SPY is above {label}. The line is support until price loses it; a defended touch from above is the call-side condition."
+    if latest < entry:
+        return f"SPY is below {label}. The line is resistance until price reclaims it; a defended touch from below is the put-side condition."
+    return f"SPY is sitting on {label}. Wait for the candle close to decide whether the line acts as support or resistance."
+
+
+def _daily_brief_verdict_cards(bundle: MorningBriefingBundle, ctx: dict) -> list[dict]:
+    verdicts = external_context_verdicts(
+        bundle,
+        ctx.get("side"),
+        ctx.get("entry_raw"),
+        str(ctx.get("entry_label") or ""),
+        ctx.get("entry_raw"),
+    )
+    cards = []
+    tone_map = {"aligned": "green", "opposes": "red", "risk": "amber", "neutral": "blue"}
+    for row in verdicts:
+        state = str(row.get("state") or "neutral")
+        if state == "unavailable":
+            continue
+        cards.append({
+            "title": str(row.get("source") or "Context"),
+            "value": display_state_label(state),
+            "copy": str(row.get("copy") or row.get("title") or ""),
+            "tone": tone_map.get(state, "blue"),
+        })
+        if len(cards) >= 3:
+            break
+    return cards
+
+
+def build_daily_brief_explainer(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
+    ctx = build_daily_brief_context(bundle, result)
+    event_text = str(ctx.get("event_value") or "No scheduled catalyst")
+    side_word = _daily_brief_side_label(ctx.get("side"))
+    support = int(ctx.get("support") or 0)
+    caution = int(ctx.get("caution") or 0)
+    risk = int(ctx.get("risk") or 0)
+    checklist = [
+        {
+            "label": "Opening Read",
+            "copy": _daily_brief_opening_read(bundle, ctx),
+        },
+        {
+            "label": "Confirm",
+            "copy": _daily_brief_confirmation(ctx),
+        },
+        {
+            "label": "Contract",
+            "copy": f"Use {ctx.get('contract_value') or 'the selected contract'} only after confirmation. Contract selection stays inactive until the candle proves the setup.",
+        },
+        {
+            "label": "Targets",
+            "copy": f"First objective is {ctx.get('tp1')}; second objective is {ctx.get('tp2')}; full target is {ctx.get('target')}.",
+        },
+        {
+            "label": "Invalidation",
+            "copy": str(ctx.get("invalidation") or "The setup is invalid if price closes back through the trigger after entry."),
+        },
+    ]
+    summary_cards = [
+        {
+            "title": "Active Level",
+            "value": f"{ctx.get('entry_value')} {ctx.get('entry_label')}",
+            "copy": "This is the first structure line to monitor before considering a same-day contract.",
+            "tone": "blue",
+        },
+        {
+            "title": "Direction Rule",
+            "value": f"{side_word.title()} only after confirmation",
+            "copy": "Above a line favors calls after a defended close; below a line favors puts after a defended close.",
+            "tone": "green" if ctx.get("side") == "CALL" else "red" if ctx.get("side") == "PUT" else "amber",
+        },
+        {
+            "title": "Catalyst Window",
+            "value": event_text,
+            "copy": str(ctx.get("event_copy") or "No major scheduled timing risk loaded."),
+            "tone": "amber" if "No scheduled" not in event_text else "blue",
+        },
+    ]
+    return {
+        "context": ctx,
+        "plain_read": _daily_brief_main_read(ctx),
+        "confirmation": _daily_brief_confirmation(ctx),
+        "support_line": f"{support} support, {caution} caution, {risk} timing risk.",
+        "checklist": checklist,
+        "summary_cards": summary_cards,
+        "verdict_cards": _daily_brief_verdict_cards(bundle, ctx),
+    }
+
+
+def _daily_guide_card(card: dict) -> str:
+    tone = escape(str(card.get("tone") or "blue"))
+    return (
+        f"<div class='daily-guide-card {tone}'>"
+        f"<div class='daily-guide-card-title'>{escape(str(card.get('title') or 'Read'))}</div>"
+        f"<div class='daily-guide-card-value'>{escape(str(card.get('value') or '-'))}</div>"
+        f"<div class='daily-guide-card-copy'>{escape(str(card.get('copy') or ''))}</div>"
+        "</div>"
+    )
+
+
+def render_daily_brief_explainer(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
+    guide = build_daily_brief_explainer(bundle, result)
+    ctx = guide["context"]
+    stats = [
+        ("Action", ctx.get("stance"), "Primary posture for the session."),
+        ("Watch Level", f"{ctx.get('entry_value')}", ctx.get("entry_label")),
+        ("Contract", ctx.get("contract_value"), "Only after confirmation."),
+        ("Context", guide.get("support_line"), "Outside data compared with the active line."),
+    ]
+    stat_html = "".join(
+        "<div class='daily-guide-stat'>"
+        f"<div class='daily-guide-label'>{escape(str(label))}</div>"
+        f"<div class='daily-guide-value'>{escape(str(value or '-'))}</div>"
+        f"<div class='daily-guide-note'>{escape(str(note or ''))}</div>"
+        "</div>"
+        for label, value, note in stats
+    )
+    checklist_html = "".join(
+        "<div class='daily-guide-row'>"
+        f"<div class='daily-guide-row-label'>{escape(str(item.get('label') or 'Check'))}</div>"
+        f"<div class='daily-guide-row-copy'>{escape(str(item.get('copy') or ''))}</div>"
+        "</div>"
+        for item in guide["checklist"]
+    )
+    verdict_cards = guide["verdict_cards"] or [{
+        "title": "Outside Context",
+        "value": "Neutral",
+        "copy": "No strong outside support or caution loaded; structure confirmation remains primary.",
+        "tone": "blue",
+    }]
+    st.markdown(
+        f"""
+        <div class='daily-guide'>
+          <div class='daily-guide-head'>
+            <div class='daily-guide-main'>
+              <div class='daily-guide-kicker'>Trader Translation</div>
+              <div class='daily-guide-title'>What SPY Foresight Is Saying</div>
+              <div class='daily-guide-copy'>{escape(guide["plain_read"])}</div>
+            </div>
+            <div class='daily-guide-status'>{stat_html}</div>
+          </div>
+          <div class='daily-guide-section'>
+            <div class='daily-guide-section-title'>What To Look Out For</div>
+            <div class='daily-guide-list'>{checklist_html}</div>
+          </div>
+          <div class='daily-guide-section'>
+            <div class='daily-guide-section-title'>Why It Matters Today</div>
+            <div class='daily-guide-grid'>{''.join(_daily_guide_card(card) for card in guide["summary_cards"])}</div>
+          </div>
+          <div class='daily-guide-section'>
+            <div class='daily-guide-section-title'>Outside Context In Plain Terms</div>
+            <div class='daily-guide-grid'>{''.join(_daily_guide_card(card) for card in verdict_cards)}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Daily Brief", "Designed one-page report generated from verified SPY Foresight data")
+    render_section_title("Daily Brief", "Plain-language guide for the current SPY Foresight assessment")
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
         active_bundle = bundle
@@ -7077,7 +7297,7 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
         result = generate_morning_briefing(active_bundle, use_ai=False)
     cols = st.columns([0.58, 0.42])
     with cols[0]:
-        render_data_notice("Daily Brief uses the current SPY Foresight assessment, structure lines, options context, flow, dark pool, catalyst, and learning stats. Missing feeds are not invented.", tone="info")
+        render_data_notice("Daily Brief translates SPY Foresight into a simple watch plan. It explains the level, confirmation rule, outside pressure, and invalidation.", tone="info")
     with cols[1]:
         if st.button("Generate Daily Brief", type="primary", use_container_width=True, key="generate_daily_brief"):
             ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
@@ -7086,11 +7306,10 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
             save_foresight_decision_audit(active_bundle, result)
             st.session_state["morning_briefing_result"] = result
             st.session_state["morning_briefing_bundle"] = active_bundle
-    render_morning_action_panel(active_bundle, result)
-    render_morning_lines_deck(active_bundle)
-    render_structure_scenario_board(active_bundle, result, "Daily Scenario Board")
-    render_morning_context_deck(active_bundle)
-    render_order_flow_board(active_bundle.options_intelligence)
+    render_daily_brief_explainer(active_bundle, result)
+    with st.expander("Detailed SPY Foresight Inputs", expanded=False):
+        render_structure_scenario_board(active_bundle, result, "Scenario Details")
+        render_order_flow_board(active_bundle.options_intelligence)
     with st.expander("Poster Export", expanded=False):
         svg = render_daily_brief_svg(active_bundle, result)
         png_bytes = render_daily_brief_png_bytes(active_bundle, result)
