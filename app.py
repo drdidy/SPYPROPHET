@@ -8227,8 +8227,26 @@ def ensure_data_dir(path='data'):
 def journal_entry_to_dict(entry: JournalEntry) -> dict:
     d=asdict(entry)
     for k,v in list(d.items()):
-        if isinstance(v,pd.Timestamp): d[k]=v.isoformat()
+        d[k]=normalize_journal_value(v)
     return d
+
+def normalize_journal_value(value):
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.isoformat()
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, list):
+        return [normalize_journal_value(x) for x in value]
+    if isinstance(value, dict):
+        return {str(k): normalize_journal_value(v) for k, v in value.items()}
+    return value
+
+def signal_journal_to_json(entries) -> str:
+    return json.dumps([journal_entry_to_dict(e) for e in entries], indent=2, allow_nan=False)
 
 def journal_entry_from_dict(d: dict) -> JournalEntry:
     dd=d.copy()
@@ -8251,7 +8269,7 @@ def load_signal_journal(path='data/signal_journal.json'):
 def save_signal_journal(entries, path='data/signal_journal.json'):
     ensure_data_dir(Path(path).parent)
     temp=Path(str(path)+'.tmp')
-    temp.write_text(json.dumps([journal_entry_to_dict(e) for e in entries], indent=2, default=str))
+    temp.write_text(signal_journal_to_json(entries))
     temp.replace(path)
 
 def make_journal_id(entry: JournalEntry) -> str:
@@ -8293,6 +8311,21 @@ def build_journal_entries_from_replay_state(replay_state):
         e=JournalEntry('',pd.Timestamp.now(tz=get_central_tz()),None,replay_state.replay_date,'REPLAY',sg.signal_id,sg.signal_type,sg.status,sg.line_name,None,replay_state.bias_state.bias if replay_state.bias_state else None,q.grade if q else None,q.score if q else float('nan'),None,q.action_label if q else None,sg.rejection_time,sg.entry_time,sg.entry_price,sg.stop_price,sg.target_line_name,sg.target_price,sg.rr_ratio,o.outcome if o else None,o.outcome_time if o else None,o.max_favorable_move if o else float('nan'),o.max_adverse_move if o else float('nan'),o.bars_to_outcome if o else None,None,None,float('nan'),float('nan'),float('nan'),None,None,[])
         out.append(e.__class__(make_journal_id(e), *list(asdict(e).values())[1:]))
     return out
+
+def save_replay_signals_to_journal(replay_state, entries, path='data/signal_journal.json'):
+    replay_entries = build_journal_entries_from_replay_state(replay_state) if replay_state else []
+    inserted = updated = skipped = 0
+    for entry in replay_entries:
+        entries, action = upsert_journal_entry(entries, entry)
+        if action == 'inserted':
+            inserted += 1
+        elif action == 'updated':
+            updated += 1
+        else:
+            skipped += 1
+    if replay_entries:
+        save_signal_journal(entries, path)
+    return entries, {"total": len(replay_entries), "inserted": inserted, "updated": updated, "skipped": skipped}
 
 def is_profit_milestone_outcome(outcome: str | None) -> bool:
     return outcome in {"TP1_FIRST", "TP2_FIRST", "TARGET_FIRST"}
@@ -8768,11 +8801,18 @@ def main() -> None:
             st.caption("Live save activates only after the current session has an active signal.")
         elif not is_live_session:
             st.caption("Historical session: use Save replay signals.")
-        if cjb.button("Save replay signals", disabled=('rs' not in locals())) and 'rs' in locals():
-            for e in build_journal_entries_from_replay_state(rs): entries,_=upsert_journal_entry(entries,e)
-            save_signal_journal(entries,journal_path)
+        replay_state_for_journal = locals().get('rs')
+        if cjb.button("Save replay signals", disabled=(replay_state_for_journal is None)):
+            entries, replay_save_status = save_replay_signals_to_journal(replay_state_for_journal, entries, journal_path)
+            if replay_save_status["total"] == 0:
+                render_data_notice("No replay signals are available for the selected replay date.", tone="warn")
+            else:
+                st.success(
+                    f"Replay saved: {replay_save_status['inserted']} added, "
+                    f"{replay_save_status['updated']} updated, {replay_save_status['skipped']} unchanged."
+                )
         if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
-        cjd.download_button("Export journal JSON", data=json.dumps([journal_entry_to_dict(x) for x in entries], indent=2), file_name="signal_journal.json")
+        cjd.download_button("Export journal JSON", data=signal_journal_to_json(entries), file_name="signal_journal.json")
         cje.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
         a=compute_journal_analytics(entries)
         render_status_strip([
