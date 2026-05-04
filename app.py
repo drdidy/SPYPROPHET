@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time
 from email.utils import parsedate_to_datetime
 from html import escape, unescape
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import defusedxml.ElementTree as ET
 import pandas as pd
 import requests
 import streamlit as st
@@ -21,6 +23,32 @@ import yfinance as yf
 import plotly.graph_objects as go
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except Exception:
+    pass
+
+logging.basicConfig(
+    level=os.getenv("SPYPROPHET_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("spyprophet")
+
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0") or 0.0),
+            send_default_pii=False,
+        )
+        logger.info("Sentry initialized")
+    except Exception as exc:
+        logger.warning("Sentry init failed: %s", type(exc).__name__)
 
 SYMBOL = "SPY"
 VIX_SYMBOL = "^VIX"
@@ -367,11 +395,41 @@ def get_central_tz():
     return pytz.timezone(CENTRAL_TZ_NAME)
 
 
-def get_missing_tastytrade_secrets() -> list[str]:
+def _read_secret(name: str) -> str:
+    """Read a secret from environment first, then Streamlit secrets.
+
+    Env-vars take precedence so Docker / Render / k8s / Fly deployments work
+    cleanly. We only consult ``st.secrets`` as a fallback for local dev with a
+    populated ``.streamlit/secrets.toml`` — and only if the file actually
+    exists, to avoid noisy "No secrets found" warnings on every lookup.
+    """
+    env_val = (os.getenv(name) or "").strip()
+    if env_val:
+        return env_val
+    if not _streamlit_secrets_available():
+        return ""
     try:
-        return [k for k in TASTYTRADE_SECRET_KEYS if not str(st.secrets.get(k, "")).strip()]
+        value = st.secrets.get(name, "")
     except Exception:
-        return list(TASTYTRADE_SECRET_KEYS)
+        return ""
+    return str(value or "").strip()
+
+
+@st.cache_data(show_spinner=False)
+def _streamlit_secrets_available() -> bool:
+    """Return True only if a real secrets.toml exists at one of the standard
+    Streamlit lookup paths. Cached so we check the filesystem once per session
+    instead of triggering Streamlit's noisy warning on every read."""
+    candidates = (
+        Path.home() / ".streamlit" / "secrets.toml",
+        Path("/app/.streamlit/secrets.toml"),
+        Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
+    )
+    return any(p.exists() for p in candidates)
+
+
+def get_missing_tastytrade_secrets() -> list[str]:
+    return [k for k in TASTYTRADE_SECRET_KEYS if not _read_secret(k)]
 
 
 def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -390,6 +448,13 @@ def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ensure_central_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert any yfinance frame index to America/Chicago.
+
+    yfinance returns tz-aware timestamps in US/Eastern for current versions, but
+    older/cached payloads may be naive. Naive timestamps are *assumed to be
+    US/Eastern* (the actual market timezone) — NOT UTC — to avoid silently
+    shifting candles 5-6 hours when the source returns naive bars.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
@@ -399,13 +464,22 @@ def ensure_central_index(df: pd.DataFrame) -> pd.DataFrame:
     if out.empty:
         return pd.DataFrame()
     idx = out.index
-    out.index = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+    if idx.tz is None:
+        try:
+            out.index = idx.tz_localize("America/New_York", nonexistent="shift_forward", ambiguous="NaT")
+        except Exception:
+            out.index = idx.tz_localize("UTC")
     out.index = out.index.tz_convert(get_central_tz())
     return out.sort_index()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_spy_hourly(period: str = "10d") -> pd.DataFrame:
-    raw = yf.download(tickers=SYMBOL, period=period, interval="60m", prepost=True, progress=False, auto_adjust=False, actions=False)
+    try:
+        raw = yf.download(tickers=SYMBOL, period=period, interval="60m", prepost=True, progress=False, auto_adjust=False, actions=False)
+    except Exception as exc:
+        logger.warning("fetch_spy_hourly failed: %s", type(exc).__name__, exc_info=True)
+        return pd.DataFrame()
     return ensure_central_index(normalize_yfinance_frame(raw))
 
 
@@ -716,13 +790,7 @@ def load_economic_calendar(path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicE
 
 
 def get_trading_economics_credential() -> str:
-    try:
-        secret_value = str(st.secrets.get("TRADING_ECONOMICS_CREDENTIAL", "")).strip()
-        if secret_value:
-            return secret_value
-    except Exception:
-        pass
-    return os.getenv("TRADING_ECONOMICS_CREDENTIAL", "").strip()
+    return _read_secret("TRADING_ECONOMICS_CREDENTIAL")
 
 
 def format_calendar_time_from_utc(value: str | None) -> tuple[object | None, str]:
@@ -818,6 +886,9 @@ def fetch_configured_economic_calendar(start_iso: str, end_iso: str) -> list[Eco
     url = get_secret_or_env("ECONOMIC_CALENDAR_API_URL")
     if not url:
         return []
+    if not is_safe_external_url(url):
+        logger.warning("ECONOMIC_CALENDAR_API_URL rejected by safety check.")
+        return []
     headers = {"User-Agent": "SPYProphet/1.0", "Accept": "application/json"}
     token = get_secret_or_env("ECONOMIC_CALENDAR_API_KEY")
     if token:
@@ -856,13 +927,53 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
 
 
 def get_secret_or_env(name: str, default: str = "") -> str:
+    # Env-vars take precedence (production deploys); only consult st.secrets
+    # when a secrets.toml actually exists, to avoid noisy warnings.
+    env_val = (os.getenv(name) or "").strip()
+    if env_val:
+        return env_val
+    if _streamlit_secrets_available():
+        try:
+            value = str(st.secrets.get(name, "") or "").strip()
+            if value:
+                return value
+        except Exception:
+            pass
+    return default.strip() if default else ""
+
+
+def is_safe_external_url(url: str) -> bool:
+    """Reject URLs that aren't https://, that target private/loopback hosts,
+    or that have credentials embedded. Defensive check against SSRF when
+    URLs originate from configurable secrets/env."""
+    if not url:
+        return False
     try:
-        value = str(st.secrets.get(name, "")).strip()
-        if value:
-            return value
+        parsed = urlparse(url)
     except Exception:
-        pass
-    return os.getenv(name, default).strip()
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in {"localhost", "metadata.google.internal", "169.254.169.254"}:
+        return False
+    if host.startswith("127.") or host.startswith("10.") or host.startswith("169.254."):
+        return False
+    if host.startswith("192.168."):
+        return False
+    # 172.16.0.0 - 172.31.255.255
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".", 2)[1])
+            if 16 <= second <= 31:
+                return False
+        except (ValueError, IndexError):
+            pass
+    return True
 
 
 def get_structure_calibration(default: float = DEFAULT_SLOPE_PER_HOUR) -> float:
@@ -1045,6 +1156,9 @@ def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> t
     url = get_secret_or_env(url_key)
     if not url:
         return None, source_status(url_key, False, f"{url_key} is not configured.")
+    if not is_safe_external_url(url):
+        logger.warning("Refusing to fetch %s: URL fails safety check (must be https:// to a public host).", url_key)
+        return None, source_status(url_key, False, f"{url_key} is not a safe https:// URL.")
     headers = {"User-Agent": "SPYProphet/1.0"}
     token = get_secret_or_env(token_key) if token_key else ""
     if token:
@@ -1054,6 +1168,7 @@ def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> t
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
+        logger.info("External endpoint %s failed: %s", url_key, type(e).__name__)
         return None, source_status(url_key, False, f"Configured endpoint failed: {type(e).__name__}", url=url)
     return payload if isinstance(payload, dict) else {"data": payload}, source_status(url_key, True, "Configured external endpoint returned data.", pd.Timestamp.now(tz=get_central_tz()), url)
 
@@ -4172,379 +4287,218 @@ def _fmt_num(v: float | None, nd: int = 2) -> str:
     return "N/A" if v is None or pd.isna(v) else f"{v:.{nd}f}"
 
 
+_APP_CSS_PATH = Path(__file__).resolve().parent / "assets" / "app.css"
+
+
+@st.cache_data(show_spinner=False)
+def _load_app_css() -> str:
+    """Read the bundled stylesheet once per session, with a tiny inline fallback
+    if the file is missing (e.g. the assets directory wasn't shipped)."""
+    try:
+        return _APP_CSS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to read %s: %s; using inline CSS fallback.", _APP_CSS_PATH, type(exc).__name__)
+        return ":root{--bg:#080d12;--text:#f4f7fb}html,body,.stApp{background:var(--bg);color:var(--text)}"
+
+
 def inject_global_css() -> None:
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-    :root {
-      --bg:#080d12;--surface:#111821;--surface2:#151f2b;--surface3:#1a2633;
-      --border:#243244;--border2:#314357;--text:#f4f7fb;--muted:#9aa7b5;
-      --blue:#4ea8de;--green:#2ecc71;--red:#f45d75;--amber:#f5c451;
-      --cyan:#28d2c2;--shadow:0 14px 34px rgba(0,0,0,.26);
-      --ui-font:"Manrope","Aptos","Segoe UI",system-ui,sans-serif;
-      --display-font:"Space Grotesk","Manrope","Aptos","Segoe UI",system-ui,sans-serif;
-      --mono-font:"Roboto Mono","Cascadia Mono","Consolas",monospace;
-    }
-    html,body,.stApp,[data-testid="stAppViewContainer"]{font-family:var(--ui-font);background:var(--bg);color:var(--text)}
-    .stMarkdown,.stText,.stCaption,.stDataFrame,.stMetric,p,label,input,textarea,select,h1,h2,h3,h4,h5,h6{font-family:var(--ui-font)}
-    div[data-testid="stButton"] button,div[data-testid="stDownloadButton"] button,div[data-testid="stSelectbox"],div[data-testid="stDateInput"],div[data-testid="stToggle"],div[data-baseweb="tab-list"],.stDataFrame,.stDataFrame *,.ag-root,.ag-root *,.dash-table-container,.dash-table-container *{font-family:var(--ui-font)}
-    span[class*="material-symbols"],span[class*="material-icons"],i[class*="material-icons"],[data-testid="stIconMaterial"]{font-family:"Material Symbols Rounded","Material Symbols Outlined","Material Icons" !important;font-weight:400 !important;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;-webkit-font-feature-settings:"liga";font-feature-settings:"liga";-webkit-font-smoothing:antialiased}
-    h1,h2,h3,.brand-title,.morning-title,.section-title,.prophet-header h3,.flow-board-title,.action-headline,.decision-main{font-family:var(--display-font)}
-    .block-container{padding-top:2.25rem;max-width:1240px}
-    [data-testid="stSidebar"]{background:#111722;border-right:1px solid #202c3f}
-    [data-testid="stSidebar"] h2{font-size:1rem;letter-spacing:.02em}
-    [data-testid="stSidebar"] button{border-radius:8px}
-    div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button{border-radius:8px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);box-shadow:none}
-    div[data-testid="stButton"] button:hover, div[data-testid="stDownloadButton"] button:hover{border-color:var(--blue);color:var(--text)}
-    textarea, input{font-family:var(--ui-font)}
-    div[data-baseweb="tab-list"]{display:flex;width:100%;gap:8px;border:1px solid var(--border);border-radius:8px;background:rgba(17,24,33,.86);padding:7px;margin:2px 0 18px;box-shadow:0 10px 28px rgba(0,0,0,.18);overflow-x:auto;scrollbar-width:thin}
-    div[data-baseweb="tab-list"] button[role="tab"]{flex:1 1 0;min-width:118px;justify-content:center;padding:11px 12px;border:1px solid transparent;border-radius:8px;background:rgba(255,255,255,.025);color:var(--muted);transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease}
-    div[data-baseweb="tab-list"] button[role="tab"] p{font-size:.84rem;font-weight:800;letter-spacing:.01em;white-space:nowrap;color:inherit}
-    div[data-baseweb="tab-list"] button[role="tab"]:hover{background:rgba(78,168,222,.10);border-color:rgba(78,168,222,.28);color:var(--text)}
-    div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{border-color:rgba(46,204,113,.62);background:linear-gradient(180deg,rgba(46,204,113,.18),rgba(46,204,113,.08));color:var(--text);box-shadow:inset 0 -2px 0 var(--green),0 0 0 1px rgba(46,204,113,.08)}
-    .terminal-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,#101821,#111b26 58%,#0c1219);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:14px}
-    .terminal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px}
-    .brand-row,.panel-head,.quote-head,.tile-head,.hero-price-row{display:flex;align-items:center;gap:12px}
-    .brand-row{gap:14px}
-    .panel-head,.quote-head,.tile-head{justify-content:space-between}
-    .ui-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:48px;height:48px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.035);overflow:hidden;isolation:isolate;box-shadow:none}
-    .ui-icon svg{width:58%;height:58%;stroke:currentColor;fill:none;stroke-width:2.25;stroke-linecap:round;stroke-linejoin:round}
-    .ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:52px;height:52px}.ui-icon.sm{width:42px;height:42px}.ui-icon.mini{width:30px;height:30px}
-    .brand-logo{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:82px;height:82px;border-radius:8px;border:1px solid rgba(78,168,222,.48);overflow:hidden;isolation:isolate;background:linear-gradient(135deg,#102335,#0d1723);box-shadow:none}
-    .brand-logo::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 26% 18%,rgba(78,168,222,.36),transparent 48%);z-index:-1}
-    .brand-logo svg{width:82%;height:82%;overflow:visible}.brand-grid{stroke:rgba(215,240,255,.16);stroke-width:.8}.brand-mono{fill:#f6fbff;font:900 9px var(--mono-font);letter-spacing:.4px}.brand-path{fill:none;stroke:var(--amber);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:34;animation:brandDraw 2.9s ease-in-out infinite}.brand-dot{fill:var(--green);animation:brandPulse 1.45s ease-in-out infinite}.brand-orbit{fill:none;stroke:rgba(246,251,255,.48);stroke-width:1.4;stroke-dasharray:4 4;animation:brandOrbit 7s linear infinite;transform-origin:24px 24px}.brand-scan{stroke:#9ed2ff;stroke-width:1.1;opacity:.72;animation:brandScan 2.2s ease-in-out infinite}
-    .ui-icon.blue{color:var(--blue);border-color:rgba(78,168,222,.42);background:rgba(78,168,222,.10)}
-    .ui-icon.green{color:var(--green);border-color:rgba(46,204,113,.42);background:rgba(46,204,113,.10)}
-    .ui-icon.red{color:var(--red);border-color:rgba(244,93,117,.42);background:rgba(244,93,117,.10)}
-    .ui-icon.amber{color:var(--amber);border-color:rgba(245,196,81,.42);background:rgba(245,196,81,.10)}
-    .label-stack{min-width:0}
-    .brand-title{font-size:2.25rem;font-weight:850;color:var(--text);line-height:1;letter-spacing:0}
-    .brand-tagline{margin-top:8px;color:var(--blue);font-size:.95rem;font-weight:650;letter-spacing:.02em}
-    .market-clock{text-align:right;color:var(--muted);font-size:.84rem}
-    .hero-grid{display:grid;grid-template-columns:1.1fr 1.5fr .9fr;gap:16px;margin-top:16px;align-items:stretch}
-    .hero-price-row{align-items:flex-start}
-    .hero-price{font-family:var(--mono-font);font-size:2.85rem;font-weight:800;color:var(--text);line-height:1}
-    .hero-label,.panel-label,.tile-label{font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .hero-sub{margin-top:8px;color:var(--muted);font-size:.86rem}
-    .hero-intel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
-    .intel-mini{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:76px}
-    .intel-mini.green{border-color:rgba(33,208,122,.48)} .intel-mini.red{border-color:rgba(255,95,124,.48)} .intel-mini.amber{border-color:rgba(244,199,107,.48)} .intel-mini.blue{border-color:rgba(103,183,255,.48)}
-    .intel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
-    .intel-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .intel-value{font-size:1rem;font-weight:800;color:var(--text);margin-top:4px;line-height:1.2}
-    .intel-mini.green .intel-value{color:var(--green)} .intel-mini.red .intel-value{color:var(--red)} .intel-mini.amber .intel-value{color:var(--amber)} .intel-mini.blue .intel-value{color:var(--blue)}
-    .intel-copy{font-size:.76rem;color:var(--muted);margin-top:4px;line-height:1.25}
-    .decision-plate{border:1px solid var(--border);border-radius:8px;background:rgba(7,10,15,.58);padding:14px}
-    .decision-main{font-size:1.6rem;font-weight:850;line-height:1.12;color:var(--text);margin:5px 0}
-    .decision-reason{color:var(--muted);font-size:.86rem}
-    .wait-discipline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
-    .wait-gate{border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:92px}
-    .wait-gate-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .wait-gate-value{font-size:1rem;font-weight:850;color:var(--text);margin-top:5px;line-height:1.18}
-    .wait-gate-copy{font-size:.76rem;line-height:1.25;color:var(--muted);margin-top:5px}
-    .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-    .pill{border:1px solid var(--border);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:.78rem;background:rgba(255,255,255,.03)}
-    .pill.green{border-color:rgba(33,208,122,.55);color:var(--green)} .pill.red{border-color:rgba(255,95,124,.55);color:var(--red)} .pill.amber{border-color:rgba(244,199,107,.55);color:var(--amber)} .pill.blue{border-color:rgba(103,183,255,.55);color:var(--blue)}
-    .quote-stack{display:grid;grid-template-columns:1fr;gap:10px}
-    .quote-mini{border:1px solid var(--border);border-radius:8px;padding:12px;background:rgba(255,255,255,.035);display:flex;flex-direction:column;gap:10px}
-    .quote-body{display:grid;gap:6px}
-    .quote-eyebrow{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .quote-trigger-name{font-size:.98rem;font-weight:800;color:var(--text);line-height:1.2}
-    .quote-trigger-price{font-family:var(--mono-font);font-size:1.75rem;font-weight:850;color:var(--blue);line-height:1}
-    .quote-meta-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid rgba(141,160,184,.16);padding-top:8px;color:var(--muted);font-size:.78rem}
-    .quote-meta-row strong{color:var(--text);font-weight:750;text-align:right}
-    .strike-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-    .strike-cell{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(7,10,15,.35);padding:9px}
-    .strike-cell.call{border-left:3px solid var(--green)} .strike-cell.put{border-left:3px solid var(--red)}
-    .strike-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .strike-value{font-family:var(--mono-font);font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
-    .terminal-section{margin-top:14px}
-    .command-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
-    .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:none}
-    .empty-state,.warning-panel{padding:16px;color:var(--text);line-height:1.45;margin:10px 0}
-    .empty-state b,.warning-panel b{display:block;margin-bottom:4px}
-    .terminal-panel{padding:16px;min-height:184px;display:flex;flex-direction:column;gap:10px}
-    .panel-head{min-width:0}
-    .panel-head>div{min-width:0}
-    .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px;line-height:1.22;overflow-wrap:anywhere}
-    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:0;flex:1;overflow-wrap:anywhere}
-    .data-notice{border:1px solid rgba(78,168,222,.28);border-radius:8px;background:rgba(78,168,222,.08);padding:11px 13px;color:#b9dcfb;font-size:.9rem;margin:10px 0}
-    .data-notice.warn{border-color:rgba(245,196,81,.34);background:rgba(245,196,81,.08);color:#f8dfa0}
-    .option-quote-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 8px}
-    .option-quote-strike{font-family:var(--mono-font);font-size:1.55rem;font-weight:850;color:var(--text)}
-    .option-quote-mark{font-family:var(--mono-font);font-size:1.35rem;font-weight:800;color:var(--blue);text-align:right}
-    .option-quote-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}
-    .option-quote-cell{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.025);padding:7px}
-    .option-quote-label{font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .option-quote-value{font-family:var(--mono-font);font-size:.95rem;color:var(--text);margin-top:3px}
-    .structure-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
-    .structure-note{display:inline-flex;align-items:center;gap:8px;margin-top:14px;border:1px solid rgba(103,183,255,.3);border-radius:8px;background:rgba(103,183,255,.08);padding:7px 10px;color:var(--blue);font-size:.82rem;font-weight:650}
-    .structure-tile{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(22,34,53,.8),rgba(13,19,29,.95));padding:12px;min-height:122px}
-    .structure-tile.closest{border-color:var(--blue);box-shadow:0 0 0 1px rgba(103,183,255,.3)}
-    .tile-name{font-size:1.1rem;font-weight:800;color:var(--text)}
-    .tile-value{font-family:var(--mono-font);font-size:1.65rem;font-weight:800;color:var(--text);margin-top:4px}
-    .tile-meta{color:var(--muted);font-size:.78rem;margin-top:4px}
-    .tile-call{border-left:3px solid var(--green)} .tile-put{border-left:3px solid var(--red)}
-    .brief-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:10px 0 14px}
-    .brief-card{border:1px solid var(--border);border-radius:8px;background:rgba(13,19,29,.92);padding:12px}
-    .brief-label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .brief-value{font-family:var(--mono-font);font-size:1.35rem;font-weight:800;color:var(--text);margin-top:4px}
-    .brief-copy{color:var(--muted);font-size:.82rem;margin-top:4px;line-height:1.35}
-    .replay-shell{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(13,19,29,.92),rgba(16,27,43,.82));padding:14px;margin:10px 0 14px}
-    .replay-title{font-size:1.15rem;font-weight:800;color:var(--text)}
-    .replay-copy{font-size:.88rem;color:var(--muted);margin-top:6px;line-height:1.45}
-    .outcome-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-top:12px}
-    .outcome-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
-    .status-strip{display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.7);font-size:.85rem;color:var(--muted);margin:14px 0}
-    .status-strip b{color:var(--text);font-weight:600}
-    .context-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;margin-top:12px}
-    .context-stack{display:grid;gap:14px}
-    .learning-hero{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(17,26,38,.96),rgba(10,17,25,.96));padding:16px}
-    .learning-head,.feed-head,.calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .learning-title{font-size:1.18rem;font-weight:850;color:var(--text);line-height:1.15}
-    .learning-copy{font-size:.9rem;color:var(--muted);line-height:1.45;margin-top:8px}
-    .probability-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
-    .prob-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
-    .prob-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .prob-value{font-family:var(--mono-font);font-size:1.35rem;font-weight:850;margin-top:4px;color:var(--text)}
-    .prob-card.green .prob-value{color:var(--green)} .prob-card.red .prob-value{color:var(--red)} .prob-card.blue .prob-value{color:var(--blue)}
-    .news-list,.calendar-list{display:grid;gap:9px;margin-top:10px}
-    .news-card,.calendar-row{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
-    .news-title{font-weight:800;color:var(--text);line-height:1.3}
-    .news-meta,.calendar-meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:.76rem;margin-top:6px}
-    .news-summary,.calendar-notes{color:var(--muted);font-size:.82rem;line-height:1.35;margin-top:7px}
-    .calendar-event{font-weight:800;color:var(--text);line-height:1.25}
-    .calendar-impact{color:var(--amber);font-weight:750}
-    .briefing-shell{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(14,22,33,.98),rgba(8,13,18,.98));padding:16px;margin-top:12px}
-    .briefing-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid rgba(141,160,184,.18);padding-bottom:12px}
-    .briefing-title{font-size:1.45rem;font-weight:900;color:var(--text);line-height:1.12}
-    .briefing-sub{color:var(--muted);font-size:.88rem;margin-top:6px;line-height:1.4}
-    .briefing-body{white-space:pre-wrap;color:#dbe8f5;font-size:.95rem;line-height:1.55;margin-top:14px}
-    .source-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
-    .source-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:9px;min-height:82px}
-    .source-card.connected{border-color:rgba(46,204,113,.38)} .source-card.unavailable{border-color:rgba(245,196,81,.34)}
-    .source-name{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .source-state{font-weight:850;margin-top:4px}.source-card.connected .source-state{color:var(--green)}.source-card.unavailable .source-state{color:var(--amber)}
-    .source-detail{font-size:.76rem;color:var(--muted);line-height:1.3;margin-top:4px}
-    .briefing-mini-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
-    .briefing-mini{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);padding:10px}
-    .briefing-mini-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .briefing-mini-value{font-family:var(--mono-font);font-size:1.15rem;font-weight:850;color:var(--text);margin-top:4px}
-    .briefing-mini-copy{font-size:.78rem;color:var(--muted);margin-top:4px;line-height:1.3}
-    .morning-control{display:flex;align-items:center;justify-content:space-between;gap:14px;border:1px solid var(--border);border-radius:8px;background:rgba(16,24,38,.68);padding:10px 12px;margin:10px 0 14px}
-    .morning-control-title{font-size:.82rem;font-weight:850;color:var(--text)}
-    .morning-control-copy{font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:3px}
-    .morning-hero{position:relative;overflow:hidden;border:1px solid rgba(103,183,255,.34);border-radius:8px;background:radial-gradient(circle at 12% 12%,rgba(103,183,255,.22),transparent 32%),radial-gradient(circle at 92% 6%,rgba(46,204,113,.16),transparent 28%),linear-gradient(135deg,rgba(13,22,35,.98),rgba(7,11,17,.98));padding:18px;margin:12px 0 14px}
-    .morning-hero:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.055),transparent);transform:translateX(-100%);animation:brandScan 4.5s ease-in-out infinite;pointer-events:none}
-    .morning-hero-inner{position:relative;display:grid;grid-template-columns:1.2fr .8fr;gap:18px;align-items:center}
-    .morning-kicker{display:flex;align-items:center;gap:10px;color:var(--blue);font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;font-weight:850}
-    .morning-title{font-size:2rem;font-weight:950;color:var(--text);line-height:1.04;margin-top:9px}
-    .morning-subtitle{color:var(--muted);font-size:.92rem;line-height:1.45;margin-top:8px;max-width:740px}
-    .morning-hero-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:15px}
-    .morning-hero-stat{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.045);padding:10px;min-height:82px}
-    .morning-stat-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-    .morning-stat-value{font-family:var(--mono-font);font-size:1.1rem;font-weight:900;color:var(--text);margin-top:4px}
-    .morning-stat-copy{font-size:.76rem;color:var(--muted);line-height:1.3;margin-top:4px}
-    .morning-orb{display:grid;place-items:center;justify-self:end;width:188px;max-width:100%;aspect-ratio:1;border-radius:999px;background:conic-gradient(var(--ring-color) calc(var(--confidence)*1%),rgba(141,160,184,.14) 0);box-shadow:0 0 44px rgba(103,183,255,.18)}
-    .morning-orb-core{display:grid;place-items:center;width:78%;height:78%;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:linear-gradient(160deg,rgba(10,17,27,.98),rgba(20,31,46,.94));text-align:center;padding:14px}
-    .morning-orb-value{font-family:var(--mono-font);font-size:2.1rem;font-weight:950;color:var(--text);line-height:1}
-    .morning-orb-label{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:7px}
-    .morning-lines{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}
-    .morning-line-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(22,34,53,.86),rgba(11,17,26,.94));padding:12px;min-height:142px;position:relative;overflow:hidden}
-    .morning-line-card:after{content:"";position:absolute;right:-28px;top:-36px;width:96px;height:96px;border-radius:999px;background:var(--wash);opacity:.52}
-    .morning-line-top{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px}
-    .morning-line-name{font-size:.82rem;font-weight:850;color:var(--text);line-height:1.25}
-    .morning-line-role{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:3px}
-    .morning-line-value{position:relative;font-family:var(--mono-font);font-size:1.72rem;font-weight:950;color:var(--text);margin-top:14px}
-    .morning-line-anchor{position:relative;font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:6px}
-    .morning-line-card.call{border-color:rgba(46,204,113,.32);--wash:rgba(46,204,113,.18)}
-    .morning-line-card.put{border-color:rgba(255,95,124,.34);--wash:rgba(255,95,124,.18)}
-    .morning-line-card.neutral{--wash:rgba(103,183,255,.16)}
-    .morning-dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
-    .decision-stack-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:12px}
-    .decision-summary{border:1px solid rgba(103,183,255,.24);border-radius:8px;background:linear-gradient(135deg,rgba(18,28,42,.86),rgba(8,13,18,.96));padding:12px;margin:12px 0}
-    .decision-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .decision-summary-title{font-size:1rem;font-weight:800;color:var(--text);line-height:1.2}
-    .decision-summary-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
-    .decision-summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
-    .decision-summary-chip{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:70px}
-    .decision-summary-chip.green{border-color:rgba(46,204,113,.35)}.decision-summary-chip.red{border-color:rgba(244,93,117,.35)}.decision-summary-chip.amber{border-color:rgba(245,196,81,.38)}.decision-summary-chip.blue{border-color:rgba(103,183,255,.32)}
-    .decision-summary-label{font-size:.72rem;font-weight:700;color:#aeb9c6;line-height:1.25}
-    .decision-summary-value{font-size:.98rem;font-weight:780;color:var(--text);line-height:1.2;margin-top:5px}
-    .morning-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,rgba(18,28,42,.9),rgba(9,14,21,.96));padding:14px;min-height:168px;display:flex;flex-direction:column}
-    .morning-card.green{border-color:rgba(46,204,113,.34)}.morning-card.red{border-color:rgba(255,95,124,.34)}.morning-card.amber{border-color:rgba(245,196,81,.36)}.morning-card.blue{border-color:rgba(103,183,255,.34)}
-    .morning-card-head{display:flex;align-items:center;gap:10px}
-    .morning-card-title{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
-    .morning-card-value{font-size:1.08rem;font-weight:900;color:var(--text);line-height:1.22;margin-top:10px}
-    .morning-card-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:7px;flex:1}
-    .morning-chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-    .morning-chip{border:1px solid rgba(141,160,184,.18);border-radius:999px;background:rgba(255,255,255,.045);padding:4px 8px;font-size:.72rem;color:var(--text)}
-    .brief-plan-shell{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:linear-gradient(135deg,rgba(8,14,22,.98),rgba(11,21,34,.96));padding:15px;margin:12px 0}
-    .brief-plan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-    .brief-plan-title{font-size:1.16rem;font-weight:850;color:var(--text);line-height:1.2}
-    .brief-plan-copy{font-size:.84rem;color:var(--muted);line-height:1.45;margin-top:4px}
-    .scenario-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .scenario-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:188px}
-    .scenario-card.call{border-color:rgba(46,204,113,.34)}.scenario-card.put{border-color:rgba(255,95,124,.34)}.scenario-card.selected{box-shadow:0 0 0 1px rgba(103,183,255,.55),0 0 26px rgba(103,183,255,.12)}
-    .scenario-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
-    .scenario-name{font-size:.82rem;font-weight:850;color:var(--text);line-height:1.22}
-    .scenario-price{font-size:1.5rem;font-weight:850;color:var(--text);font-variant-numeric:tabular-nums;margin-top:8px}
-    .scenario-state{font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:3px}
-    .scenario-list{display:grid;gap:5px;margin-top:9px}
-    .scenario-list span{border:1px solid rgba(141,160,184,.14);border-radius:7px;background:rgba(255,255,255,.035);padding:6px 7px;color:#d7e6f7;font-size:.75rem;line-height:1.28}
-    .scenario-list .caution{border-color:rgba(245,196,81,.28);color:#f8dfa0}
-    .flow-board{border:1px solid rgba(103,183,255,.26);border-radius:8px;background:linear-gradient(135deg,rgba(9,16,26,.98),rgba(12,22,34,.96));padding:14px;margin:12px 0}
-    .flow-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-    .flow-board-title{font-size:1.12rem;font-weight:950;color:var(--text)}
-    .flow-board-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
-    .flow-read{display:grid;grid-template-columns:minmax(180px,.28fr) 1fr;gap:12px;margin-bottom:12px}
-    .flow-read-main{border:1px solid rgba(103,183,255,.24);border-radius:8px;background:rgba(103,183,255,.07);padding:12px}
-    .flow-read-main.call{border-color:rgba(46,204,113,.34);background:rgba(46,204,113,.09)}
-    .flow-read-main.put{border-color:rgba(244,93,117,.34);background:rgba(244,93,117,.09)}
-    .flow-read-main.wait{border-color:rgba(245,196,81,.38);background:rgba(245,196,81,.09)}
-    .flow-read-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:900}
-    .flow-read-value{font-size:1.18rem;line-height:1.18;font-weight:950;color:var(--text);margin-top:5px}
-    .flow-read-copy{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:12px;color:var(--muted);font-size:.83rem;line-height:1.42}
-    .flow-read-bullets{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
-    .flow-read-bullets span{border:1px solid rgba(141,160,184,.18);border-radius:999px;padding:4px 8px;color:var(--text);font-size:.72rem;background:rgba(255,255,255,.045)}
-    .flow-board-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .flow-card{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:210px}
-    .flow-card.darkpool{border-color:rgba(180,124,255,.32)}.flow-card.bull{border-color:rgba(46,204,113,.32)}.flow-card.bear{border-color:rgba(244,93,117,.32)}
-    .flow-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
-    .flow-value{font-size:1.04rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:7px}
-    .flow-copy{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:6px}
-    .flow-means{font-size:.76rem;line-height:1.34;color:var(--text);border-left:2px solid rgba(103,183,255,.45);padding-left:8px;margin-top:9px}
-    .flow-levels{display:grid;gap:5px;margin-top:9px}
-    .flow-level{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid rgba(141,160,184,.13);padding-top:5px;font-family:var(--mono-font);font-size:.78rem;color:var(--text)}
-    .flow-level span:last-child{color:var(--blue)}
-    .action-brief{border:1px solid rgba(46,204,113,.34);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.10),rgba(78,168,222,.08),rgba(8,13,18,.98));padding:15px;margin:12px 0}
-    .action-brief.wait{border-color:rgba(245,196,81,.4);background:linear-gradient(135deg,rgba(245,196,81,.12),rgba(78,168,222,.07),rgba(8,13,18,.98))}
-    .action-brief.put{border-color:rgba(244,93,117,.38);background:linear-gradient(135deg,rgba(244,93,117,.11),rgba(78,168,222,.06),rgba(8,13,18,.98))}
-    .action-brief-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:12px;margin-bottom:12px}
-    .action-kicker{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:900}
-    .action-headline{font-size:1.38rem;font-weight:950;color:var(--text);line-height:1.14;margin-top:5px}
-    .action-summary{font-size:.86rem;color:var(--muted);line-height:1.4;margin-top:6px}
-    .action-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:10px}
-    .action-ticket{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.04);padding:11px}
-    .action-ticket-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
-    .action-ticket-value{font-size:1.02rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:5px}
-    .action-ticket-copy{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px}
-    .action-reasons{display:grid;gap:7px}
-    .action-reason{display:flex;gap:8px;border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:8px;color:var(--muted);font-size:.8rem;line-height:1.33}
-    .action-reason-dot{width:7px;height:7px;border-radius:99px;background:var(--green);flex:0 0 7px;margin-top:5px}
-    .action-risk .action-reason-dot{background:var(--red)}
-    .morning-action{border:1px solid rgba(245,196,81,.34);border-radius:8px;background:linear-gradient(135deg,rgba(245,196,81,.12),rgba(103,183,255,.08),rgba(8,13,18,.96));padding:14px;margin:12px 0}
-    .morning-action-grid{display:grid;grid-template-columns:.82fr 1.18fr;gap:14px;align-items:center}
-    .morning-action-label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:850}
-    .morning-action-title{font-size:1.35rem;font-weight:950;color:var(--text);line-height:1.15;margin-top:5px}
-    .morning-action-copy{font-size:.88rem;color:var(--muted);line-height:1.45;margin-top:7px}
-    .morning-action-list{display:grid;gap:8px}
-    .morning-action-item{display:flex;align-items:flex-start;gap:9px;border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;color:var(--muted);font-size:.82rem;line-height:1.35}
-    .morning-action-dot{width:8px;height:8px;border-radius:99px;background:var(--blue);margin-top:5px;flex:0 0 8px}
-    .ai-verify{border:1px solid rgba(46,204,113,.24);border-radius:8px;background:linear-gradient(135deg,rgba(46,204,113,.09),rgba(103,183,255,.055),rgba(8,13,18,.96));padding:13px;margin:12px 0}
-    .ai-verify-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
-    .ai-verify-title{font-size:1.05rem;font-weight:950;color:var(--text)}
-    .ai-verify-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
-    .ai-verify-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-    .ai-verify-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:9px;min-height:94px}
-    .ai-verify-card.good{border-color:rgba(46,204,113,.34)}.ai-verify-card.warn{border-color:rgba(245,196,81,.34)}.ai-verify-card.info{border-color:rgba(103,183,255,.28)}
-    .ai-verify-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
-    .ai-verify-value{font-size:.96rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:6px}
-    .ai-verify-note{font-size:.74rem;color:var(--muted);line-height:1.32;margin-top:5px}
-    .morning-narrative{border:1px solid var(--border2);border-radius:8px;background:linear-gradient(135deg,rgba(14,22,33,.98),rgba(8,13,18,.98));padding:14px;margin-top:12px}
-    .morning-narrative-head{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(141,160,184,.16);padding-bottom:10px;margin-bottom:10px}
-    .morning-narrative-title{font-size:1.05rem;font-weight:900;color:var(--text)}
-    .morning-narrative-body{white-space:pre-wrap;color:#dbe8f5;font-size:.9rem;line-height:1.55}
-    .evidence-shell{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:linear-gradient(135deg,rgba(12,20,31,.96),rgba(8,13,18,.98));padding:14px;margin:12px 0}
-    .evidence-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-    .evidence-title{font-size:1.12rem;font-weight:950;color:var(--text);line-height:1.15}
-    .evidence-copy{color:var(--muted);font-size:.84rem;line-height:1.4;margin-top:4px}
-    .evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
-    .evidence-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:10px;min-height:128px}
-    .evidence-card.connected{border-color:rgba(46,204,113,.3)}.evidence-card.watch{border-color:rgba(245,196,81,.34)}.evidence-card.internal{border-color:rgba(103,183,255,.32)}
-    .evidence-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:850}
-    .evidence-value{font-size:.98rem;font-weight:900;color:var(--text);line-height:1.25;margin-top:7px}
-    .evidence-detail{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:6px}
-    .evidence-asof{font-family:var(--mono-font);font-size:.72rem;color:var(--blue);margin-top:7px}
-    .evidence-flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
-    .evidence-step{border:1px solid rgba(141,160,184,.15);border-radius:8px;background:rgba(255,255,255,.03);padding:9px}
-    .evidence-step-num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;background:rgba(103,183,255,.14);color:var(--blue);font-family:var(--mono-font);font-weight:900;font-size:.72rem}
-    .evidence-step-title{font-weight:850;color:var(--text);font-size:.82rem;margin-top:7px}
-    .evidence-step-copy{font-size:.75rem;color:var(--muted);line-height:1.33;margin-top:4px}
-    .source-ledger{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(255,255,255,.025);padding:13px;margin:12px 0}
-    .source-ledger-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
-    .source-ledger-title{font-size:1rem;font-weight:930;color:var(--text)}
-    .source-ledger-copy{font-size:.82rem;color:var(--muted);line-height:1.4;margin-top:3px}
-    .source-ledger-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-    .source-row{border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:9px}
-    .source-row-name{font-weight:850;color:var(--text);font-size:.86rem;line-height:1.25}
-    .source-row-meta{font-size:.76rem;color:var(--muted);line-height:1.35;margin-top:4px}
-    .source-row.connected{border-color:rgba(46,204,113,.28)}.source-row.unavailable{border-color:rgba(245,196,81,.28)}.source-row.scout{border-color:rgba(103,183,255,.28)}
-    .upgrade-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
-    .upgrade-card{border:1px solid rgba(103,183,255,.18);border-radius:8px;background:rgba(103,183,255,.055);padding:9px}
-    .upgrade-name{font-size:.82rem;font-weight:900;color:var(--text)}
-    .upgrade-meta{font-size:.75rem;color:var(--muted);line-height:1.35;margin-top:4px}
-    .scout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
-    .scout-card,.citation-card{border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
-    .scout-name,.citation-title{font-weight:850;color:var(--text);line-height:1.25}
-    .scout-role,.citation-url{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px;overflow-wrap:anywhere}
-    .citation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
-    .daily-guide{border:1px solid rgba(103,183,255,.28);border-radius:8px;background:radial-gradient(circle at 8% 0%,rgba(35,183,255,.18),transparent 30%),linear-gradient(135deg,rgba(9,17,29,.98),rgba(4,9,15,.98));padding:16px;margin:12px 0 14px}
-    .daily-guide-head{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:stretch}
-    .daily-guide-main{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:15px}
-    .daily-guide-kicker{font-size:.72rem;font-weight:850;color:var(--blue);line-height:1.25}
-    .daily-guide-title{font-size:1.65rem;font-weight:900;color:var(--text);line-height:1.1;margin-top:6px}
-    .daily-guide-copy{font-size:.92rem;color:#dbe8f5;line-height:1.48;margin-top:9px}
-    .daily-guide-status{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-    .daily-guide-stat{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:11px;min-height:88px}
-    .daily-guide-label{font-size:.72rem;font-weight:750;color:#aeb9c6;line-height:1.25}
-    .daily-guide-value{font-size:1.04rem;font-weight:850;color:var(--text);line-height:1.18;margin-top:5px}
-    .daily-guide-note{font-size:.78rem;color:var(--muted);line-height:1.35;margin-top:5px}
-    .daily-guide-section{margin-top:14px}
-    .daily-guide-section-title{font-size:1.02rem;font-weight:850;color:var(--text);margin-bottom:8px}
-    .daily-guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-    .daily-guide-card{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.035);padding:12px;min-height:142px}
-    .daily-guide-card.green{border-color:rgba(46,204,113,.34)}.daily-guide-card.red{border-color:rgba(244,93,117,.34)}.daily-guide-card.amber{border-color:rgba(245,196,81,.38)}.daily-guide-card.blue{border-color:rgba(103,183,255,.32)}
-    .daily-guide-card-title{font-size:.78rem;font-weight:850;color:#aeb9c6;line-height:1.25}
-    .daily-guide-card-value{font-size:1.05rem;font-weight:900;color:var(--text);line-height:1.22;margin-top:7px}
-    .daily-guide-card-copy{font-size:.82rem;color:var(--muted);line-height:1.38;margin-top:7px}
-    .daily-guide-list{display:grid;gap:8px}
-    .daily-guide-row{display:grid;grid-template-columns:130px 1fr;gap:10px;border:1px solid rgba(141,160,184,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:10px}
-    .daily-guide-row-label{font-size:.76rem;font-weight:850;color:var(--blue);line-height:1.25}
-    .daily-guide-row-copy{font-size:.86rem;color:#dbe8f5;line-height:1.4}
-    .morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card,.daily-guide,.daily-guide-card,.daily-guide-stat,.daily-guide-row{font-family:var(--ui-font)}
-    .morning-title,.brief-plan-title,.decision-summary-title,.action-headline,.flow-board-title,.ai-verify-title,.morning-narrative-title,.evidence-title,.source-ledger-title{font-family:var(--ui-font);font-weight:800;letter-spacing:0;line-height:1.18}
-    .morning-title{font-size:1.9rem}
-    .action-headline{font-size:1.22rem}
-    .flow-board-title,.evidence-title{font-size:1.06rem}
-    .ai-verify-title,.morning-narrative-title,.source-ledger-title{font-size:1rem}
-    .morning-kicker,.morning-stat-label,.morning-line-role,.morning-card-title,.flow-read-label,.flow-label,.action-kicker,.action-ticket-label,.ai-verify-label,.evidence-label,.briefing-mini-label,.source-name{font-family:var(--ui-font);font-size:.74rem;font-weight:700;letter-spacing:.01em;text-transform:none;line-height:1.25;color:#aeb9c6}
-    .action-kicker{color:var(--amber)}
-    .morning-stat-value,.morning-line-value,.morning-orb-value,.morning-card-value,.flow-read-value,.flow-value,.action-ticket-value,.ai-verify-value,.evidence-value,.briefing-mini-value{font-family:var(--ui-font);font-variant-numeric:tabular-nums;font-weight:780;letter-spacing:0;line-height:1.22;color:var(--text)}
-    .morning-line-value{font-size:1.62rem}
-    .morning-orb-value{font-size:1.9rem}
-    .morning-stat-value{font-size:clamp(.94rem,1.15vw,1.05rem);overflow-wrap:anywhere}
-    .morning-card-value,.flow-read-value,.flow-value,.action-ticket-value,.ai-verify-value,.evidence-value{font-size:1rem}
-    .morning-subtitle,.morning-stat-copy,.morning-line-anchor,.morning-card-copy,.flow-board-copy,.flow-read-copy,.flow-copy,.flow-means,.action-summary,.action-ticket-copy,.action-reason,.ai-verify-copy,.ai-verify-note,.morning-narrative-body,.evidence-copy,.evidence-detail,.source-row-meta,.scout-role,.citation-url{font-size:.82rem;line-height:1.46;color:#9fb0c2}
-    .morning-chip,.flow-read-bullets span{font-size:.74rem;line-height:1.25}
-    .section-kicker{font-family:var(--ui-font);font-size:.95rem;font-weight:760;letter-spacing:0;color:var(--text);margin:16px 0 8px}
-    .morning-card,.evidence-card{min-height:152px}
-    .flow-card{min-height:196px}
-    .action-ticket{min-height:94px}
-    .evidence-asof{font-family:var(--ui-font);font-variant-numeric:tabular-nums;font-size:.76rem}
-    .prophet-header{padding:0 0 12px;margin:14px 0 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}.prophet-header h3{margin:0;font-size:1.45rem;font-weight:850}
-    .metric-card,.prophet-card{padding:12px}.card-title{font-size:.76rem;color:var(--muted)} .card-value{font-size:1.4rem;font-family:var(--mono-font);color:var(--text)} .small-muted{color:var(--muted);font-size:.8rem}
-    .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
-    .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
-    .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
-    @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.scenario-grid,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid,.daily-guide-head,.daily-guide-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.daily-guide-row{grid-template-columns:1fr}}
-    @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
-    @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
-    @keyframes brandOrbit{to{transform:rotate(360deg)}}
-    @keyframes brandScan{0%,100%{transform:translateY(-5px);opacity:.18}50%{transform:translateY(5px);opacity:.78}}
-    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid,.morning-lines,.morning-hero-metrics{grid-template-columns:1fr}.morning-title{font-size:1.55rem}.morning-orb{width:150px}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.brand-logo{width:74px;height:74px}}
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(f"<style>{_load_app_css()}</style>", unsafe_allow_html=True)
+
+
+# === Accessible UI helpers (added in audit batch) ============================
+
+def render_direction_glyph(direction: str | None, label: str | None = None) -> str:
+    """Return HTML for an icon+label that conveys direction without relying on
+    color alone (red-green colorblind safety). Use inside f-strings rendered
+    with unsafe_allow_html=True."""
+    direction = (direction or "").upper()
+    if direction in {"CALL", "BULL", "BULLISH", "LONG"}:
+        klass, glyph, default_label = "call", "▲", "Call"
+    elif direction in {"PUT", "BEAR", "BEARISH", "SHORT"}:
+        klass, glyph, default_label = "put", "▼", "Put"
+    elif direction in {"WAIT", "HOLD", "AVOID", "BLOCKED"}:
+        klass, glyph, default_label = "wait", "●", "Wait"
+    else:
+        klass, glyph, default_label = "neutral", "◆", "Neutral"
+    text = escape(str(label or default_label))
+    return f'<span class="dir-glyph {klass}" role="img" aria-label="{text}"><span class="glyph" aria-hidden="true">{glyph}</span>{text}</span>'
+
+
+def _logo_data_uri() -> str:
+    """Inline the small logo as a data URI so it renders inside HTML strings
+    without needing to be served as a static asset."""
+    try:
+        import base64
+        path = Path(__file__).resolve().parent / "assets" / "favicon.png"
+        if not path.exists():
+            return ""
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+def render_command_bar(
+    *,
+    spy_price: float | None = None,
+    spy_change_pct: float | None = None,
+    vix_price: float | None = None,
+    decision_label: str | None = None,
+    decision_kind: str | None = None,
+    market_state: str = "live",
+    asof: str | None = None,
+) -> None:
+    """Always-visible status strip rendered above the tab list.
+
+    Shows the current SPY price + change, VIX, latest decision, and a live
+    pulse dot keyed to market state ('live' / 'warn' / 'off'). This is what
+    a trading terminal user expects to be ambient — they should never have
+    to hunt for the live price."""
+    logo = _logo_data_uri()
+    logo_html = f'<img src="{logo}" alt="SPY Prophet logo">' if logo else "📈"
+    pulse_class = "live" if market_state == "live" else ("warn" if market_state == "warn" else "off")
+    pulse_label = {"live": "Live session", "warn": "Limited", "off": "Closed"}.get(market_state, "Idle")
+
+    def fmt_price(value: float | None) -> str:
+        if value is None or pd.isna(value):
+            return "—"
+        return f"${value:,.2f}"
+
+    def fmt_change(value: float | None) -> tuple[str, str]:
+        if value is None or pd.isna(value):
+            return "—", "neutral"
+        sign = "▲" if value > 0 else ("▼" if value < 0 else "•")
+        kind = "up" if value > 0 else ("down" if value < 0 else "neutral")
+        return f"{sign} {abs(value):.2f}%", kind
+
+    chg_text, chg_kind = fmt_change(spy_change_pct)
+    vix_text = "—" if vix_price is None or pd.isna(vix_price) else f"{vix_price:.2f}"
+    vix_kind = "neutral"
+    if vix_price is not None and not pd.isna(vix_price):
+        if vix_price >= 25:
+            vix_kind = "down"
+        elif vix_price >= 20:
+            vix_kind = "neutral"
+        else:
+            vix_kind = "up"
+
+    decision_html = ""
+    if decision_label:
+        glyph = render_direction_glyph(decision_kind or "NEUTRAL", decision_label)
+        decision_html = f'<div class="command-stat"><span class="command-stat-label">Decision</span><span class="command-stat-value neutral">{glyph}</span></div>'
+
+    asof_html = f'<div class="command-stat-meta">{escape(asof)}</div>' if asof else ""
+
+    html = (
+        '<section class="command-bar" role="region" aria-label="Live market status bar">'
+        f'<div class="command-brand"><div class="command-logo" aria-hidden="true">{logo_html}</div>'
+        '<div class="command-brand-text">'
+        '<div class="command-brand-name">SPY Prophet</div>'
+        '<div class="command-brand-tag">Structure Terminal</div></div></div>'
+        '<div class="command-stats">'
+        f'<div class="command-stat"><span class="command-stat-label">SPY</span>'
+        f'<span class="command-stat-value">{fmt_price(spy_price)}</span></div>'
+        f'<div class="command-stat"><span class="command-stat-label">Δ Today</span>'
+        f'<span class="command-stat-value {chg_kind}">{chg_text}</span></div>'
+        f'<div class="command-stat"><span class="command-stat-label">VIX</span>'
+        f'<span class="command-stat-value {vix_kind}">{vix_text}</span></div>'
+        f'{decision_html}'
+        '</div>'
+        f'<div class="command-status"><span class="command-pulse {pulse_class}" aria-hidden="true"></span>'
+        f'<span class="sidebar-status-pill {pulse_class}">{pulse_label}</span>{asof_html}</div>'
+        '</section>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_product_chrome(*, version_label: str = "Beta", session_clock: str | None = None) -> None:
+    """A slim, premium product strip: brand mark + version chip + minimal meta.
+    Pure aesthetic — adds polish without revealing methodology."""
+    logo = _logo_data_uri()
+    logo_html = f'<img src="{logo}" alt="">' if logo else ""
+    clock_html = (
+        f'<span class="product-chrome-meta-pill">⏱ {escape(session_clock)}</span>'
+        if session_clock else ""
+    )
+    st.markdown(
+        f'<div class="product-chrome" role="banner">'
+        f'<div class="product-chrome-mark">{logo_html}<span>SPY Prophet</span>'
+        f'<span class="product-chrome-tag">{escape(version_label)}</span></div>'
+        f'<div class="product-chrome-meta">'
+        f'<span class="product-chrome-meta-pill">Analysis only</span>'
+        f'{clock_html}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_tab_intro(icon: str, title: str, copy: str) -> None:
+    """Compact one-line context strip placed at the top of each tab so a new
+    user immediately understands what the tab is for."""
+    st.markdown(
+        f'<div class="tab-intro">'
+        f'<div class="tab-intro-icon" aria-hidden="true">{icon}</div>'
+        f'<div class="tab-intro-body">'
+        f'<div class="tab-intro-title">{escape(title)}</div>'
+        f'<div class="tab-intro-copy">{escape(copy)}</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_trust_footer() -> None:
+    """Brand + trust signals at the bottom of every page. Critical for a
+    sellable product — sets professional tone and reinforces the analysis-only
+    nature of the app."""
+    logo = _logo_data_uri()
+    logo_html = f'<img src="{logo}" alt="">' if logo else ""
+    st.markdown(
+        f'<footer class="trust-footer" role="contentinfo">'
+        f'<div class="trust-footer-brand">{logo_html}<span>SPY Prophet</span></div>'
+        f'<div class="trust-footer-pills">'
+        f'<span class="trust-pill safe">✓ Analysis only</span>'
+        f'<span class="trust-pill safe">✓ No order execution</span>'
+        f'<span class="trust-pill live">⏱ Hourly candles &middot; US/Central display</span>'
+        f'</div></footer>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_tab_empty_state(icon: str, title: str, copy: str, actions: list[str] | None = None) -> None:
+    """Rich empty state for any tab whose data is unavailable. Replaces silent
+    blank panels and gives the user a clear next step."""
+    actions_html = ""
+    if actions:
+        chips = "".join(f'<span class="tab-empty-action">{escape(a)}</span>' for a in actions)
+        actions_html = f'<div class="tab-empty-actions">{chips}</div>'
+    st.markdown(
+        f'<div class="tab-empty" role="status">'
+        f'<div class="tab-empty-icon" aria-hidden="true">{icon}</div>'
+        f'<div class="tab-empty-title">{escape(title)}</div>'
+        f'<div class="tab-empty-copy">{escape(copy)}</div>{actions_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_onboarding_banner(title: str, copy: str, tips: list[str] | None = None, tone: str = "info") -> None:
+    """Welcome / empty-state panel surfaced when there's no data to show
+    (weekends, pre-market, missing secrets, etc.). Uses a real heading so
+    screen readers can land on it."""
+    cls = "warn" if tone == "warn" else ""
+    icon = "⚠️" if tone == "warn" else "✨"
+    tip_html = ""
+    if tips:
+        chips = "".join(f'<span class="onboarding-tip">{escape(t)}</span>' for t in tips)
+        tip_html = f'<div class="onboarding-tips" role="list" aria-label="Suggested next steps">{chips}</div>'
+    st.markdown(
+        f'<section class="onboarding-banner {cls}" role="status" aria-live="polite">'
+        f'<div class="onboarding-icon" aria-hidden="true">{icon}</div>'
+        f'<div><div class="onboarding-title">{escape(title)}</div>'
+        f'<div class="onboarding-copy">{escape(copy)}</div>{tip_html}</div></section>',
+        unsafe_allow_html=True,
+    )
+
+
 
 
 
@@ -5008,10 +4962,10 @@ def render_terminal_hero(
               </div>
               <div class='decision-reason'>{decision_reason}</div>
               <div class='pill-row'>
-                {_pill('Bias', display_state_label(bias_state.bias) if bias_state else '-')}
+                {render_direction_glyph(bias_state.bias if bias_state else None, 'Bias: ' + (display_state_label(bias_state.bias) if bias_state else '—'))}
                 {_pill('Grade', display_state_label(grade))}
                 {_pill('Action', action)}
-                {_pill('Signal', signal_text)}
+                {render_direction_glyph(latest_signal.signal_type if latest_signal else None, 'Signal: ' + signal_text)}
               </div>
               {wait_discipline_html}
             </div>
@@ -7420,11 +7374,19 @@ def make_glow_line_trace(line: DynamicLine, xvals, name: str):
     return go.Scatter(x=xvals,y=ys,mode='lines',name=f"{display_line_name(name)} glow",showlegend=False,line=dict(color=color,width=9),hoverinfo='skip')
 
 
-def render_plotly_html(fig: go.Figure, height: int = 780, display_mode_bar: bool = True) -> None:
+def render_plotly_html(fig: go.Figure, height: int = 780, display_mode_bar: bool = True, aria_label: str | None = None) -> None:
     html = fig.to_html(
         full_html=False,
-        include_plotlyjs=True,
+        include_plotlyjs="cdn",
         config={"displayModeBar": display_mode_bar, "responsive": True},
+    )
+    label = aria_label or "Interactive SPY price and structure chart"
+    # Wrap in a labelled region so screen readers announce the chart purpose
+    # rather than rendering it as an opaque iframe.
+    html = (
+        f'<figure role="figure" aria-label="{escape(label)}" style="margin:0">'
+        f"{html}"
+        f"</figure>"
     )
     components.html(html, height=height, scrolling=False)
 
@@ -8068,16 +8030,29 @@ def build_options_cockpit_state_with_fallback(selected_strikes, latest_signal=No
     return yfinance_state if option_state_has_market_data(yfinance_state) else state
 
 
+@st.cache_resource(show_spinner=False)
+def _build_tastytrade_provider(client_id: str, client_secret: str, refresh_token: str, environment: str) -> TastytradeProvider:
+    """Cache the provider object across reruns. Keyed on credential fingerprint
+    so credential rotation invalidates the cache automatically."""
+    return TastytradeProvider(client_id, client_secret, refresh_token, environment)
+
+
 def get_tastytrade_option_provider():
     missing = get_missing_tastytrade_secrets()
     if missing:
-        return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":missing}
+        return None, {"provider": "TASTYTRADE", "connected": False, "quotes_ok": False, "missing_secrets": missing}
     try:
-        env=st.secrets.get("TASTYTRADE_ENVIRONMENT","production")
-        provider = TastytradeProvider(st.secrets["TASTYTRADE_CLIENT_ID"], st.secrets["TASTYTRADE_CLIENT_SECRET"], st.secrets["TASTYTRADE_REFRESH_TOKEN"], env)
-        return provider, {"provider":"TASTYTRADE","connected":True,"quotes_ok":None,"missing_secrets":[]}
+        env = _read_secret("TASTYTRADE_ENVIRONMENT") or "production"
+        provider = _build_tastytrade_provider(
+            _read_secret("TASTYTRADE_CLIENT_ID"),
+            _read_secret("TASTYTRADE_CLIENT_SECRET"),
+            _read_secret("TASTYTRADE_REFRESH_TOKEN"),
+            env,
+        )
+        return provider, {"provider": "TASTYTRADE", "connected": True, "quotes_ok": None, "missing_secrets": []}
     except Exception as e:
-        return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":[],"last_error":type(e).__name__}
+        logger.warning("Tastytrade provider build failed: %s", type(e).__name__)
+        return None, {"provider": "TASTYTRADE", "connected": False, "quotes_ok": False, "missing_secrets": [], "last_error": type(e).__name__}
 
 
 def option_provider_label(state: OptionsCockpitState | None, provider_status: dict | None = None) -> str:
@@ -8254,23 +8229,101 @@ def journal_entry_from_dict(d: dict) -> JournalEntry:
         if dd.get(k): dd[k]=pd.Timestamp(dd[k])
     return JournalEntry(**dd)
 
-def load_signal_journal(path='data/signal_journal.json'):
-    ensure_data_dir(Path(path).parent)
-    p=Path(path)
-    if not p.exists(): return []
+JOURNAL_DEFAULT_PATH = os.getenv("JOURNAL_PATH", "data/signal_journal.json")
+_CORRUPT_RETENTION_DAYS = 30
+
+
+def _prune_corrupt_journal_backups(directory: Path) -> None:
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=_CORRUPT_RETENTION_DAYS)
     try:
-        arr=json.loads(p.read_text())
+        for backup in directory.glob("signal_journal.corrupt.*.json"):
+            try:
+                mtime = pd.Timestamp(backup.stat().st_mtime, unit="s")
+                if mtime < cutoff:
+                    backup.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.debug("corrupt-journal prune skip %s: %s", backup, type(exc).__name__)
+    except Exception as exc:
+        logger.debug("corrupt-journal prune failed: %s", type(exc).__name__)
+
+
+def load_signal_journal(path=None):
+    path = path or JOURNAL_DEFAULT_PATH
+    ensure_data_dir(Path(path).parent)
+    p = Path(path)
+    _prune_corrupt_journal_backups(p.parent)
+    if not p.exists():
+        return []
+    try:
+        arr = json.loads(p.read_text())
         return [journal_entry_from_dict(x) for x in arr]
-    except Exception:
-        backup=Path(path).with_name(f"signal_journal.corrupt.{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json")
-        p.replace(backup)
+    except Exception as exc:
+        backup = p.with_name(f"signal_journal.corrupt.{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json")
+        try:
+            p.replace(backup)
+            try:
+                os.chmod(backup, 0o600)
+            except OSError:
+                pass
+            logger.warning("Journal load failed (%s); backed up to %s", type(exc).__name__, backup.name)
+        except Exception as inner:
+            logger.error("Journal backup failed: %s", type(inner).__name__)
         return []
 
-def save_signal_journal(entries, path='data/signal_journal.json'):
+
+def save_signal_journal(entries, path=None):
+    """Atomic journal write with cross-process file lock.
+
+    Uses portalocker (already pinned in requirements.txt) for an exclusive lock
+    on a sibling .lock file. Prevents two Streamlit reruns or two processes
+    from interleaving reads and writes (the audit flagged this race window).
+    """
+    path = path or JOURNAL_DEFAULT_PATH
     ensure_data_dir(Path(path).parent)
-    temp=Path(str(path)+'.tmp')
-    temp.write_text(signal_journal_to_json(entries))
-    temp.replace(path)
+    temp = Path(str(path) + ".tmp")
+    lock_path = Path(str(path) + ".lock")
+    # Use the NaN-safe serializer from origin/main; combine with the
+    # cross-process file lock + fsync + chmod from the audit batch.
+    payload = signal_journal_to_json(entries)
+
+    try:
+        import portalocker  # type: ignore
+    except ImportError:
+        portalocker = None  # type: ignore
+        logger.debug("portalocker unavailable; falling back to atomic-rename only")
+
+    try:
+        if portalocker is not None:
+            with open(lock_path, "a+") as lock_fh:
+                portalocker.lock(lock_fh, portalocker.LOCK_EX)
+                try:
+                    _write_journal_atomic(temp, path, payload)
+                finally:
+                    portalocker.unlock(lock_fh)
+        else:
+            _write_journal_atomic(temp, path, payload)
+    except Exception as exc:
+        logger.error("Journal save failed: %s", type(exc).__name__, exc_info=True)
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _write_journal_atomic(temp: Path, target, payload: str) -> None:
+    with open(temp, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:
+            pass
+    try:
+        os.chmod(temp, 0o600)
+    except OSError:
+        pass
+    os.replace(temp, target)
 
 def make_journal_id(entry: JournalEntry) -> str:
     key=f"{entry.trade_date}|{entry.signal_id}|{entry.source}|{entry.line_name}|{entry.entry_time}"
@@ -8479,18 +8532,52 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
 
 
 def main() -> None:
-    st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
+    favicon_path = Path(__file__).resolve().parent / "assets" / "favicon.png"
+    page_icon = str(favicon_path) if favicon_path.exists() else "📈"
+    st.set_page_config(
+        page_title="SPY Prophet — Same-day SPY structure terminal",
+        page_icon=page_icon,
+        layout="wide",
+        initial_sidebar_state="expanded",
+        menu_items={
+            "Get help": "https://github.com/drdidy/SPYPROPHET",
+            "Report a bug": "https://github.com/drdidy/SPYPROPHET/issues",
+            "About": (
+                "SPY Prophet — analysis-only Streamlit terminal for same-day SPY "
+                "structure workflows. No order execution is implemented."
+            ),
+        },
+    )
     inject_global_css()
+    # Skip-to-content link for keyboard / screen-reader users.
+    st.markdown('<a class="skip-link" href="#main-content">Skip to main content</a>', unsafe_allow_html=True)
     real_now_ct = datetime.now(tz=get_central_tz())
 
     st.sidebar.header("SPY Prophet Controls")
-    st.sidebar.button("Refresh data")
+    if st.sidebar.button("🔄 Refresh data", help="Clear cached market and option data and reload.", use_container_width=True):
+        st.cache_data.clear()
+        st.toast("Caches cleared — reloading data.", icon="🔄")
+        st.rerun()
     admin_mode = is_admin_diagnostics_enabled()
-    show_debug = st.sidebar.toggle("Advanced diagnostics", value=False) if admin_mode else False
-    auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
+    with st.sidebar.expander("Session settings", expanded=True):
+        prev_auto = st.session_state.get("_auto_journal_state", False)
+        auto_journal_on = st.toggle(
+            "Auto-journal live signals",
+            value=prev_auto,
+            help="When on, confirmed live signals are appended to the journal automatically.",
+            key="_auto_journal_state",
+        )
+        if auto_journal_on != prev_auto:
+            st.toast(
+                "Auto-journal " + ("enabled" if auto_journal_on else "disabled"),
+                icon="✅" if auto_journal_on else "🔕",
+            )
+        show_debug = st.toggle("Advanced diagnostics", value=False) if admin_mode else False
     slope = get_structure_calibration()
     provider = "TASTYTRADE"
-    df = fetch_spy_hourly(period="60d")
+    option_provider, provider_status = get_tastytrade_option_provider()
+    with st.spinner("Loading SPY hourly candles…"):
+        df = fetch_spy_hourly(period="60d")
     available_session_days = get_available_trading_days(df)
     preview_max_day = next_session_after(real_now_ct.date())
     date_min = available_session_days[0] if available_session_days else (real_now_ct - pd.Timedelta(days=60)).date()
@@ -8507,25 +8594,73 @@ def main() -> None:
     structure_projection_time = get_structure_projection_time(now_ct)
     session_has_candles = selected_session_day in available_session_days
     is_live_session = selected_session_day == real_now_ct.date()
-    st.sidebar.caption("Options feed: Tastytrade")
-    st.sidebar.caption("Structure calibration: Protected")
-    st.sidebar.caption(f"Actual CT: {real_now_ct.strftime('%H:%M:%S %Z')}")
-    st.sidebar.caption(f"Session clock: {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")
-    st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
-    if not session_has_candles:
-        st.sidebar.caption("Preview mode: session candles pending.")
-    elif not is_live_session:
-        st.sidebar.caption("Historical session preview.")
+    # Sidebar — live status + clocks (visually grouped)
+    options_status_kind = "off"
+    options_status_label = "INACTIVE"
+    if provider_status.get("missing_secrets"):
+        options_status_kind = "warn"
+        options_status_label = "SECRETS MISSING"
+    elif provider_status.get("connected"):
+        options_status_kind = "live"
+        options_status_label = "TASTYTRADE"
+
+    market_pill_kind = "live" if (real_now_ct.weekday() < 5 and time(8, 30) <= real_now_ct.time() <= time(15, 0)) else "off"
+    market_pill_label = "MARKET LIVE" if market_pill_kind == "live" else "MARKET CLOSED"
+
+    st.sidebar.markdown(
+        f'<div style="display:flex;flex-direction:column;gap:6px;margin:6px 0 12px">'
+        f'<span class="sidebar-status-pill {market_pill_kind}">{market_pill_label}</span>'
+        f'<span class="sidebar-status-pill {options_status_kind}">OPTIONS · {options_status_label}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.sidebar.expander("Clocks & calibration", expanded=False):
+        st.caption(f"⏰ Actual CT: **{real_now_ct.strftime('%H:%M:%S %Z')}**")
+        st.caption(f"🗓 Session: **{pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}**")
+        st.caption(f"📡 Projection: **{fmt_clock_time(structure_projection_time)}**")
+        st.caption("🔒 Calibration: protected")
+        if not session_has_candles:
+            st.caption("⚠️ Preview mode — session candles pending")
+        elif not is_live_session:
+            st.caption("📚 Historical session preview")
 
     latest_price = None
     prior_day = None
     signal_day = None
     rth_df = pd.DataFrame(); signal_rth_df = pd.DataFrame(); ext_df = pd.DataFrame(); chart_session_df = pd.DataFrame(); pivots={}; secondary_pivots=[]; primary_lines=[]; secondary_lines=[]; signals=[]
     bias = None; strikes = None; closest=None; proj_df=pd.DataFrame(); decision_state=None; active_signal=None; market_context=None
-    option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
     if df.empty:
-        st.warning("SPY market data is pending. Retry refresh or verify market-data provider status.")
+        weekday = real_now_ct.weekday()  # Mon=0 .. Sun=6
+        market_open_ct = time(8, 30)
+        market_close_ct = time(15, 0)
+        now_time = real_now_ct.time()
+        if weekday >= 5:
+            render_onboarding_banner(
+                "Markets are closed for the weekend.",
+                "SPY hourly data won't refresh until Monday's session. You can still use Replay Lab and Journal Analytics on prior sessions.",
+                tips=["Replay Lab → review yesterday's structure", "Journal Analytics → grade past signals"],
+            )
+        elif now_time < market_open_ct:
+            render_onboarding_banner(
+                "Pre-market — SPY data not yet flowing.",
+                f"Regular session opens at 8:30 CT. It's {real_now_ct.strftime('%H:%M %Z')} now. Morning Briefing is available; live structure populates after the open.",
+                tips=["Morning Briefing → today's plan", "Replay Lab → yesterday's outcome"],
+            )
+        elif now_time > market_close_ct:
+            render_onboarding_banner(
+                "Regular session closed — data settling.",
+                "Today's full session is available; live signals have stopped firing. Switch to Full Day Review for hindsight outcome attribution.",
+                tips=["Replay Lab → Full Day Review", "Journal Analytics → today's grade"],
+            )
+        else:
+            render_onboarding_banner(
+                "SPY market data is pending.",
+                "The yfinance feed returned no candles. This is usually transient — wait 30 seconds and retry, or check the data provider status.",
+                tips=["Click Refresh data in the sidebar", "Check the logs for fetch errors"],
+                tone="warn",
+            )
     if not df.empty:
         latest_price = latest_price_for_session(df, selected_session_day, now_ct)
         signal_day = get_live_signal_day(df, now_ct)
@@ -8552,12 +8687,23 @@ def main() -> None:
                 market_context = build_market_context(df, latest_price, closest, structure_projection_time)
 
     journal_path='data/signal_journal.json'
-    journal_entries = load_signal_journal(journal_path)
-    replay_learning_entries = build_replay_learning_entries(df, max_days=REPLAY_LEARNING_DAYS, slope_per_hour=slope)
-    learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
-    news_items = fetch_market_news(limit=MARKET_MOVING_NEWS_LIMIT)
-    economic_events = get_upcoming_economic_events(now_ct, days=0)
-    morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state, df)
+    with st.status("Building morning briefing…", expanded=False) as briefing_status:
+        try:
+            briefing_status.update(label="Loading journal…")
+            journal_entries = load_signal_journal(journal_path)
+            briefing_status.update(label="Computing replay-learning profile…")
+            replay_learning_entries = build_replay_learning_entries(df, max_days=REPLAY_LEARNING_DAYS, slope_per_hour=slope)
+            learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest)
+            briefing_status.update(label="Fetching market news + calendar…")
+            news_items = fetch_market_news(limit=MARKET_MOVING_NEWS_LIMIT)
+            economic_events = get_upcoming_economic_events(now_ct, days=0)
+            briefing_status.update(label="Assembling structure briefing…")
+            morning_bundle = build_morning_briefing_bundle(primary_lines, structure_projection_time, economic_events, news_items, learning_profile, latest_price, strikes, option_state, df)
+            briefing_status.update(label="Morning briefing ready", state="complete")
+        except Exception as exc:
+            briefing_status.update(label=f"Briefing build failed: {type(exc).__name__}", state="error")
+            logger.error("Morning briefing build failed", exc_info=True)
+            raise
     flow_tags_for_learning = premium_flow_tags(morning_bundle.options_intelligence)
     if flow_tags_for_learning:
         flow_learning_profile = build_structure_learning_profile(journal_entries + replay_learning_entries, active_signal, bias, closest, flow_tags_for_learning)
@@ -8597,6 +8743,57 @@ def main() -> None:
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
+
+    # === Command bar (always-visible live status strip) ====================
+    spy_change_pct = None
+    if not df.empty and "Close" in df.columns:
+        try:
+            closes = df["Close"].dropna()
+            if len(closes) >= 2:
+                ref = closes.iloc[-2]
+                cur = closes.iloc[-1]
+                if ref:
+                    spy_change_pct = float(((cur - ref) / ref) * 100.0)
+        except Exception as exc:
+            logger.debug("change-pct calc failed: %s", type(exc).__name__)
+
+    vix_now = None
+    try:
+        vix_now = fetch_vix_latest()
+    except Exception as exc:
+        logger.debug("vix fetch failed: %s", type(exc).__name__)
+
+    decision_label, decision_kind = None, None
+    if decision_state is not None:
+        decision_label = getattr(decision_state, "headline", None) or getattr(decision_state, "label", None) or getattr(decision_state, "decision", None)
+        if active_signal is not None:
+            decision_kind = getattr(active_signal, "signal_type", None)
+        if decision_label is None and bias is not None:
+            decision_label = getattr(bias, "label", None) or getattr(bias, "direction", None)
+
+    # Market state heuristic for the pulse dot
+    if df.empty:
+        market_state = "off"
+    elif is_live_session and time(8, 30) <= real_now_ct.time() <= time(15, 0) and real_now_ct.weekday() < 5:
+        market_state = "live"
+    else:
+        market_state = "warn" if not is_live_session else "off"
+
+    # Anchor for the skip-to-content link
+    st.markdown('<div id="main-content" tabindex="-1"></div>', unsafe_allow_html=True)
+    render_product_chrome(
+        version_label="Live",
+        session_clock=pd.Timestamp(now_ct).strftime("%a %b %d · %H:%M %Z"),
+    )
+    render_command_bar(
+        spy_price=latest_price,
+        spy_change_pct=spy_change_pct,
+        vix_price=vix_now,
+        decision_label=decision_label,
+        decision_kind=decision_kind,
+        market_state=market_state,
+        asof=real_now_ct.strftime("%H:%M:%S CT"),
+    )
 
     tab_names = ["Live", "SPY Foresight", "Daily Brief", "Market", "Chart", "Replay", "Options", "Journal"]
     if show_debug:
@@ -8684,7 +8881,12 @@ def main() -> None:
         render_section_title("Replay Lab", "Review entries without look-ahead")
         dates = get_available_replay_dates(df)
         if not dates:
-            render_data_notice("No replay dates found.")
+            render_tab_empty_state(
+                "🎬",
+                "No completed sessions to replay yet.",
+                "Replay needs at least one finished trading session in the loaded data window. Once today's session closes (or Monday's session begins), historical days will appear here.",
+                actions=["Wait for session close", "Try clicking Refresh data", "Check the data provider status"],
+            )
         else:
             rca,rcb,rcc=st.columns([1,1,1])
             rdate = rca.selectbox("Replay date", dates, index=max(0,len(dates)-1), key="replay_date")
@@ -8720,12 +8922,20 @@ def main() -> None:
     with tabs["Options"]:
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
         if not session_has_candles:
-            render_data_notice("Preview mode: option setup activates after the selected session prints candles.", tone="warn")
-            render_empty_state(
-                "Options cockpit pending",
-                "Contracts, marks, bid/ask, spread, and Greeks appear after the selected session has candles and a confirmed or pending structure rejection.",
-                "Use SPY Foresight and the structure map for pre-session planning.",
-            )
+            if provider_status.get("missing_secrets"):
+                render_tab_empty_state(
+                    "🔐",
+                    "Tastytrade credentials not configured.",
+                    f"Set the {', '.join(provider_status.get('missing_secrets', []))} environment variables (or .streamlit/secrets.toml) to enable live options quotes. The app will continue to function for analysis without them.",
+                    actions=["See README → Configuration", "Set env vars", "Or use yfinance fallback"],
+                )
+            else:
+                render_tab_empty_state(
+                    "📊",
+                    "Options cockpit pending — session candles not yet printed.",
+                    "Contracts, marks, bid/ask, spread, and Greeks appear after the selected session has candles and a confirmed or pending structure rejection.",
+                    actions=["Switch to SPY Foresight", "Use the Chart tab", "Check pre-market structure"],
+                )
         elif strikes:
             state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
@@ -8796,7 +9006,9 @@ def main() -> None:
         if cja.button("Save live signal", disabled=save_live_disabled):
             user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
             e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
-            entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
+            entries, _ = upsert_journal_entry(entries, e)
+            save_signal_journal(entries,journal_path)
+            st.toast(f"Saved live signal · {len(entries)} entries in journal", icon="📝")
         if save_live_disabled:
             st.caption("Live save activates only after the current session has an active signal.")
         elif not is_live_session:
@@ -8811,7 +9023,10 @@ def main() -> None:
                     f"Replay saved: {replay_save_status['inserted']} added, "
                     f"{replay_save_status['updated']} updated, {replay_save_status['skipped']} unchanged."
                 )
-        if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
+                st.toast(f"📚 Replay saved · {replay_save_status['inserted']} new", icon="✅")
+        if cjc.button("Reload journal"):
+            entries=load_signal_journal(journal_path)
+            st.toast(f"Reloaded · {len(entries)} entries", icon="🔁")
         cjd.download_button("Export journal JSON", data=signal_journal_to_json(entries), file_name="signal_journal.json")
         cje.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
         a=compute_journal_analytics(entries)
@@ -8831,9 +9046,14 @@ def main() -> None:
                 journal_view["target"] = journal_view["target_line_name"].map(display_line_name)
                 journal_view = journal_view.drop(columns=["target_line_name"])
         if journal_view.empty:
-            render_data_notice("No journal history yet.")
+            render_tab_empty_state(
+                "📔",
+                "Journal is empty.",
+                "Confirmed signals you save here build a personal performance record — win rate, R:R distribution, expectancy. Toggle Auto-journal in the sidebar, or save manually from this tab when a live signal is active.",
+                actions=["Toggle Auto-journal in sidebar", "Save a replay signal", "Try Save live signal"],
+            )
         else:
-            st.dataframe(journal_view, use_container_width=True)
+            st.dataframe(journal_view, use_container_width=True, hide_index=True)
         if show_debug:
             st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         if a.total_entries > 0:
@@ -8916,6 +9136,8 @@ def main() -> None:
             j_entries = load_signal_journal("data/signal_journal.json")
             render_debug_json("Journal path", {"path":"data/signal_journal.json","count":len(j_entries),"auto_journal":auto_journal_on})
             render_debug_json("Last 3 journal entries", [journal_entry_to_dict(x) for x in j_entries[-3:]])
+
+    render_trust_footer()
 
 
 if __name__ == "__main__":

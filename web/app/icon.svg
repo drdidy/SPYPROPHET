@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bright" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#28d2c2"/>
+      <stop offset="0.5" stop-color="#67c2ff"/>
+      <stop offset="1" stop-color="#a8e6ff"/>
+    </linearGradient>
+    <linearGradient id="shadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a6f8c"/>
+      <stop offset="0.6" stop-color="#1f3a4d"/>
+      <stop offset="1" stop-color="#0e1c26"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a8e6ff" stop-opacity="0.85"/>
+      <stop offset="0.4" stop-color="#67c2ff" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#67c2ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="10" r="14" fill="url(#halo)"/>
+  <polygon points="32,8 8,52 32,52" fill="url(#bright)"/>
+  <polygon points="32,8 56,52 32,52" fill="url(#shadow)"/>
+  <line x1="32" y1="8" x2="32" y2="52" stroke="url(#edge)" stroke-width="1.4"/>
+  <line x1="8" y1="52" x2="56" y2="52" stroke="#67c2ff" stroke-opacity="0.4" stroke-width="1.2"/>
+  <circle cx="32" cy="8" r="5" fill="#ffffff" stroke="#67c2ff" stroke-width="2"/>
+</svg>

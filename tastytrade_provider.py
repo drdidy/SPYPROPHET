@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timedelta
 import math
 import requests
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 TASTYTRADE_API_VERSION = "20251101"
+ACCESS_TOKEN_EXPIRY_SAFETY_SECONDS = 60
+
+logger = logging.getLogger("spyprophet.tastytrade")
 
 
 def _central_now():
@@ -27,14 +31,10 @@ class TastytradeProviderStatus:
     environment: str = "production"
     last_error: str | None = None
     last_update: object | None = None
-    missing_secrets: list[str] = None
+    missing_secrets: list[str] = field(default_factory=list)
     auth_ok: bool = False
     chain_ok: bool = False
     quotes_ok: bool = False
-
-    def __post_init__(self):
-        if self.missing_secrets is None:
-            self.missing_secrets = []
 
 
 class TastytradeProvider:
@@ -46,6 +46,8 @@ class TastytradeProvider:
         self.refresh_token = refresh_token
         self.environment = environment
         self.access_token = None
+        self.access_token_expires_at: datetime | None = None
+        self.refresh_token_rotated = False
         self.status = TastytradeProviderStatus(environment=environment)
         self.base = "https://api.tastytrade.com" if environment == "production" else "https://api.cert.tastytrade.com"
         self.live_quote_timeout_seconds = 4.0
@@ -53,25 +55,69 @@ class TastytradeProvider:
         if environment == "production":
             self.api_headers["Accept-Version"] = TASTYTRADE_API_VERSION
 
+    def _token_request_headers(self) -> dict:
+        # Token endpoint must not echo any Authorization header from prior calls.
+        return {"Accept": "application/json"}
+
+    def _token_is_fresh(self) -> bool:
+        if not self.access_token:
+            return False
+        # No expiry known (legacy path or token set directly): trust it.
+        # Real OAuth flows always populate expires_at; this branch only
+        # matters for tests / direct assignment.
+        if self.access_token_expires_at is None:
+            return True
+        safety = timedelta(seconds=ACCESS_TOKEN_EXPIRY_SAFETY_SECONDS)
+        return datetime.utcnow() + safety < self.access_token_expires_at
+
     def authenticate(self):
         try:
-            resp = requests.post(f"{self.base}/oauth/token", data={"grant_type":"refresh_token","client_id":self.client_id,"client_secret":self.client_secret,"refresh_token":self.refresh_token}, headers=self.api_headers, timeout=10)
+            resp = requests.post(
+                f"{self.base}/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": self.refresh_token,
+                },
+                headers=self._token_request_headers(),
+                timeout=10,
+            )
             if resp.status_code >= 400:
                 self.status.last_error = f"Auth failed: {resp.status_code}"
                 self.status.auth_ok = False
+                self.access_token = None
+                self.access_token_expires_at = None
                 return False
             data = resp.json()
             self.access_token = data.get("access_token")
+            try:
+                expires_in = int(data.get("expires_in") or 0)
+            except (TypeError, ValueError):
+                expires_in = 0
+            if expires_in > 0:
+                self.access_token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+            else:
+                self.access_token_expires_at = None
+            rotated = data.get("refresh_token")
+            if rotated and rotated != self.refresh_token:
+                self.refresh_token = rotated
+                self.refresh_token_rotated = True
+                logger.warning(
+                    "Tastytrade refresh token rotated; update the secret store with the new value to avoid stale tokens."
+                )
             self.status.auth_ok = bool(self.access_token)
             self.status.connected = self.status.auth_ok
             return self.status.auth_ok
         except Exception as e:
             self.status.last_error = f"Auth exception: {type(e).__name__}"
             self.status.auth_ok = False
+            self.access_token = None
+            self.access_token_expires_at = None
             return False
 
     def get_access_token(self):
-        if not self.access_token:
+        if not self._token_is_fresh():
             self.authenticate()
         return self.access_token
 
@@ -281,8 +327,21 @@ class TastytradeProvider:
         strike = int(float(contract.get("strike-price", 0)))
         bid = self._safe_float(contract.get("bid"))
         ask = self._safe_float(contract.get("ask"))
-        mark = self._safe_float(contract.get("mark")) if contract.get("mark") is not None else ((bid + ask) / 2 if not math.isnan(bid) and not math.isnan(ask) else math.nan)
+        mark_raw = contract.get("mark")
+        mark = self._safe_float(mark_raw) if mark_raw is not None else (
+            (bid + ask) / 2 if not math.isnan(bid) and not math.isnan(ask) else math.nan
+        )
         spread = ask - bid if not math.isnan(ask) and not math.isnan(bid) else math.nan
+        # An illiquid 0-DTE contract often returns 0/0 quotes. Treat that as
+        # missing market data rather than a real $0.00 mark — otherwise the
+        # downstream projection silently displays "guaranteed pennies" P/L.
+        warning = None
+        bid_zero = (not math.isnan(bid)) and bid <= 0.0
+        ask_zero = (not math.isnan(ask)) and ask <= 0.0
+        if bid_zero and ask_zero:
+            mark = math.nan
+            spread = math.nan
+            warning = "No bid/ask available — strike may be illiquid."
         now = _central_now()
         return {
             "symbol": contract.get("symbol", f"SPY-{strike}-{option_type[0]}"),
@@ -301,7 +360,7 @@ class TastytradeProvider:
             "iv": self._safe_float(contract.get("iv")),
             "provider": provider,
             "timestamp": now,
-            "warning": None,
+            "warning": warning,
         }
 
     def get_selected_quotes(self, underlying_price, expiration_date, call_strike, put_strike):
