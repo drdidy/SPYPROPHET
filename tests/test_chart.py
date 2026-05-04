@@ -34,8 +34,8 @@ def test_basic_chart_and_tradable_values():
     fig=build_prophet_chart(df, lines, [], Pivot("H",101,_ts("2026-04-28T11:00:00"),"x","green",False), Pivot("L",99,_ts("2026-04-28T10:00:00"),"x","red",False), [], [], None, 101.2, _ts("2026-04-28T12:00:00"))
     names=[t.name for t in fig.data]
     assert any(n=="SPY" for n in names)
-    assert all(x in names for x in ["Upper Put Trigger","Upper Call Trigger","Lower Put Trigger","Lower Call Trigger"])
-    ua_trace = [t for t in fig.data if t.name=="Upper Put Trigger"][0]
+    assert all(x in names for x in ["Upper Ascending Trigger","Upper Descending Trigger","Lower Ascending Trigger","Lower Descending Trigger"])
+    ua_trace = [t for t in fig.data if t.name=="Upper Ascending Trigger"][0]
     assert all(abs(y-100.0)<1e-9 for y in ua_trace.y)  # tradable rounds 100.004 -> 100.00
     assert fig.layout.margin.b >= 135
     assert fig.layout.legend.y < 0
@@ -61,7 +61,7 @@ def test_structure_path_chart_novice_view():
     names=[t.name for t in fig.data]
     assert "SPY path" in names
     assert "Upper trade zone" in names
-    assert "Upper Put Trigger" in names
+    assert "Upper Ascending Trigger" in names
     assert fig.layout.height == 700
     assert fig.layout.margin.b >= 120
 
@@ -72,7 +72,7 @@ def test_animated_structure_map_svg():
     assert "<svg" in html
     assert "Animated structure map" in html
     assert "repeat(auto-fit,minmax(210px,1fr))" in html
-    assert "Upper Put Trigger" in html
+    assert "Upper Ascending Trigger" in html
     assert "SPY 101.20" in html
     assert "Candlestick" not in html
 

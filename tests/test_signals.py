@@ -53,6 +53,28 @@ def test_put_rejection_confirmed_pending_invalids() -> None:
     assert not is_put_rejection(bad.iloc[0], line, bad.index[0])
 
 
+def test_trade_side_comes_from_touch_side_not_line_direction() -> None:
+    descending = DynamicLine("UD", 100, _ts("2026-04-28T08:00:00"), 0, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
+    below_touch = _candles([
+        ("2026-04-28T10:00:00", 99.0, 100.2, 98.8, 99.7),
+        ("2026-04-28T11:00:00", 99.6, 99.8, 99.1, 99.2),
+    ])
+    put_signals = detect_rejection_signals(below_touch, [descending], [])
+
+    assert put_signals[0].signal_type == "PUT"
+    assert put_signals[0].line_name == "UD"
+
+    ascending = DynamicLine("UA", 100, _ts("2026-04-28T08:00:00"), 0, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+    above_touch = _candles([
+        ("2026-04-28T10:00:00", 101.0, 101.3, 99.9, 100.2),
+        ("2026-04-28T11:00:00", 100.4, 101.0, 100.1, 100.8),
+    ])
+    call_signals = detect_rejection_signals(above_touch, [ascending], [])
+
+    assert call_signals[0].signal_type == "CALL"
+    assert call_signals[0].line_name == "UA"
+
+
 def test_secondary_no_entries_targets_rr_and_order() -> None:
     ud = DynamicLine("UD",100,_ts("2026-04-28T08:00:00"),0,"descending","CALL_ZONE","PRIMARY_HIGH",True,"")
     sd = DynamicLine("S_DESC_001",102,_ts("2026-04-28T08:00:00"),0,"descending","TARGET_ONLY","SECONDARY",False,"")

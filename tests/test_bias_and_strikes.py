@@ -45,9 +45,9 @@ def test_get_line_by_name() -> None:
 def test_bullish_preopen() -> None:
     b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T08:30:00"))
     assert b.bias == "BULLISH"
-    assert b.watched_call_lines == ["UD"]
+    assert set(b.watched_call_lines) == {"UA", "UD", "LA", "LD"}
     assert b.watched_put_lines == []
-    assert b.primary_line == "UD"
+    assert b.primary_line in {"UA", "UD"}
     s = select_0dte_strikes(101.0, _ts("2026-04-29T08:30:00"))
     assert format_watch_contract(s, bias_state=b) == "WATCH CALL 103"
 
@@ -55,24 +55,24 @@ def test_bullish_preopen() -> None:
 def test_neutral_preopen() -> None:
     b = determine_preopen_bias(_lines(), 100.0, _ts("2026-04-29T08:30:00"))
     assert b.bias == "NEUTRAL"
-    assert "UD" in b.watched_call_lines
-    assert "UA" in b.watched_put_lines
-    assert b.final_take_profit_line in {"UA", "UD"}
+    assert set(b.watched_call_lines) == {"LA", "LD"}
+    assert b.watched_put_lines == []
+    assert b.final_take_profit_line in {"LA", "LD"}
     s = select_0dte_strikes(100.0, _ts("2026-04-29T08:30:00"))
-    assert format_watch_contract(s, bias_state=b) == "CALL 102 / PUT 98"
+    assert format_watch_contract(s, bias_state=b) == "WATCH CALL 102"
 
 
 def test_bearish_preopen() -> None:
     b = determine_preopen_bias(_lines(), 99.0, _ts("2026-04-29T08:30:00"))
     assert b.bias == "BEARISH"
-    assert "LD" in b.watched_call_lines
-    assert "LA" in b.watched_put_lines
+    assert "LA" in b.watched_call_lines
+    assert "UD" in b.watched_put_lines
 
 
 def test_regular_session_mode() -> None:
     b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T09:00:00"))
     assert b.bias == "REGULAR_SESSION"
-    assert "no longer active" in b.explanation.lower()
+    assert "line-side confirmation" in b.explanation.lower()
 
 
 def test_missing_ua_or_ud() -> None:

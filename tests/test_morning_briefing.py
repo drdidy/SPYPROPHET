@@ -74,10 +74,10 @@ def test_darkpool_entry_read_supports_near_trigger() -> None:
         ]
     }
 
-    read = darkpool_entry_read(darkpool, entry_price=722.42, watch_side="PUT", entry_label="Upper Put Trigger")
+    read = darkpool_entry_read(darkpool, entry_price=722.42, watch_side="PUT", entry_label="Upper Ascending Trigger")
 
     assert read["state"] == "aligned"
-    assert "Upper Put Trigger" in read["copy"]
+    assert "Upper Ascending Trigger" in read["copy"]
 
 
 def test_external_context_verdicts_support_and_refute_entry() -> None:
@@ -113,9 +113,11 @@ def test_external_context_verdicts_support_and_refute_entry() -> None:
         bundle.news_items,
         bundle.learning_profile,
         bundle.source_statuses,
+        bundle.session_date,
+        bundle.latest_price,
     )
 
-    verdicts = external_context_verdicts(bundle, "CALL", 587.42, "Upper Call Trigger", 587.42)
+    verdicts = external_context_verdicts(bundle, "CALL", 587.42, "Upper Descending Trigger", 587.42)
     by_source = {row["source"]: row for row in verdicts}
 
     assert by_source["Option Flow"]["state"] == "aligned"
@@ -125,7 +127,7 @@ def test_external_context_verdicts_support_and_refute_entry() -> None:
 
 
 def test_external_verdict_opposing_title_names_active_setup_side() -> None:
-    verdicts = external_context_verdicts(_bundle(), "PUT", 587.42, "Upper Put Trigger", 587.42)
+    verdicts = external_context_verdicts(_bundle(), "PUT", 587.42, "Upper Ascending Trigger", 587.42)
     by_source = {row["source"]: row for row in verdicts}
 
     assert by_source["Technicals"]["state"] == "opposes"
@@ -204,10 +206,10 @@ def _bundle() -> MorningBriefingBundle:
         570.0,
         1.1,
     )
-    learning = StructureLearningProfile(20, 12, "CALL watch", "Developing sample", 0.58, 0.08, 0.25, 1.2, 2.3, -0.8, None, "Historical tendency only.")
+    learning = StructureLearningProfile(20, 12, "Call-side watch", "Developing sample", 0.58, 0.08, 0.25, 1.2, 2.3, -0.8, None, "Historical tendency only.")
     return MorningBriefingBundle(
         now,
-        [{"code": "UD", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 587.42, "anchor_price": 589.0, "anchor_time": "2026-04-30 15:00 CDT"}],
+        [{"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 587.42, "anchor_price": 589.0, "anchor_time": "2026-04-30 15:00 CDT"}],
         [EconomicEvent(now.date(), "8:30 AM ET / 7:30 AM CT", "CPI", "High", "Local calendar", "Inflation release")],
         [MarketMove("ES futures", "ES=F", 5900.0, 20.0, 0.34, now, "Yahoo Finance")],
         [],
@@ -219,6 +221,8 @@ def _bundle() -> MorningBriefingBundle:
         [],
         learning,
         [options.status, gamma.status, technical.status],
+        now.date(),
+        590.0,
     )
 
 
@@ -235,7 +239,7 @@ def test_prompt_carries_truthful_source_statuses() -> None:
     assert "Tradytics" in prompt
     assert "GEX_API_URL is not configured" in prompt
     assert "CPI" in prompt
-    assert "Upper Call Trigger" in prompt
+    assert "Upper Descending Trigger" in prompt
 
 
 def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
@@ -268,10 +272,10 @@ def test_daily_brief_renderer_exports_visual_files() -> None:
 def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
     bundle = _bundle()
     lines = [
-        {"code": "UP", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
-        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "LC", "name": "Lower Call Trigger", "role": "Call Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UA", "name": "Upper Ascending Trigger", "role": "Ascending Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
+        {"code": "LA", "name": "Lower Ascending Trigger", "role": "Ascending Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "LD", "name": "Lower Descending Trigger", "role": "Descending Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
     ]
     bundle = MorningBriefingBundle(
         bundle.generated_at,
@@ -287,6 +291,8 @@ def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
         bundle.news_items,
         bundle.learning_profile,
         bundle.source_statuses,
+        bundle.session_date,
+        722.0,
     )
     result = MorningBriefingResult(
         bundle.generated_at,
@@ -296,12 +302,12 @@ def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
             "stance": "WATCH_PUT",
             "headline": "Wait for a put rejection.",
             "primary_trade": {
-                "trigger_line": "Upper Put Trigger",
+                "trigger_line": "Upper Ascending Trigger",
                 "trigger_price": "727.87",
                 "contract": "PUT 725",
                 "confidence": 66,
             },
-            "why": ["Opening pivot decides whether price can reach the upper put trigger."],
+            "why": ["Opening pivot decides whether price can reach the upper ascending trigger."],
             "risk_flags": [],
         }),
         66,
@@ -322,16 +328,16 @@ def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
     assert "722.47 -&gt; 727.87" in svg
     key_values = [value for _, value in context["key_levels"]]
     assert key_values == list(dict.fromkeys(key_values))
-    assert ("Opening Pivot / Lower Put Trigger", "722.47") in context["key_levels"]
+    assert ("Opening Pivot / Lower Ascending Trigger", "722.47") in context["key_levels"]
 
 
 def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
     bundle = _bundle()
     lines = [
-        {"code": "UP", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
-        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "LC", "name": "Lower Call Trigger", "role": "Call Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UA", "name": "Upper Ascending Trigger", "role": "Ascending Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
+        {"code": "LA", "name": "Lower Ascending Trigger", "role": "Ascending Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "LD", "name": "Lower Descending Trigger", "role": "Descending Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
     ]
     options = OptionsIntelligence(
         SourceStatus("Options intelligence", "connected", "Premium context active."),
@@ -362,22 +368,24 @@ def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
         bundle.news_items,
         bundle.learning_profile,
         bundle.source_statuses,
+        bundle.session_date,
+        722.0,
     )
 
     scenarios = structure_external_scenarios(bundle)
     best = best_structure_scenario(bundle, "PUT")
 
-    assert best["name"] == "Lower Put Trigger"
+    assert best["name"] == "Lower Ascending Trigger"
     assert best["state"] == "aligned"
     assert any("Dealer GEX cluster" in item for item in best["support"])
-    assert scenarios[0]["name"] == "Lower Put Trigger"
+    assert scenarios[0]["name"] == "Lower Ascending Trigger"
 
 
 def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
     bundle = _bundle()
     lines = [
-        {"code": "LP", "name": "Lower Put Trigger", "role": "Put Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "UC", "name": "Upper Call Trigger", "role": "Call Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "LA", "name": "Lower Ascending Trigger", "role": "Ascending Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
     ]
     bundle = MorningBriefingBundle(
         bundle.generated_at,
@@ -393,6 +401,8 @@ def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
         bundle.news_items,
         bundle.learning_profile,
         bundle.source_statuses,
+        bundle.session_date,
+        722.0,
     )
     result = MorningBriefingResult(
         bundle.generated_at,
@@ -400,9 +410,9 @@ def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
         "gpt-5.2",
         json.dumps({
             "stance": "WATCH_PUT",
-            "headline": "Watch the lower put trigger.",
+            "headline": "Watch the lower ascending trigger.",
             "primary_trade": {
-                "trigger_line": "Lower Put Trigger",
+                "trigger_line": "Lower Ascending Trigger",
                 "trigger_price": "999.99",
                 "contract": "PUT 998",
                 "confidence": 60,
@@ -417,7 +427,7 @@ def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
     context = build_daily_brief_context(bundle, result)
 
     assert context["entry_value"] == "722.47"
-    assert context["entry_label"] == "Lower Put Trigger"
+    assert context["entry_label"] == "Lower Ascending Trigger"
     assert context["contract_value"] != "PUT 998"
     assert "999.99" not in render_daily_brief_svg(bundle, result)
 
@@ -451,7 +461,7 @@ def test_morning_decision_parser_reads_structured_ai_output() -> None:
         pd.Timestamp("2026-05-01 06:45", tz="America/Chicago"),
         "OpenAI",
         "gpt-5.2",
-        '{"stance":"WATCH_PUT","headline":"Wait for Upper Put Trigger rejection.","primary_trade":{"trigger_line":"Upper Put Trigger","trigger_price":"722.42","contract":"PUT 718","confidence":61},"why":["ISM at 9:00 AM CT"],"avoid":[{"label":"Chase","reason":"Between lines"}],"risk_flags":["0DTE spread risk"],"source_notes":[],"novice_summary":"Wait for confirmation."}',
+        '{"stance":"WATCH_PUT","headline":"Wait for Upper Ascending Trigger rejection.","primary_trade":{"trigger_line":"Upper Ascending Trigger","trigger_price":"722.42","contract":"PUT 718","confidence":61},"why":["ISM at 9:00 AM CT"],"avoid":[{"label":"Chase","reason":"Between lines"}],"risk_flags":["same-day spread risk"],"source_notes":[],"novice_summary":"Wait for confirmation."}',
         61,
         [],
         [],
@@ -498,7 +508,7 @@ def test_fallback_decision_hides_contract_until_confirmation() -> None:
     bundle = _bundle()
     bundle = MorningBriefingBundle(
         bundle.generated_at,
-        [{"code": "UA", "name": "Upper Put Trigger", "role": "Put Trigger", "value": 722.42, "anchor_price": 719.79, "anchor_time": "2026-04-30 15:00 CDT"}],
+        [{"code": "UA", "name": "Upper Ascending Trigger", "role": "Ascending Trigger", "value": 722.42, "anchor_price": 719.79, "anchor_time": "2026-04-30 15:00 CDT"}],
         bundle.economic_events,
         bundle.global_context,
         bundle.macro_context,
@@ -519,6 +529,8 @@ def test_fallback_decision_hides_contract_until_confirmation() -> None:
         bundle.news_items,
         bundle.learning_profile,
         bundle.source_statuses,
+        bundle.session_date,
+        721.0,
     )
 
     decision = fallback_morning_decision(bundle)

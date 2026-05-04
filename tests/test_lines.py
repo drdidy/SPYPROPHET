@@ -171,11 +171,11 @@ def test_structure_tables_explain_source_and_projection() -> None:
     projection = build_structure_projection_table(build_primary_lines(hp, lp), _ts("2026-04-29T09:00:00"), 112.0, idx[0].date(), idx[0].date())
 
     assert "UA" not in set(projection["Trigger"])
-    assert "Upper Put Trigger" in set(projection["Trigger"])
+    assert "Upper Ascending Trigger" in set(projection["Trigger"])
     assert "Formula" not in projection.columns
     assert "Slope / Hour" not in projection.columns
     assert "Projection Method" in projection.columns
-    assert projection[projection["Trigger"] == "Upper Call Trigger"].iloc[0]["Based On"] == "High Pivot"
+    assert projection[projection["Trigger"] == "Upper Descending Trigger"].iloc[0]["Based On"] == "High Pivot"
 
 
 def test_primary_anchor_summary() -> None:

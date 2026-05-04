@@ -238,6 +238,7 @@ class MorningBriefingBundle:
     learning_profile: "StructureLearningProfile"
     source_statuses: list[SourceStatus]
     session_date: object | None = None
+    latest_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1728,6 +1729,8 @@ def structure_lines_for_briefing(primary_lines: list[DynamicLine], projection_ti
             "code": name,
             "name": display_line_name(name),
             "role": zone_side_label(line.zone_type),
+            "direction": line.direction,
+            "rule": "Buy if price is above, touches from above, and closes above. Sell if price is below, touches from below, and closes below.",
             "value": line.tradable_value_at(projection_time),
             "anchor_price": line.anchor_price,
             "anchor_time": fmt_time(line.anchor_time),
@@ -1786,6 +1789,7 @@ def build_morning_briefing_bundle(primary_lines, projection_time, economic_event
         learning_profile,
         source_statuses,
         pd.Timestamp(projection_time).date(),
+        latest_price,
     )
 
 
@@ -1947,6 +1951,7 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
         "Every outside input must either support, caution, warn, or be marked neutral for the specific SPY Prophet entry being considered; do not list decorative facts. "
         "Use APP_DECISION_CONTEXT_JSON.structure_scenarios as the authoritative scenario matrix: compare GEX, max pain, dark-pool levels, OI walls, and option-flow strikes against every SPY Prophet trigger before selecting a primary setup. "
         "The primary_trade trigger_line and trigger_price must match one of the verified SPY Prophet lines exactly; never invent a trigger price. "
+        "Do not map PUT setups to ascending lines or CALL setups to descending lines by name. Direction comes from price behavior: above a line, touch from above, and close above is a CALL/buy setup; below a line, touch from below, and close below is a PUT/sell setup. A descending line can absolutely be the put/sell trigger when price is below it. "
         "Tie every recommendation back to SPY Prophet lines and external context. "
         "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, and cite only pages actually used. "
         "Return ONLY valid JSON. No Markdown, no bullets outside JSON, no long narrative. "
@@ -2222,7 +2227,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
     flow = (bundle.options_intelligence.unusual_whales or {}).get("flow_alerts", {}) if isinstance(bundle.options_intelligence.unusual_whales, dict) else {}
     whales = bundle.options_intelligence.unusual_whales or {}
     darkpool = whales.get("darkpool", {}) if isinstance(whales, dict) else {}
-    watch_side = structure_line_side(first_line) or bundle_primary_entry_context(bundle)[0]
+    watch_side = structure_line_side(first_line, getattr(bundle, "latest_price", None)) or bundle_primary_entry_context(bundle)[0]
     entry_price = first_line.get("value")
     entry_label = first_line.get("name")
     darkpool_read = darkpool_entry_read(darkpool, entry_price, watch_side, entry_label) if isinstance(darkpool, dict) else {}
@@ -2259,7 +2264,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             "trigger_price": fmt_price(first_line.get("value")),
             "contract": "No contract until confirmation",
             "entry_timing": "Next candle open after confirmation",
-            "entry_rule": "Price must reject the trigger line and the next candle must confirm direction.",
+            "entry_rule": "Above the line: touch from above and close above. Below the line: touch from below and close below.",
             "stop": "Invalid if SPY closes back through the trigger after entry.",
             "target": "Nearest valid SPY Prophet target line",
             "confidence": confidence,
@@ -2750,10 +2755,10 @@ def calculate_slope_from_observed(anchor_price: float, observed_value: float, el
 
 def build_primary_lines(high_pivot: Pivot, low_pivot: Pivot, slope_per_hour: float = DEFAULT_SLOPE_PER_HOUR) -> list[DynamicLine]:
     return [
-        DynamicLine("UA", high_pivot.price, high_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "Upper ascending from high pivot"),
-        DynamicLine("UD", high_pivot.price, high_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "Upper descending from high pivot"),
-        DynamicLine("LA", low_pivot.price, low_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_LOW", True, "Lower ascending from low pivot"),
-        DynamicLine("LD", low_pivot.price, low_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_LOW", True, "Lower descending from low pivot"),
+        DynamicLine("UA", high_pivot.price, high_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "Upper ascending structure from high pivot"),
+        DynamicLine("UD", high_pivot.price, high_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "Upper descending structure from high pivot"),
+        DynamicLine("LA", low_pivot.price, low_pivot.timestamp, slope_per_hour, "ascending", "PUT_ZONE", "PRIMARY_LOW", True, "Lower ascending structure from low pivot"),
+        DynamicLine("LD", low_pivot.price, low_pivot.timestamp, slope_per_hour, "descending", "CALL_ZONE", "PRIMARY_LOW", True, "Lower descending structure from low pivot"),
     ]
 
 
@@ -2825,9 +2830,9 @@ def build_pivot_source_table(rth_df: pd.DataFrame) -> pd.DataFrame:
 
 def zone_side_label(zone_type: str | None) -> str:
     if zone_type == "CALL_ZONE":
-        return "Call Trigger"
+        return "Descending Trigger"
     if zone_type == "PUT_ZONE":
-        return "Put Trigger"
+        return "Ascending Trigger"
     return "Target"
 
 
@@ -2948,21 +2953,31 @@ def determine_preopen_bias(lines: list[DynamicLine], current_price: float, curre
     preopen = now.time() < time(9, 0)
     top, bot = max(ua_v, ud_v), min(ua_v, ud_v)
 
+    line_values = [(line.name, line.tradable_value_at(now)) for line in [ua, ud, la, ld] if line is not None]
+    watched_call = [name for name, value in line_values if not pd.isna(value) and current_price > value]
+    watched_put = [name for name, value in line_values if not pd.isna(value) and current_price < value]
+    nearest = min(
+        [(abs(current_price - value), name, value) for name, value in line_values if not pd.isna(value)],
+        default=(float("nan"), None, float("nan")),
+        key=lambda row: row[0],
+    )
+    primary = nearest[1]
+    target_candidates = [(abs(value - current_price), name, value) for name, value in line_values if name != primary and not pd.isna(value)]
+    if current_price > nearest[2]:
+        directional_targets = [row for row in target_candidates if row[2] > current_price]
+    else:
+        directional_targets = [row for row in target_candidates if row[2] < current_price]
+    tp = min(directional_targets or target_candidates, default=(float("nan"), None, float("nan")), key=lambda row: row[0])[1]
+
     if current_price > top:
         bias = "BULLISH" if preopen else "REGULAR_SESSION"
-        watched_call, watched_put = ["UD"], []
-        primary, tp = "UD", None
-        expl = "Price is above the upper structure; primary CALL watch is the Upper Call Trigger." if preopen else "Regular session posture: above upper structure; pre-open mode no longer active."
+        expl = "Price is above upper structure. Buy setups require touch from above and close above the active line." if preopen else "Regular session posture: above upper structure; line-side confirmation remains active."
     elif bot <= current_price <= top:
         bias = "NEUTRAL" if preopen else "REGULAR_SESSION"
-        watched_call, watched_put = ["UD"], ["UA"]
-        primary, tp = "UD", "UA"
-        expl = "Price is inside the upper channel; both call and put triggers are active." if preopen else "Regular session posture: price remains in upper channel; pre-open mode no longer active."
+        expl = "Price is inside the upper channel; buy or sell depends on which side of the touched line closes." if preopen else "Regular session posture: price remains in upper channel; line-side confirmation remains active."
     else:
         bias = "BEARISH" if preopen else "REGULAR_SESSION"
-        watched_call, watched_put = ["LD"], ["LA"]
-        primary, tp = "LD", "LA"
-        expl = "Price is below the upper channel; lower call and put triggers are more important." if preopen else "Regular session posture: below upper channel, monitoring lower structure; pre-open mode no longer active."
+        expl = "Price is below upper structure. Sell setups require touch from below and close below the active line." if preopen else "Regular session posture: below upper channel; line-side confirmation remains active."
 
     score = calculate_bias_strength(current_price, ua_v, ud_v, bias)
     return BiasState(bias, current_price, now, watched_call, watched_put, primary, tp, score, expl, ua_v, ud_v, la_v, ld_v)
@@ -3153,7 +3168,14 @@ def alignment_title(state: str, label: str, direction: str | None = None, watch_
     return label
 
 
-def structure_line_side(line: dict | None) -> str | None:
+def structure_line_side(line: dict | None, reference_price: float | None = None) -> str | None:
+    price = _finite_float(reference_price)
+    value = _finite_float((line or {}).get("value") if isinstance(line, dict) else None)
+    if not pd.isna(price) and not pd.isna(value):
+        if price > value:
+            return "CALL"
+        if price < value:
+            return "PUT"
     text = f"{(line or {}).get('role') or ''} {(line or {}).get('name') or ''}".upper()
     if "PUT" in text:
         return "PUT"
@@ -3168,7 +3190,7 @@ def structure_lines_with_values(bundle: MorningBriefingBundle) -> list[dict]:
         value = _finite_float(line.get("value"))
         if pd.isna(value):
             continue
-        rows.append({**line, "value": value, "_value": value, "_side": structure_line_side(line)})
+        rows.append({**line, "value": value, "_value": value, "_side": structure_line_side(line, getattr(bundle, "latest_price", None))})
     return sorted(rows, key=lambda row: row["_value"])
 
 
@@ -3294,9 +3316,10 @@ def _scenario_global_flow_points(options: OptionsIntelligence | None, side: str 
 
 def structure_external_scenarios(bundle: MorningBriefingBundle) -> list[dict]:
     levels = external_level_rows(bundle.options_intelligence)
+    reference_price = getattr(bundle, "latest_price", None)
     scenarios: list[dict] = []
     for line in structure_lines_with_values(bundle):
-        side = structure_line_side(line)
+        side = structure_line_side(line, reference_price)
         score, support, caution = _scenario_global_flow_points(bundle.options_intelligence, side)
         hits = scenario_level_hits(line, levels)
         for hit in hits:
@@ -3361,7 +3384,7 @@ def _decision_line_context(bundle: MorningBriefingBundle, decision: dict | None 
     trade = (decision or {}).get("primary_trade") if isinstance((decision or {}).get("primary_trade"), dict) else {}
     line = _brief_line_by_name(bundle, trade.get("trigger_line")) if trade else None
     if line:
-        side = structure_line_side(line)
+        side = structure_line_side(line, getattr(bundle, "latest_price", None))
         best = best_structure_scenario(bundle, side)
         scenarios = structure_external_scenarios(bundle)
         selected = next((row for row in scenarios if _brief_same_line(row.get("line"), line)), None)
@@ -3370,7 +3393,7 @@ def _decision_line_context(bundle: MorningBriefingBundle, decision: dict | None 
             selected_score = _finite_float((selected or {}).get("score"), 0.0)
             if best.get("state") == "aligned" and best_score >= selected_score + 0.75:
                 line = best.get("line") or line
-                side = structure_line_side(line)
+                side = structure_line_side(line, getattr(bundle, "latest_price", None))
         return side, _finite_float(line.get("value")), str(line.get("name") or trade.get("trigger_line") or "")
     trade_side = "PUT" if "PUT" in str((decision or {}).get("stance") or "").upper() else "CALL" if "CALL" in str((decision or {}).get("stance") or "").upper() else None
     scenario = best_structure_scenario(bundle, trade_side)
@@ -3497,8 +3520,7 @@ def gamma_entry_alignment(options_intel: OptionsIntelligence | None, watch_side:
 
 def bundle_primary_entry_context(bundle: MorningBriefingBundle) -> tuple[str | None, float | None, str | None]:
     first_line = bundle.lines[0] if bundle.lines else {}
-    role_text = str(first_line.get("role") or "").upper()
-    watch_side = "PUT" if "PUT" in role_text else "CALL" if "CALL" in role_text else None
+    watch_side = structure_line_side(first_line, getattr(bundle, "latest_price", None))
     return watch_side, first_line.get("value"), first_line.get("name")
 
 
@@ -3692,7 +3714,7 @@ def is_call_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.
     if pd.isna(lv):
         return False
     o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
-    return (c <= o) and (o > lv) and (l <= lv) and (c > lv)
+    return (o > lv) and (l <= lv) and (c > lv)
 
 
 def is_put_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.Timestamp) -> bool:
@@ -3700,7 +3722,7 @@ def is_put_rejection(candle_row: pd.Series, line: DynamicLine, candle_time: pd.T
     if pd.isna(lv):
         return False
     o,h,l,c = candle_row["Open"], candle_row["High"], candle_row["Low"], candle_row["Close"]
-    return (c >= o) and (o < lv) and (h >= lv) and (c < lv)
+    return (o < lv) and (h >= lv) and (c < lv)
 
 
 def find_target_for_signal(signal_type: str, rejected_line_name: str, reference_price: float, reference_time: pd.Timestamp, all_lines: list[DynamicLine]) -> tuple[str | None, float]:
@@ -3744,7 +3766,8 @@ def build_trade_signal_from_rejection(signal_type: str, line: DynamicLine, rejec
     risk, reward, rr = calculate_signal_risk_reward(signal_type, entry_price, stop_price, target_price)
     lv = line.tradable_value_at(rejection_time)
     sid = f"{signal_type}_{line.name}_{rejection_time.isoformat()}"
-    expl = f"{signal_type} rejection at {display_line_name(line.name)}; candle rejected tradable line and {'confirmed by next open' if confirmed else 'awaiting next candle confirmation'}"
+    rule = "touched from above and closed above" if signal_type == "CALL" else "touched from below and closed below"
+    expl = f"{signal_type} setup at {display_line_name(line.name)}; candle {rule} and {'confirmed by next open' if confirmed else 'awaiting next candle confirmation'}"
     if target_name is None:
         expl += "; no structural target found in trade direction"
     return TradeSignal(sid, signal_type, status, line.name, float(lv), rejection_time, float(rejection_row['Open']), float(rejection_row['High']), float(rejection_row['Low']), float(rejection_row['Close']), entry_time, entry_price, stop_price, target_name, target_price, risk, reward, rr, "Move to breakeven after +$0.50 favorable SPY move.", expl)
@@ -3766,9 +3789,9 @@ def detect_rejection_signals(candles_df: pd.DataFrame, primary_lines: list[Dynam
             if not line.is_primary:
                 continue
             sig = None
-            if line.zone_type == "CALL_ZONE" and line.direction == "descending" and is_call_rejection(row, line, ts):
+            if is_call_rejection(row, line, ts):
                 sig = build_trade_signal_from_rejection("CALL", line, row, ts, next_row, next_ts, all_lines)
-            elif line.zone_type == "PUT_ZONE" and line.direction == "ascending" and is_put_rejection(row, line, ts):
+            elif is_put_rejection(row, line, ts):
                 sig = build_trade_signal_from_rejection("PUT", line, row, ts, next_row, next_ts, all_lines)
             if sig and sig.signal_id not in seen:
                 seen.add(sig.signal_id)
@@ -4650,10 +4673,10 @@ def display_line_name(name: str | None) -> str:
         return "-"
     normalized = str(name).strip().upper().replace(" ", "_")
     primary = {
-        "UA": "Upper Put Trigger",
-        "UD": "Upper Call Trigger",
-        "LA": "Lower Put Trigger",
-        "LD": "Lower Call Trigger",
+        "UA": "Upper Ascending Trigger",
+        "UD": "Upper Descending Trigger",
+        "LA": "Lower Ascending Trigger",
+        "LD": "Lower Descending Trigger",
     }
     if normalized in primary:
         return primary[normalized]
@@ -4666,10 +4689,10 @@ def display_line_name(name: str | None) -> str:
 
 def display_line_description(name: str | None) -> str:
     descriptions = {
-        "UA": "PUT watch from the prior-session high",
-        "UD": "CALL watch from the prior-session high",
-        "LA": "PUT watch from the prior-session low",
-        "LD": "CALL watch from the prior-session low",
+        "UA": "Ascending structure from the high pivot",
+        "UD": "Descending structure from the high pivot",
+        "LA": "Ascending structure from the low pivot",
+        "LD": "Descending structure from the low pivot",
     }
     if not name:
         return "-"
@@ -4763,11 +4786,11 @@ def market_read_copy(bias_state) -> str:
     if not bias_state:
         return "Load SPY candles to calculate the prior-session structure."
     if bias_state.bias == "NEUTRAL":
-        return "SPY is between the upper call and put triggers. Wait for a clean hourly rejection before choosing calls or puts."
+        return "SPY is between the upper triggers. Direction comes from the close: above the touched line favors calls; below the touched line favors puts."
     if bias_state.bias == "BULLISH":
-        return "SPY is above the upper structure. Calls are the primary watch if price rejects the Upper Call Trigger."
+        return "SPY is above upper structure. A touch from above with a close back above the active line supports calls."
     if bias_state.bias == "BEARISH":
-        return "SPY is below the upper structure. Puts are the primary watch if price rejects the Lower Put Trigger."
+        return "SPY is below upper structure. A touch from below with a close back below the active line supports puts."
     return bias_state.explanation
 
 
@@ -6286,8 +6309,24 @@ def _brief_line_by_name(bundle: MorningBriefingBundle, name: str | None) -> dict
     needle = str(name or "").strip().lower()
     if not needle:
         return None
+    legacy_aliases = {
+        "upper put trigger": "UA",
+        "upper call trigger": "UD",
+        "lower put trigger": "LA",
+        "lower call trigger": "LD",
+        "upper rising trigger": "UA",
+        "upper falling trigger": "UD",
+        "lower rising trigger": "LA",
+        "lower falling trigger": "LD",
+    }
+    alias_code = legacy_aliases.get(needle)
     for line in bundle.lines or []:
-        if str(line.get("name") or "").strip().lower() == needle or str(line.get("code") or "").strip().lower() == needle:
+        code = str(line.get("code") or "").strip()
+        if (
+            str(line.get("name") or "").strip().lower() == needle
+            or code.lower() == needle
+            or (alias_code and code.upper() == alias_code)
+        ):
             return line
     return None
 
@@ -6322,11 +6361,11 @@ def _brief_sorted_lines(bundle: MorningBriefingBundle) -> list[dict]:
     return sorted(rows, key=lambda row: row["_value"])
 
 
-def _brief_role_lines(lines: list[dict], side: str | None) -> list[dict]:
+def _brief_role_lines(lines: list[dict], side: str | None, reference_price: float | None = None) -> list[dict]:
     side = str(side or "").upper()
     if not side:
         return []
-    return [line for line in lines if side in str(line.get("role") or line.get("name") or "").upper()]
+    return [line for line in lines if structure_line_side(line, reference_price) == side]
 
 
 def _brief_line_identity(line: dict | None) -> tuple[str, str]:
@@ -6339,12 +6378,12 @@ def _brief_same_line(left: dict | None, right: dict | None) -> bool:
     return bool(_brief_line_identity(left)[0] or _brief_line_identity(left)[1]) and _brief_line_identity(left) == _brief_line_identity(right)
 
 
-def _brief_opening_pivot_line(lines: list[dict], entry_line: dict, side: str | None) -> dict:
+def _brief_opening_pivot_line(lines: list[dict], entry_line: dict, side: str | None, reference_price: float | None = None) -> dict:
     side = str(side or "").upper()
     entry_value = _finite_float(entry_line.get("_value", entry_line.get("value")))
     if pd.isna(entry_value):
         return entry_line
-    same_side = _brief_role_lines(lines, side)
+    same_side = _brief_role_lines(lines, side, reference_price)
     if side == "PUT":
         lower_same_side = [line for line in same_side if line["_value"] < entry_value and not _brief_same_line(line, entry_line)]
         if lower_same_side:
@@ -6369,14 +6408,12 @@ def _brief_path_and_target_lines(lines: list[dict], pivot_line: dict, entry_line
     if side == "PUT":
         path_line = entry_line if not pd.isna(entry_value) and entry_value >= pivot_value else pivot_line
         below = [line for line in lines if line["_value"] < pivot_value and not _brief_same_line(line, pivot_line) and not _brief_same_line(line, path_line)]
-        call_below = [line for line in below if "CALL" in str(line.get("role") or line.get("name") or "").upper()]
-        target_line = max(call_below or below, key=lambda line: line["_value"]) if below else pivot_line
+        target_line = max(below, key=lambda line: line["_value"]) if below else pivot_line
         return path_line, target_line
     if side == "CALL":
         path_line = entry_line if not pd.isna(entry_value) and entry_value <= pivot_value else pivot_line
         above = [line for line in lines if line["_value"] > pivot_value and not _brief_same_line(line, pivot_line) and not _brief_same_line(line, path_line)]
-        put_above = [line for line in above if "PUT" in str(line.get("role") or line.get("name") or "").upper()]
-        target_line = min(put_above or above, key=lambda line: line["_value"]) if above else pivot_line
+        target_line = min(above, key=lambda line: line["_value"]) if above else pivot_line
         return path_line, target_line
     return entry_line, pivot_line
 
@@ -6402,7 +6439,10 @@ def _brief_unique_key_levels(candidates: list[tuple[str, object]]) -> list[tuple
     return rows
 
 
-def _brief_watch_side(primary_line: dict, decision: dict) -> str | None:
+def _brief_watch_side(primary_line: dict, decision: dict, reference_price: float | None = None) -> str | None:
+    line_side = structure_line_side(primary_line, reference_price)
+    if line_side in {"CALL", "PUT"}:
+        return line_side
     stance = str(decision.get("stance") or "").upper()
     role = str(primary_line.get("role") or "").upper()
     if "PUT" in stance or "PUT" in role:
@@ -6483,8 +6523,9 @@ def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBrie
     if pd.isna(entry_value):
         entry_value = _brief_price_from_text(trade.get("trigger_price"))
     entry_line = {**entry_line, "_value": entry_value} if isinstance(entry_line, dict) else {}
-    side = _brief_watch_side(entry_line, decision)
-    pivot_line = _brief_opening_pivot_line(structure_lines, entry_line, side) if structure_lines else entry_line
+    reference_price = getattr(bundle, "latest_price", None)
+    side = _brief_watch_side(entry_line, decision, reference_price)
+    pivot_line = _brief_opening_pivot_line(structure_lines, entry_line, side, reference_price) if structure_lines else entry_line
     pivot_value = _finite_float(pivot_line.get("_value", pivot_line.get("value")))
     if pd.isna(pivot_value):
         pivot_value = entry_value
