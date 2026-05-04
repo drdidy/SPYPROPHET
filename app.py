@@ -396,19 +396,36 @@ def get_central_tz():
 
 
 def _read_secret(name: str) -> str:
-    """Read a secret from Streamlit secrets first, then environment.
+    """Read a secret from environment first, then Streamlit secrets.
 
-    Centralized so the Tastytrade hot-path works in Docker/k8s/Render/Fly
-    deployments where st.secrets is not available.
+    Env-vars take precedence so Docker / Render / k8s / Fly deployments work
+    cleanly. We only consult ``st.secrets`` as a fallback for local dev with a
+    populated ``.streamlit/secrets.toml`` — and only if the file actually
+    exists, to avoid noisy "No secrets found" warnings on every lookup.
     """
+    env_val = (os.getenv(name) or "").strip()
+    if env_val:
+        return env_val
+    if not _streamlit_secrets_available():
+        return ""
     try:
         value = st.secrets.get(name, "")
     except Exception:
-        value = ""
-    text = str(value or "").strip()
-    if text:
-        return text
-    return (os.getenv(name) or "").strip()
+        return ""
+    return str(value or "").strip()
+
+
+@st.cache_data(show_spinner=False)
+def _streamlit_secrets_available() -> bool:
+    """Return True only if a real secrets.toml exists at one of the standard
+    Streamlit lookup paths. Cached so we check the filesystem once per session
+    instead of triggering Streamlit's noisy warning on every read."""
+    candidates = (
+        Path.home() / ".streamlit" / "secrets.toml",
+        Path("/app/.streamlit/secrets.toml"),
+        Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
+    )
+    return any(p.exists() for p in candidates)
 
 
 def get_missing_tastytrade_secrets() -> list[str]:
@@ -773,13 +790,7 @@ def load_economic_calendar(path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicE
 
 
 def get_trading_economics_credential() -> str:
-    try:
-        secret_value = str(st.secrets.get("TRADING_ECONOMICS_CREDENTIAL", "")).strip()
-        if secret_value:
-            return secret_value
-    except Exception:
-        pass
-    return os.getenv("TRADING_ECONOMICS_CREDENTIAL", "").strip()
+    return _read_secret("TRADING_ECONOMICS_CREDENTIAL")
 
 
 def format_calendar_time_from_utc(value: str | None) -> tuple[object | None, str]:
@@ -916,13 +927,19 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
 
 
 def get_secret_or_env(name: str, default: str = "") -> str:
-    try:
-        value = str(st.secrets.get(name, "")).strip()
-        if value:
-            return value
-    except Exception:
-        pass
-    return os.getenv(name, default).strip()
+    # Env-vars take precedence (production deploys); only consult st.secrets
+    # when a secrets.toml actually exists, to avoid noisy warnings.
+    env_val = (os.getenv(name) or "").strip()
+    if env_val:
+        return env_val
+    if _streamlit_secrets_available():
+        try:
+            value = str(st.secrets.get(name, "") or "").strip()
+            if value:
+                return value
+        except Exception:
+            pass
+    return default.strip() if default else ""
 
 
 def is_safe_external_url(url: str) -> bool:
