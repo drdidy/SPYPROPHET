@@ -4394,6 +4394,59 @@ def render_command_bar(
     st.markdown(html, unsafe_allow_html=True)
 
 
+def render_product_chrome(*, version_label: str = "Beta", session_clock: str | None = None) -> None:
+    """A slim, premium product strip: brand mark + version chip + minimal meta.
+    Pure aesthetic — adds polish without revealing methodology."""
+    logo = _logo_data_uri()
+    logo_html = f'<img src="{logo}" alt="">' if logo else ""
+    clock_html = (
+        f'<span class="product-chrome-meta-pill">⏱ {escape(session_clock)}</span>'
+        if session_clock else ""
+    )
+    st.markdown(
+        f'<div class="product-chrome" role="banner">'
+        f'<div class="product-chrome-mark">{logo_html}<span>SPY Prophet</span>'
+        f'<span class="product-chrome-tag">{escape(version_label)}</span></div>'
+        f'<div class="product-chrome-meta">'
+        f'<span class="product-chrome-meta-pill">Analysis only</span>'
+        f'{clock_html}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_tab_intro(icon: str, title: str, copy: str) -> None:
+    """Compact one-line context strip placed at the top of each tab so a new
+    user immediately understands what the tab is for."""
+    st.markdown(
+        f'<div class="tab-intro">'
+        f'<div class="tab-intro-icon" aria-hidden="true">{icon}</div>'
+        f'<div class="tab-intro-body">'
+        f'<div class="tab-intro-title">{escape(title)}</div>'
+        f'<div class="tab-intro-copy">{escape(copy)}</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_trust_footer() -> None:
+    """Brand + trust signals at the bottom of every page. Critical for a
+    sellable product — sets professional tone and reinforces the analysis-only
+    nature of the app."""
+    logo = _logo_data_uri()
+    logo_html = f'<img src="{logo}" alt="">' if logo else ""
+    st.markdown(
+        f'<footer class="trust-footer" role="contentinfo">'
+        f'<div class="trust-footer-brand">{logo_html}<span>SPY Prophet</span></div>'
+        f'<div class="trust-footer-pills">'
+        f'<span class="trust-pill safe">✓ Analysis only</span>'
+        f'<span class="trust-pill safe">✓ No order execution</span>'
+        f'<span class="trust-pill live">⏱ Hourly candles &middot; US/Central display</span>'
+        f'</div></footer>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_tab_empty_state(icon: str, title: str, copy: str, actions: list[str] | None = None) -> None:
     """Rich empty state for any tab whose data is unavailable. Replaces silent
     blank panels and gives the user a clear next step."""
@@ -8711,6 +8764,10 @@ def main() -> None:
 
     # Anchor for the skip-to-content link
     st.markdown('<div id="main-content" tabindex="-1"></div>', unsafe_allow_html=True)
+    render_product_chrome(
+        version_label="Live",
+        session_clock=pd.Timestamp(now_ct).strftime("%a %b %d · %H:%M %Z"),
+    )
     render_command_bar(
         spy_price=latest_price,
         spy_change_pct=spy_change_pct,
@@ -9062,6 +9119,8 @@ def main() -> None:
             j_entries = load_signal_journal("data/signal_journal.json")
             render_debug_json("Journal path", {"path":"data/signal_journal.json","count":len(j_entries),"auto_journal":auto_journal_on})
             render_debug_json("Last 3 journal entries", [journal_entry_to_dict(x) for x in j_entries[-3:]])
+
+    render_trust_footer()
 
 
 if __name__ == "__main__":
