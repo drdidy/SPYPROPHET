@@ -72,10 +72,9 @@ export default function LandingPage() {
             </Reveal>
 
             <Reveal delay={0.18} as="p" className="mt-6 max-w-xl text-balance text-base leading-relaxed text-muted md:text-lg">
-              SPY Prophet is the structure-first decision terminal for same-day
-              SPY. Prior-session anchors, dynamic projection, signal
-              confirmation, and a live options cockpit — all gated by wait
-              discipline.
+              Same-day SPY without the chase. The day&apos;s map is drawn before
+              the open. The trigger only fires when an hourly close earns it.
+              No FOMO. No fakeouts. No bad-trade regret.
             </Reveal>
 
             <Reveal delay={0.26} className="mt-8 flex flex-wrap items-center gap-3">
@@ -203,11 +202,11 @@ export default function LandingPage() {
             </Pill>
           </Reveal>
           <Reveal delay={0.1} as="h2" className="mt-5 font-[family-name:var(--font-space-grotesk)] text-3xl font-extrabold tracking-tight text-text md:text-5xl">
-            A terminal that thinks like a structure trader.
+            One terminal. Six tools. Zero noise.
           </Reveal>
           <Reveal delay={0.2} as="p" className="mt-4 text-balance text-base text-muted md:text-lg">
-            Built around discipline, not signals. Every panel exists to keep
-            you out of bad trades and clear-headed in the good ones.
+            Each panel earns its place. If it doesn&apos;t make the next trade
+            clearer, it isn&apos;t there.
           </Reveal>
         </div>
 
@@ -220,13 +219,14 @@ export default function LandingPage() {
                   <BrandMark size={44} animated />
                   <div>
                     <div className="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-blue-bright">Foundation</div>
-                    <h3 className="font-[family-name:var(--font-space-grotesk)] text-xl font-bold text-text">Structure-led decisions</h3>
+                    <h3 className="font-[family-name:var(--font-space-grotesk)] text-xl font-bold text-text">The map before the open</h3>
                   </div>
                 </div>
                 <p className="text-sm leading-relaxed text-muted">
-                  Prior-session anchors project forward through the day. Levels are
-                  protected; you see the read, not the recipe. Slope calibration is
-                  locked from the structure engine — every projection is reproducible.
+                  Tomorrow&apos;s structure is drawn from yesterday&apos;s anchors
+                  before you finish your coffee. The proprietary line model is
+                  protected — you see the trigger, not the math. Every projection
+                  is reproducible.
                 </p>
                 <div className="mt-auto rounded-xl border border-border/70 bg-surface-2/40 p-4">
                   <LiveChart className="h-32 w-full" />
@@ -242,10 +242,11 @@ export default function LandingPage() {
                 <div className="grid h-11 w-11 place-items-center rounded-xl border border-violet/40 bg-violet/10 text-violet">
                   <Sparkles className="h-5 w-5" strokeWidth={2.5} />
                 </div>
-                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">AI morning brief</h3>
+                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">The day-ahead read</h3>
                 <p className="text-sm leading-relaxed text-muted">
-                  GEX, max-pain, dark-pool prints, and option flow are checked
-                  against your structure before any setup is named.
+                  External flow, gamma walls, dark-pool prints — pre-checked
+                  against your structure so the day begins with one verdict, not
+                  thirty open tabs.
                 </p>
               </div>
             </SpotlightCard>
@@ -258,10 +259,11 @@ export default function LandingPage() {
                 <div className="grid h-11 w-11 place-items-center rounded-xl border border-green/40 bg-green/10 text-green-bright">
                   <Target className="h-5 w-5" strokeWidth={2.5} />
                 </div>
-                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Options cockpit</h3>
+                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Contracts, priced in advance</h3>
                 <p className="text-sm leading-relaxed text-muted">
-                  Live options quotes, projected entry mark, delta-aware P/L on
-                  the trigger line — gated by signal confirmation.
+                  The exact strike, mark, and projected entry the trigger would
+                  hand you — visible before you click anything. No surprise spread.
+                  No after-the-fact math.
                 </p>
               </div>
             </SpotlightCard>
@@ -274,10 +276,11 @@ export default function LandingPage() {
                 <div className="grid h-11 w-11 place-items-center rounded-xl border border-amber/40 bg-amber/10 text-amber">
                   <History className="h-5 w-5" strokeWidth={2.5} />
                 </div>
-                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Replay Lab</h3>
+                <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Replay any session, honestly</h3>
                 <p className="text-sm leading-relaxed text-muted">
-                  Step a session candle-by-candle without look-ahead, or open
-                  Full Day Review to grade outcomes.
+                  Walk yesterday candle-by-candle with future bars masked, or
+                  flip to Full Day Review for outcome grading. Hindsight only
+                  when you ask for it.
                 </p>
               </div>
             </SpotlightCard>
@@ -291,12 +294,11 @@ export default function LandingPage() {
                   <BarChart3 className="h-5 w-5" strokeWidth={2.5} />
                 </div>
                 <div>
-                  <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Journal analytics</h3>
+                  <h3 className="font-[family-name:var(--font-space-grotesk)] text-lg font-bold text-text">Your edge, measured</h3>
                   <p className="mt-2 text-sm leading-relaxed text-muted">
-                    Confirmed signals build a personal record. Win rate, R:R
-                    distribution, expectancy, and outcome breakdowns update in
-                    real time. Atomic, lock-protected writes — no race conditions
-                    even when Streamlit reruns mid-save.
+                    Every confirmed signal becomes a row in your personal record.
+                    Win rate, expectancy, and R:R update in real time so you stop
+                    arguing with yourself about whether the system works.
                   </p>
                   <div className="mt-4 grid grid-cols-3 gap-3">
                     {[
@@ -329,28 +331,26 @@ export default function LandingPage() {
               <div>
                 <Pill tone="green" size="md">
                   <Eye className="h-3 w-3" strokeWidth={3} />
-                  The day, in five steps
+                  How a trading day actually goes
                 </Pill>
                 <h3 className="mt-5 font-[family-name:var(--font-space-grotesk)] text-2xl font-extrabold leading-tight text-text md:text-4xl">
-                  Open at 8:30 CT.
+                  Five steps. One verdict per close.
                   <br />
-                  Read structure. Wait for the trigger.
-                  <br />
-                  <span className="text-bullish-gradient">Take the trade only on confirmation.</span>
+                  <span className="text-bullish-gradient">No screens to babysit.</span>
                 </h3>
                 <p className="mt-5 max-w-xl text-base text-muted md:text-lg">
-                  The terminal walks the same loop you would: anchors set,
-                  projection drawn, bias declared, signal armed, contract
-                  priced. You only act when every gate flashes green.
+                  By the open the map is drawn. From there it&apos;s patience
+                  until an hourly close earns the trigger. The terminal does the
+                  watching so your discretion stays sharp.
                 </p>
               </div>
               <StaggerGroup className="grid grid-cols-1 gap-3" delayChildren={0.1}>
                 {[
-                  ["Pre-open", "Foresight projects today's structure from prior anchors."],
-                  ["09:00 CT", "Daily Brief reconciles structure with GEX, max pain, dark pool, flow."],
-                  ["09:30 ET", "Live tab arms — wait discipline gates appear before any signal."],
-                  ["Trigger", "Hourly close confirms a rejection. Options cockpit prices the entry."],
-                  ["After close", "Replay Lab and Journal Analytics grade today's outcome."],
+                  ["Pre-open", "The day is mapped. Anchors set, structure projected, bias declared."],
+                  ["First hour", "External flow reconciled with structure. One narrative, not thirty."],
+                  ["Open + 30", "Live console arms. Wait gates flash green or amber — never red and live."],
+                  ["The trigger", "An hourly close earns it. The exact contract, mark, stop, and target are already on screen."],
+                  ["After close", "Today&apos;s outcome is graded. The journal updates itself."],
                 ].map(([when, what], i) => (
                   <StaggerItem key={when}>
                     <div className="flex items-start gap-3 rounded-xl border border-border/70 bg-surface-2/40 p-3.5">
@@ -373,11 +373,12 @@ export default function LandingPage() {
       {/* Discipline */}
       <section id="safety" className="relative z-10 mx-auto w-full max-w-5xl px-6 pb-24 text-center">
         <Reveal as="h3" className="font-[family-name:var(--font-space-grotesk)] text-2xl font-extrabold tracking-tight text-text md:text-3xl">
-          Built around discipline. Tuned for the close.
+          Most trading tools ship signals. Ours ships <span className="text-bullish-gradient">patience</span>.
         </Reveal>
         <Reveal delay={0.1} as="p" className="mt-4 text-base text-muted md:text-lg">
-          Every panel exists to keep you out of bad trades and clear-headed in
-          the good ones. No noise, no chase, no signal you didn&apos;t earn.
+          The hardest part of same-day SPY isn&apos;t finding setups. It&apos;s
+          knowing which ones to skip. SPY Prophet&apos;s job is to make skipping
+          easy and acting confident.
         </Reveal>
         <Reveal delay={0.2} className="mt-7 flex flex-wrap items-center justify-center gap-2">
           <Pill tone="green">✓ Structure-led</Pill>
@@ -396,10 +397,10 @@ export default function LandingPage() {
               <div className="absolute -top-1/2 left-1/2 h-[120%] w-[120%] -translate-x-1/2 rounded-full bg-blue/20 blur-[120px]" />
             </div>
             <h3 className="font-[family-name:var(--font-space-grotesk)] text-3xl font-extrabold tracking-tight text-text md:text-5xl">
-              Open the terminal.
+              Stop trading on hope.
             </h3>
             <p className="mx-auto mt-4 max-w-xl text-base text-muted md:text-lg">
-              One URL. No setup. Your structure, your discipline, your edge.
+              Open the terminal. Read the structure. Take only what the close earns.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link href="/live">

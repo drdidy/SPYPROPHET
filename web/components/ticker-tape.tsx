@@ -1,66 +1,76 @@
-"use client";
+import { TickerMarquee, type TickerItem } from "./ticker-marquee";
 
-import { useReducedMotion } from "framer-motion";
-
-const TICKERS = [
-  { symbol: "SPY", price: "623.41", change: "+1.04%", up: true },
-  { symbol: "VIX", price: "14.82", change: "-3.12%", up: false },
-  { symbol: "QQQ", price: "568.20", change: "+0.83%", up: true },
-  { symbol: "IWM", price: "245.10", change: "+1.62%", up: true },
-  { symbol: "/ES", price: "6,310.50", change: "+0.78%", up: true },
-  { symbol: "/NQ", price: "23,442.25", change: "+0.62%", up: true },
-  { symbol: "TLT", price: "92.40", change: "-0.25%", up: false },
-  { symbol: "DXY", price: "104.18", change: "-0.10%", up: false },
-  { symbol: "GLD", price: "264.85", change: "+0.55%", up: true },
-  { symbol: "BTC", price: "67,420", change: "+2.41%", up: true },
+const SYMBOLS: { yahoo: string; display: string }[] = [
+  { yahoo: "SPY", display: "SPY" },
+  { yahoo: "^VIX", display: "VIX" },
+  { yahoo: "QQQ", display: "QQQ" },
+  { yahoo: "IWM", display: "IWM" },
+  { yahoo: "ES=F", display: "/ES" },
+  { yahoo: "NQ=F", display: "/NQ" },
+  { yahoo: "TLT", display: "TLT" },
+  { yahoo: "DX-Y.NYB", display: "DXY" },
+  { yahoo: "GLD", display: "GLD" },
+  { yahoo: "BTC-USD", display: "BTC" },
 ];
 
-export function TickerTape() {
-  const reduce = useReducedMotion();
-  // Triple the array so the loop always shows a continuous strip.
-  const items = [...TICKERS, ...TICKERS, ...TICKERS];
+const FALLBACK: TickerItem[] = SYMBOLS.map((s) => ({
+  symbol: s.display,
+  price: null,
+  changePct: null,
+}));
 
-  return (
-    <div
-      className="relative overflow-hidden border-y border-border/60 bg-surface/40 backdrop-blur"
-      role="marquee"
-      aria-label="Market ticker"
-    >
-      {/* fade edges */}
-      <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-24 bg-gradient-to-r from-bg via-bg/70 to-transparent" />
-      <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-24 bg-gradient-to-l from-bg via-bg/70 to-transparent" />
+type SparkResult = {
+  symbol: string;
+  response?: Array<{
+    meta?: {
+      regularMarketPrice?: number;
+      chartPreviousClose?: number;
+      previousClose?: number;
+    };
+  }>;
+};
 
-      <div
-        className="flex whitespace-nowrap py-3"
-        style={{
-          animation: reduce ? "none" : "ticker-scroll 60s linear infinite",
-        }}
-      >
-        {items.map((t, i) => (
-          <span
-            key={i}
-            className="mx-6 inline-flex items-center gap-2 text-sm tabular"
-          >
-            <span className="font-bold text-text">{t.symbol}</span>
-            <span className="font-mono text-text">{t.price}</span>
-            <span
-              className={
-                "font-mono text-xs font-bold " +
-                (t.up ? "text-green-bright" : "text-red-bright")
-              }
-            >
-              {t.up ? "▲" : "▼"} {t.change}
-            </span>
-          </span>
-        ))}
-      </div>
+async function fetchQuotes(): Promise<TickerItem[]> {
+  // Yahoo's spark endpoint accepts up to ~50 symbols per call. One request
+  // beats Promise.all-of-10 because Yahoo rate-limits aggressively.
+  const symbolParam = SYMBOLS.map((s) => s.yahoo).join(",");
+  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(symbolParam)}&range=2d&interval=1d`;
+  try {
+    const res = await fetch(url, {
+      // 5 minutes — gentle on Yahoo's free unauth endpoint and more than fresh
+      // enough for a marketing ticker. The /live page will hit a real broker
+      // feed for true real-time data once the API backend is wired.
+      next: { revalidate: 300 },
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        Accept: "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (!res.ok) {
+      console.warn(`[ticker] spark HTTP ${res.status}`);
+      return FALLBACK;
+    }
+    const data = (await res.json()) as { spark?: { result?: SparkResult[] } };
+    const results = data.spark?.result ?? [];
+    const bySymbol = new Map<string, SparkResult>(results.map((r) => [r.symbol, r]));
+    return SYMBOLS.map((s) => {
+      const r = bySymbol.get(s.yahoo);
+      const meta = r?.response?.[0]?.meta;
+      if (!meta) return { symbol: s.display, price: null, changePct: null };
+      const price = meta.regularMarketPrice ?? null;
+      const prev = meta.chartPreviousClose ?? meta.previousClose ?? null;
+      const changePct = price != null && prev ? ((price - prev) / prev) * 100 : null;
+      return { symbol: s.display, price, changePct };
+    });
+  } catch (err) {
+    console.warn(`[ticker] spark fetch failed:`, err instanceof Error ? err.message : err);
+    return FALLBACK;
+  }
+}
 
-      <style>{`
-        @keyframes ticker-scroll {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-33.333%); }
-        }
-      `}</style>
-    </div>
-  );
+export async function TickerTape() {
+  const items = await fetchQuotes();
+  return <TickerMarquee items={items} />;
 }
