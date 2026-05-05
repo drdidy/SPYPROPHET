@@ -145,8 +145,8 @@ def test_live_endpoint_picks_call_setup_when_below_is_closer(monkeypatch):
     )
     monkeypatch.setattr(
         live_route,
-        "compute_structure_projection",
-        lambda spot: _FAKE_PROJECTION,
+        "compute_live_state",
+        lambda spot: {**_FAKE_PROJECTION, "bias": None, "latest_signal": None, "decision": None},
     )
 
     client = TestClient(create_app())
@@ -196,7 +196,11 @@ def test_live_endpoint_picks_put_setup_when_above_is_closer(monkeypatch):
         "fetch_vix_snapshot",
         lambda: {"value": 18.29, "regime": "Moderate", "regime_tone": "green"},
     )
-    monkeypatch.setattr(live_route, "compute_structure_projection", lambda spot: projection)
+    monkeypatch.setattr(
+        live_route,
+        "compute_live_state",
+        lambda spot: {**projection, "bias": None, "latest_signal": None, "decision": None},
+    )
 
     client = TestClient(create_app())
     r = client.get("/api/live")
@@ -221,7 +225,7 @@ def test_live_endpoint_falls_back_when_structure_unavailable(monkeypatch):
         "fetch_vix_snapshot",
         lambda: {"value": 18.29, "regime": "Moderate", "regime_tone": "green"},
     )
-    monkeypatch.setattr(live_route, "compute_structure_projection", lambda spot: None)
+    monkeypatch.setattr(live_route, "compute_live_state", lambda spot: None)
 
     client = TestClient(create_app())
     r = client.get("/api/live")
