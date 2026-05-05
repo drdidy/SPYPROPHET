@@ -34,17 +34,32 @@ _yf_session = None
 
 
 def _yfinance_session():
-    """Build (and memoize) a requests.Session with browser headers."""
+    """Build (and memoize) a session for yfinance.
+
+    Yahoo's bot detection trips on TLS fingerprint, not just headers, so
+    a plain ``requests.Session`` with browser-style headers still gets
+    blocked from cloud egress IPs. ``curl_cffi`` impersonates real
+    Chrome's TLS handshake and JA3 signature, which gets through.
+
+    Falls back to plain ``requests`` if ``curl_cffi`` is unavailable
+    (e.g. local dev without the API extras installed).
+    """
     global _yf_session
     if _yf_session is not None:
         return _yf_session
     with _session_lock:
         if _yf_session is not None:
             return _yf_session
-        import requests
+        try:
+            from curl_cffi import requests as curl_requests
 
-        s = requests.Session()
-        s.headers.update(_BROWSER_HEADERS)
+            s = curl_requests.Session(impersonate="chrome120")
+            s.headers.update(_BROWSER_HEADERS)
+        except ImportError:
+            import requests
+
+            s = requests.Session()
+            s.headers.update(_BROWSER_HEADERS)
         _yf_session = s
     return _yf_session
 
@@ -159,42 +174,7 @@ def fetch_spy_spot_snapshot() -> dict:
 
 
 def _yfinance_spy_snapshot() -> dict:
-    try:
-        import yfinance as yf
-    except ImportError:
-        logger.warning("yfinance not installed; SPY snapshot unavailable")
-        return {"price": None, "change": None, "change_pct": None}
-
-    try:
-        df = yf.Ticker("SPY", session=_yfinance_session()).history(
-            period="5d", interval="1d", auto_adjust=False
-        )
-    except Exception as exc:
-        logger.warning("yfinance SPY fetch failed: %s", type(exc).__name__)
-        return {"price": None, "change": None, "change_pct": None}
-
-    df = _normalize_history_columns(df)
-    if df.empty or "Close" not in df.columns or len(df) < 1:
-        return {"price": None, "change": None, "change_pct": None}
-
-    closes = df["Close"].dropna()
-    if closes.empty:
-        return {"price": None, "change": None, "change_pct": None}
-
-    price = float(closes.iloc[-1])
-    if len(closes) >= 2:
-        prev = float(closes.iloc[-2])
-        change = price - prev
-        change_pct = (change / prev) * 100 if prev else None
-    else:
-        change = None
-        change_pct = None
-
-    return {
-        "price": _clean(price),
-        "change": _clean(change),
-        "change_pct": _clean(change_pct),
-    }
+    return _yahoo_chart_snapshot("SPY", interval="1d")
 
 
 def fetch_vix_snapshot() -> dict:
@@ -219,30 +199,67 @@ def fetch_vix_snapshot() -> dict:
 
 
 def _yfinance_vix_snapshot() -> dict:
-    try:
-        import yfinance as yf
-    except ImportError:
+    snap = _yahoo_chart_snapshot("^VIX", interval="15m", range_="1d")
+    value = snap.get("price")
+    if value is None:
         return {"value": None, "regime": None, "regime_tone": None}
-
-    try:
-        df = yf.Ticker("^VIX", session=_yfinance_session()).history(
-            period="5d", interval="15m", auto_adjust=False
-        )
-    except Exception as exc:
-        logger.warning("yfinance VIX fetch failed: %s", type(exc).__name__)
-        return {"value": None, "regime": None, "regime_tone": None}
-
-    df = _normalize_history_columns(df)
-    if df.empty or "Close" not in df.columns:
-        return {"value": None, "regime": None, "regime_tone": None}
-
-    closes = df["Close"].dropna()
-    if closes.empty:
-        return {"value": None, "regime": None, "regime_tone": None}
-
-    value = float(closes.iloc[-1])
     regime, tone = classify_vix(value)
-    return {"value": _clean(value), "regime": regime, "regime_tone": tone}
+    return {"value": value, "regime": regime, "regime_tone": tone}
+
+
+def _yahoo_chart_snapshot(symbol: str, interval: str = "1d", range_: str = "5d") -> dict:
+    """Hit Yahoo Finance's chart API directly with a TLS-impersonating
+    session (curl_cffi → falls back to requests).
+
+    yfinance 0.2.50 doesn't propagate a custom session through to its
+    underlying urllib3 calls, so even with a `session=` kwarg the
+    requests still come from yfinance's default TLS fingerprint and
+    hit Yahoo's bot block. Calling the chart endpoint ourselves with
+    curl_cffi sidesteps that.
+
+    Returns ``{price, change, change_pct}``; all None on failure.
+    """
+    session = _yfinance_session()
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"range": range_, "interval": interval}
+    try:
+        resp = session.get(url, params=params, timeout=8)
+    except Exception as exc:
+        logger.warning("Yahoo chart %s fetch failed: %s", symbol, type(exc).__name__)
+        return {"price": None, "change": None, "change_pct": None}
+    if getattr(resp, "status_code", 0) >= 400:
+        logger.warning("Yahoo chart %s returned %s", symbol, resp.status_code)
+        return {"price": None, "change": None, "change_pct": None}
+    try:
+        payload = resp.json()
+    except Exception:
+        return {"price": None, "change": None, "change_pct": None}
+
+    try:
+        result = payload["chart"]["result"][0]
+        meta = result.get("meta", {})
+        last = _safe_float(meta.get("regularMarketPrice"))
+        prev_close = _safe_float(meta.get("chartPreviousClose") or meta.get("previousClose"))
+        # If meta is missing the live price, fall back to the last close in indicators.
+        if last is None:
+            quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+            closes = [c for c in (quote.get("close") or []) if c is not None]
+            if closes:
+                last = _safe_float(closes[-1])
+                if prev_close is None and len(closes) >= 2:
+                    prev_close = _safe_float(closes[-2])
+    except (KeyError, IndexError, TypeError):
+        return {"price": None, "change": None, "change_pct": None}
+
+    if last is None:
+        return {"price": None, "change": None, "change_pct": None}
+    change = (last - prev_close) if prev_close is not None else None
+    change_pct = (change / prev_close * 100) if prev_close else None
+    return {
+        "price": _clean(last),
+        "change": _clean(change),
+        "change_pct": _clean(change_pct),
+    }
 
 
 def classify_vix(value: float) -> tuple[str, str]:
