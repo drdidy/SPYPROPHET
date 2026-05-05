@@ -50,6 +50,9 @@ def live_snapshot() -> LiveSnapshot:
     bias_payload = None
     signal_payload = None
     guardrails_payload = None
+    decision_payload = None
+    grade = None
+    action = None
     decision_label = _decision_label(spot.get("price"))
 
     if state:
@@ -84,15 +87,19 @@ def live_snapshot() -> LiveSnapshot:
 
             if target_line:
                 target_value = target_line.get("projected_value")
+                # R:R is only meaningful when a real signal has fired —
+                # the structural stop buffer (0.20) overstates R:R into
+                # 15-20:1 territory. When no confirmed signal exists,
+                # leave R:R null so the page shows "—" rather than a
+                # misleading number.
                 rr = None
+                latest_signal = state.get("latest_signal") or {}
                 if (
-                    target_value is not None
-                    and tval is not None
-                    and stop is not None
+                    latest_signal.get("status") == "CONFIRMED"
+                    and isinstance(latest_signal.get("rr_ratio"), int | float)
+                    and latest_signal.get("rr_ratio") > 0
                 ):
-                    risk = abs(stop - tval)
-                    reward = abs(target_value - tval)
-                    rr = round(reward / risk, 2) if risk > 0 else None
+                    rr = round(float(latest_signal["rr_ratio"]), 2)
                 target = {
                     "name": target_line.get("label") or target_line.get("name"),
                     "line_code": target_line.get("name"),
@@ -139,6 +146,26 @@ def live_snapshot() -> LiveSnapshot:
         g = decision.get("guardrails") or {}
         guardrails_payload = _flatten_guardrails(g)
 
+        # Top-level decision payload (action label + grade) — keeps the
+        # page's Action and Grade cells out of placeholder text once a
+        # signal exists.
+        quality = state.get("signal_quality") or {}
+        if decision or quality:
+            final = decision.get("final_decision") if decision else None
+            decision_payload = {
+                "final_decision": final,
+                "explanation": decision.get("explanation") if decision else None,
+                "grade": quality.get("grade") if quality else None,
+                "action_label": quality.get("action_label") if quality else None,
+            }
+            grade = quality.get("grade") if quality else None
+            action = (
+                quality.get("action_label")
+                or _humanize(final)
+                if (final or quality)
+                else None
+            )
+
     return LiveSnapshot(
         spot=SpotSnapshot(
             price=spot.get("price"),
@@ -159,6 +186,9 @@ def live_snapshot() -> LiveSnapshot:
         bias=bias_payload,
         signal=signal_payload,
         guardrails=guardrails_payload,
+        decision=decision_payload,
+        grade=grade,
+        action=action,
     )
 
 

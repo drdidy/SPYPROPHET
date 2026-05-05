@@ -154,8 +154,8 @@ export default async function LivePage() {
                     value: view.bias.label,
                     glyph: <DirectionGlyph direction={view.bias.direction} size="sm" label={view.bias.label} />,
                   },
-                  { label: "Grade", value: "—" },
-                  { label: "Action", value: view.connected ? "Watch" : "Wait" },
+                  { label: "Grade", value: view.grade ?? "—" },
+                  { label: "Action", value: view.action ?? (view.connected ? "Watch" : "Wait") },
                   { label: "Signal", value: view.signal.label },
                 ].map((cell) => (
                   <div key={cell.label} className="rounded-xl border border-border/70 bg-surface-2/50 p-3.5">
@@ -231,7 +231,11 @@ export default async function LivePage() {
                 <div className="rounded-lg border border-border/70 bg-surface-2/50 p-3">
                   <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">R:R</div>
                   <div className="mt-0.5 font-[family-name:var(--font-space-grotesk)] text-lg font-bold tabular text-text">
-                    1 : <AnimatedNumber value={view.target.rr} decimals={2} startDelay={650} />
+                    {view.target.rr !== null ? (
+                      <>1 : <AnimatedNumber value={view.target.rr} decimals={2} startDelay={650} /></>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -330,9 +334,11 @@ interface ComposedView {
   bias: { label: string; direction: "call" | "put" | "neutral" };
   signal: { label: string };
   trigger: { name: string; value: number | null; distance: number | null };
-  target: { name: string; value: number | null; rr: number };
+  target: { name: string; value: number | null; rr: number | null };
   stop: number | null;
   guardrails: Array<{ label: string; state: string; tone: "green" | "amber" | "red" }>;
+  grade: string | null;
+  action: string | null;
   watchCall: number | null;
   watchPut: number | null;
 }
@@ -355,6 +361,8 @@ function composeView(snapshot: LiveSnapshot | null): ComposedView {
       target: { name: DEFAULT_VIEW.target.name, value: null, rr: DEFAULT_VIEW.target.rr },
       stop: null,
       guardrails: DEFAULT_VIEW.guardrails,
+      grade: null,
+      action: null,
       watchCall: null,
       watchPut: null,
     };
@@ -417,6 +425,8 @@ function composeView(snapshot: LiveSnapshot | null): ComposedView {
     target,
     stop,
     guardrails: snapshot.guardrails ?? DEFAULT_VIEW.guardrails,
+    grade: snapshot.grade,
+    action: snapshot.action,
     watchCall: snapshot.watch.call,
     watchPut: snapshot.watch.put,
   };
