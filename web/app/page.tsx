@@ -6,6 +6,7 @@ import { SpotlightCard } from "@/components/spotlight-card";
 import { TickerTape } from "@/components/ticker-tape";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
+import { getLiveSnapshot } from "@/lib/api";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -19,7 +20,20 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
-export default function LandingPage() {
+export const revalidate = 60;
+
+export default async function LandingPage() {
+  const snapshot = await getLiveSnapshot();
+  const spotPrice = snapshot?.spot.price ?? null;
+  const changePct = snapshot?.spot.change_pct ?? null;
+  const vixValue = snapshot?.vix.value ?? null;
+  const vixRegime = snapshot?.vix.regime ?? null;
+  const vixTone = snapshot?.vix.regime_tone ?? null;
+  const triggerValue = snapshot?.trigger?.value ?? null;
+  const targetValue = snapshot?.target?.value ?? null;
+  const biasLabel = snapshot?.bias?.label ?? null;
+  const biasDirection = snapshot?.bias?.direction ?? null;
+  const decisionLabel = snapshot?.decision_label ?? null;
   return (
     <div className="relative isolate flex min-h-screen flex-col overflow-x-hidden">
       {/* Top nav */}
@@ -97,12 +111,18 @@ export default function LandingPage() {
             </Reveal>
           </div>
 
-          {/* Right: animated terminal preview */}
+          {/* Right: animated terminal preview — now showing real data */}
           <Reveal delay={0.18}>
             <div className="relative">
-              <span className="absolute -top-3 left-5 z-20 inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber/10 px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.16em] text-amber backdrop-blur">
-                Example session
-              </span>
+              {snapshot ? (
+                <span className="absolute -top-3 left-5 z-20 inline-flex items-center gap-1.5 rounded-full border border-green/40 bg-green/10 px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.16em] text-green-bright backdrop-blur">
+                  <span className="live-pulse-dot" aria-hidden /> Live preview
+                </span>
+              ) : (
+                <span className="absolute -top-3 left-5 z-20 inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber/10 px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.16em] text-amber backdrop-blur">
+                  Reconnecting
+                </span>
+              )}
             <SpotlightCard premium tilt className="overflow-hidden">
               {/* Title bar */}
               <div className="flex items-center justify-between gap-4 border-b border-border/70 bg-surface-2/60 px-5 py-3">
@@ -120,29 +140,44 @@ export default function LandingPage() {
                 </span>
               </div>
 
-              {/* Stats */}
+              {/* Stats — real data from /api/live */}
               <div className="grid grid-cols-3 gap-px bg-border/60">
                 <div className="bg-surface/80 p-4">
                   <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">SPY · Last</div>
                   <div className="mt-1.5 font-[family-name:var(--font-space-grotesk)] text-2xl font-extrabold tabular text-text md:text-3xl">
-                    $<AnimatedNumber value={623.41} decimals={2} startDelay={400} />
+                    {spotPrice !== null ? (
+                      <>$<AnimatedNumber value={spotPrice} decimals={2} startDelay={400} /></>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
                   </div>
-                  <div className="mt-1 inline-flex items-center gap-1.5 text-[0.78rem] font-bold tabular text-green-bright">
-                    ▲ +<AnimatedNumber value={1.04} decimals={2} startDelay={500} />%
-                    <span className="font-medium text-muted">today</span>
+                  <div className={"mt-1 inline-flex items-center gap-1.5 text-[0.78rem] font-bold tabular " + (changePct === null ? "text-muted" : changePct >= 0 ? "text-green-bright" : "text-red-bright")}>
+                    {changePct !== null ? (
+                      <>
+                        {changePct >= 0 ? "▲ +" : "▼ "}
+                        <AnimatedNumber value={Math.abs(changePct)} decimals={2} startDelay={500} />%
+                        <span className="font-medium text-muted">today</span>
+                      </>
+                    ) : (
+                      <span className="font-medium text-muted">change unavailable</span>
+                    )}
                   </div>
                 </div>
                 <div className="bg-surface/80 p-4">
                   <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">VIX</div>
-                  <div className="mt-1.5 font-[family-name:var(--font-space-grotesk)] text-2xl font-extrabold tabular text-green-bright md:text-3xl">
-                    <AnimatedNumber value={14.82} decimals={2} startDelay={500} />
+                  <div className={"mt-1.5 font-[family-name:var(--font-space-grotesk)] text-2xl font-extrabold tabular md:text-3xl " + (vixTone === "green" ? "text-green-bright" : vixTone === "amber" ? "text-amber" : vixTone === "red" ? "text-red-bright" : "text-text")}>
+                    {vixValue !== null ? (
+                      <AnimatedNumber value={vixValue} decimals={2} startDelay={500} />
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
                   </div>
-                  <div className="mt-1 text-[0.78rem] font-medium text-muted">Calm regime</div>
+                  <div className="mt-1 text-[0.78rem] font-medium text-muted">{vixRegime ?? "Regime unavailable"}</div>
                 </div>
                 <div className="bg-surface/80 p-4">
                   <div className="text-[0.6rem] font-bold uppercase tracking-[0.14em] text-muted">Decision</div>
-                  <div className="mt-1.5 font-[family-name:var(--font-space-grotesk)] text-base font-bold leading-tight text-text">
-                    Watch upper trigger
+                  <div className="mt-1.5 font-[family-name:var(--font-space-grotesk)] text-base font-bold leading-tight text-text line-clamp-2">
+                    {decisionLabel ?? "Awaiting live data"}
                   </div>
                   <div className="mt-1 text-[0.78rem] font-medium text-muted">Live read</div>
                 </div>
@@ -153,12 +188,22 @@ export default function LandingPage() {
                 <LiveChart className="h-44 w-full sm:h-56" />
               </div>
 
-              {/* Wait-discipline pills */}
+              {/* Decision pills — real */}
               <div className="flex flex-wrap gap-2 border-t border-border/70 bg-surface-2/40 px-4 py-3">
-                <Pill tone="green" size="xs" pulse>Wait gate · clean</Pill>
-                <Pill tone="blue" size="xs">Bias · Bullish</Pill>
-                <Pill tone="amber" size="xs">Trigger · 624.85</Pill>
-                <Pill tone="violet" size="xs">Target · 627.10</Pill>
+                {biasLabel && (
+                  <Pill tone={biasDirection === "call" ? "green" : biasDirection === "put" ? "red" : "blue"} size="xs">
+                    Bias · {biasLabel}
+                  </Pill>
+                )}
+                {triggerValue !== null && (
+                  <Pill tone="amber" size="xs">Trigger · {triggerValue.toFixed(2)}</Pill>
+                )}
+                {targetValue !== null && (
+                  <Pill tone="violet" size="xs">Target · {targetValue.toFixed(2)}</Pill>
+                )}
+                {!biasLabel && triggerValue === null && (
+                  <Pill tone="amber" size="xs">Reconnecting</Pill>
+                )}
               </div>
             </SpotlightCard>
             </div>
