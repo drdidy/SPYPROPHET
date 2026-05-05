@@ -351,6 +351,7 @@ export interface CandleBar {
   l: number | null;
   c: number | null;
   v: number | null;
+  lines?: Record<string, number | null>;
 }
 
 export interface ChartResponse {

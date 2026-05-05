@@ -1,4 +1,5 @@
 import { Reveal, StaggerGroup, StaggerItem } from "@/components/reveal";
+import { StrikeQuotePanel } from "@/components/strike-quote-panel";
 import { Card, CardBody, CardHeader, CardKicker, CardTitle } from "@/components/ui/card";
 import { Pill } from "@/components/ui/pill";
 import { getOptionsChain, type OptionsChain } from "@/lib/api";
@@ -9,6 +10,9 @@ import {
   Layers,
   Target,
 } from "lucide-react";
+
+const PUBLIC_API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 
 export const revalidate = 60;
 
@@ -104,28 +108,31 @@ export default async function OptionsPage() {
         </Reveal>
       )}
 
-      <Reveal delay={0.2}>
-        <Card>
-          <CardHeader>
-            <div>
-              <CardKicker>Per-strike quote</CardKicker>
-              <CardTitle className="mt-1.5">Live bid / ask / Greeks</CardTitle>
-            </div>
-          </CardHeader>
-          <CardBody>
-            <p className="text-sm leading-relaxed text-muted">
-              Every chain row above is a strike pair. The full live quote
-              (bid, ask, mark, spread, delta, gamma, theta, vega, IV) for
-              any pair is one fetch away — wired in the next iteration as a
-              click-to-quote panel. The endpoint is already serving:{" "}
-              <code className="rounded bg-surface-2/60 px-1.5 py-0.5 font-mono text-xs text-text">
-                GET /api/quotes/spy?call_strike=&put_strike=
-              </code>
-              .
-            </p>
-          </CardBody>
-        </Card>
-      </Reveal>
+      {chain && chain.strikes.length > 0 && (
+        <Reveal delay={0.2}>
+          <Card hoverable className="overflow-hidden">
+            <CardHeader>
+              <div>
+                <CardKicker className="flex items-center gap-2">
+                  <Target className="h-3 w-3" strokeWidth={3} /> Per-strike quote
+                </CardKicker>
+                <CardTitle className="mt-1.5">
+                  Live bid / ask / mark / spread / Greeks
+                </CardTitle>
+              </div>
+              <Pill tone="violet">Tastytrade DXLink</Pill>
+            </CardHeader>
+            <CardBody>
+              <StrikeQuotePanel
+                strikes={chain.strikes}
+                expiration={chain.expiration}
+                spotPrice={chain.spot_price}
+                apiBaseUrl={PUBLIC_API_BASE_URL}
+              />
+            </CardBody>
+          </Card>
+        </Reveal>
+      )}
     </div>
   );
 }
