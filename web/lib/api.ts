@@ -140,3 +140,83 @@ export async function getStrikeQuotes(
     return null;
   }
 }
+
+export interface JournalEntry {
+  journal_id: string;
+  created_at: string;
+  trade_date: string | null;
+  source: string;
+  signal_id: string | null;
+  signal_type: string | null;
+  signal_status: string | null;
+  line_name: string | null;
+  line_zone_type: string | null;
+  bias: string | null;
+  quality_grade: string | null;
+  quality_score: number;
+  final_decision: string | null;
+  action_label: string | null;
+  entry_time: string | null;
+  entry_price: number;
+  stop_price: number;
+  target_line_name: string | null;
+  target_price: number;
+  rr_ratio: number;
+  outcome: string | null;
+  outcome_time: string | null;
+  max_favorable_move: number;
+  max_adverse_move: number;
+  bars_to_outcome: number | null;
+  selected_option_type: string | null;
+  selected_option_strike: number | null;
+  estimated_entry_mark: number;
+  estimated_target_mark: number;
+  estimated_profit_per_contract: number;
+  provider_used: string | null;
+  notes: string | null;
+  tags: string[];
+}
+
+export interface JournalListResponse {
+  total: number;
+  offset: number;
+  limit: number;
+  path: string;
+  entries: JournalEntry[];
+}
+
+export interface JournalSummary {
+  total: number;
+  confirmed: number;
+  target_first?: number;
+  stop_first?: number;
+  win_rate: number | null;
+  avg_rr: number | null;
+}
+
+export async function getJournal(limit = 100, offset = 0): Promise<JournalListResponse | null> {
+  try {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    const res = await fetch(`${API_BASE_URL}/api/journal?${params.toString()}`, {
+      next: { revalidate: 30, tags: ["journal"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as JournalListResponse;
+  } catch {
+    return null;
+  }
+}
+
+export async function getJournalSummary(): Promise<JournalSummary | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/journal/summary`, {
+      next: { revalidate: 30, tags: ["journal"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as JournalSummary;
+  } catch {
+    return null;
+  }
+}
