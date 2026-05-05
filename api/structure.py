@@ -182,10 +182,17 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
         key=lambda r: -r["distance"],
     )
 
+    # Trigger candidates per drdidy's methodology: descending lines only.
+    # Ascending lines (and secondaries) are intermediate / target-only.
+    desc_above = [r for r in above if r.get("kind") == "descending"]
+    desc_below = [r for r in below if r.get("kind") == "descending"]
+
     return {
         "pivot_session": pivot_day.isoformat(),
         "as_of": now.isoformat(),
         "lines": rows,
         "closest_above": above[0] if above else None,
         "closest_below": below[0] if below else None,
+        "closest_descending_above": desc_above[0] if desc_above else None,
+        "closest_descending_below": desc_below[0] if desc_below else None,
     }
