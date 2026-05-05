@@ -261,6 +261,41 @@ export default async function LivePage() {
         </Reveal>
       </div>
 
+      {/* Intel grid — UnusualWhales flow context */}
+      {view.intel && view.intel.length > 0 && (
+        <Reveal delay={0.22}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
+            {view.intel.map((tile) => (
+              <Card
+                key={tile.label}
+                hoverable
+                className="p-4"
+                glow={tile.tone === "green" ? "green" : tile.tone === "amber" ? "amber" : "blue"}
+              >
+                <div className="text-[0.62rem] font-bold uppercase tracking-[0.14em] text-muted">
+                  {tile.label}
+                </div>
+                <div
+                  className={
+                    "mt-1.5 font-[family-name:var(--font-display)] text-base font-extrabold tabular " +
+                    (tile.tone === "green"
+                      ? "text-green-bright"
+                      : tile.tone === "amber"
+                        ? "text-amber"
+                        : "text-blue-bright")
+                  }
+                >
+                  {tile.value}
+                </div>
+                <div className="mt-1 line-clamp-3 text-xs leading-snug text-muted">
+                  {tile.body}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </Reveal>
+      )}
+
       {/* Watchlist contracts */}
       <Card hoverable className="overflow-hidden">
         <CardHeader>
@@ -339,6 +374,7 @@ interface ComposedView {
   guardrails: Array<{ label: string; state: string; tone: "green" | "amber" | "red" }>;
   grade: string | null;
   action: string | null;
+  intel: Array<{ label: string; value: string; body: string; tone: "green" | "amber" | "blue" }> | null;
   watchCall: number | null;
   watchPut: number | null;
 }
@@ -377,6 +413,7 @@ function composeView(snapshot: LiveSnapshot | null): ComposedView {
       guardrails: DEFAULT_VIEW.guardrails,
       grade: null,
       action: null,
+      intel: null,
       watchCall: null,
       watchPut: null,
     };
@@ -445,6 +482,7 @@ function composeView(snapshot: LiveSnapshot | null): ComposedView {
     guardrails: snapshot.guardrails ?? DEFAULT_VIEW.guardrails,
     grade: snapshot.grade,
     action: snapshot.action,
+    intel: snapshot.intel ?? null,
     watchCall: snapshot.watch.call,
     watchPut: snapshot.watch.put,
   };
