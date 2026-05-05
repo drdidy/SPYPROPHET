@@ -196,3 +196,195 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
         "closest_descending_above": desc_above[0] if desc_above else None,
         "closest_descending_below": desc_below[0] if desc_below else None,
     }
+
+
+def compute_live_state(spot_price: float | None, now_dt=None) -> dict | None:
+    """End-to-end live state — projection + bias + active signals + guardrails.
+
+    Wraps the same prior-session pivot path as ``compute_structure_projection``
+    but additionally:
+
+    - calls ``determine_preopen_bias`` for the bias snapshot
+    - calls ``detect_rejection_signals`` against today's candles, restricted
+      to the **descending** primary lines (UD, LD) per drdidy's methodology
+      — ascending lines are intermediate / target-only
+    - grades the most recent signal via ``score_signal_quality`` and assembles
+      a ``DecisionState`` with guardrails (chase / retest / structure /
+      daily-loss) so the live page can render real wait-gate states
+
+    Returns ``None`` if hourly data is unavailable. Otherwise returns:
+
+    ``{pivot_session, as_of, lines, closest_*, bias, signals, latest_signal,
+       decision, today_signal_count}``
+    """
+    import pandas as pd
+
+    df = fetch_spy_hourly_dataframe(period="10d")
+    if df.empty:
+        return None
+
+    try:
+        from app import (
+            build_decision_state,
+            build_primary_lines,
+            detect_rejection_signals,
+            determine_preopen_bias,
+            filter_rth_session,
+            find_high_pivot,
+            find_low_pivot,
+            get_central_tz,
+            score_signal_quality,
+        )
+    except Exception as exc:
+        logger.warning("live-state imports failed: %s", type(exc).__name__)
+        return None
+
+    ct = get_central_tz()
+    now = pd.Timestamp(now_dt) if now_dt is not None else pd.Timestamp.now(tz=ct)
+    if now.tzinfo is None:
+        now = now.tz_localize(ct)
+    else:
+        now = now.tz_convert(ct)
+
+    pivot_day = _prior_trading_day(now)
+    rth = pd.DataFrame()
+    for _ in range(7):
+        rth = filter_rth_session(df, pivot_day)
+        if not rth.empty:
+            break
+        pivot_day -= timedelta(days=1)
+        while pivot_day.weekday() >= 5:
+            pivot_day -= timedelta(days=1)
+    if rth.empty:
+        return None
+
+    high_pivot = find_high_pivot(rth)
+    low_pivot = find_low_pivot(rth)
+    primary_lines = build_primary_lines(high_pivot, low_pivot)
+    descending_lines = [line for line in primary_lines if line.direction == "descending"]
+
+    # Today's candles for signal detection. If the API runs before the
+    # session opens, today's RTH frame is empty — fall back to all
+    # candles since the most recent open so the engine can still see
+    # premarket structure.
+    today_rth = filter_rth_session(df, now.date())
+    signal_frame = today_rth if not today_rth.empty else df[df.index.date == now.date()].sort_index()
+
+    # Detect signals only against descending lines per methodology.
+    signals = detect_rejection_signals(signal_frame, descending_lines, [])
+    latest_signal = signals[-1] if signals else None
+
+    bias = determine_preopen_bias(primary_lines, spot_price or 0.0, now)
+
+    quality = score_signal_quality(latest_signal) if latest_signal is not None else None
+    latest_candle_row = signal_frame.iloc[-1] if not signal_frame.empty else None
+    decision = build_decision_state(
+        latest_signal,
+        primary_lines,
+        spot_price,
+        now,
+        latest_candle_row,
+        signals_today=signals,
+    )
+
+    projection = compute_structure_projection(spot_price, now_dt=now)
+
+    return {
+        **(projection or {}),
+        "bias": _bias_to_dict(bias, spot_price),
+        "signals": [_signal_to_dict(s) for s in signals],
+        "latest_signal": _signal_to_dict(latest_signal) if latest_signal else None,
+        "signal_quality": _quality_to_dict(quality) if quality else None,
+        "decision": _decision_to_dict(decision) if decision else None,
+        "today_signal_count": len(signals),
+    }
+
+
+def _bias_to_dict(bias, spot_price) -> dict:
+    """Translate BiasState → JSON. Direction key matches the page's
+    DirectionGlyph component (call/put/neutral)."""
+    label_map = {
+        "BULLISH": "Bullish",
+        "BEARISH": "Bearish",
+        "NEUTRAL": "Neutral",
+        "REGULAR_SESSION": "Active",
+        "UNKNOWN": "Calibrating",
+    }
+    direction_map = {
+        "BULLISH": "call",
+        "BEARISH": "put",
+        "NEUTRAL": "neutral",
+        "REGULAR_SESSION": "neutral",
+        "UNKNOWN": "neutral",
+    }
+    return {
+        "label": label_map.get(bias.bias, "Calibrating"),
+        "direction": direction_map.get(bias.bias, "neutral"),
+        "code": bias.bias,
+        "explanation": bias.explanation,
+        "score": bias.strength_score,
+        "watched_call_lines": list(bias.watched_call_lines or []),
+        "watched_put_lines": list(bias.watched_put_lines or []),
+        "primary_line": bias.primary_line,
+        "take_profit_line": bias.final_take_profit_line,
+    }
+
+
+def _signal_to_dict(signal) -> dict | None:
+    if signal is None:
+        return None
+    import pandas as pd
+
+    def _ts(v):
+        return v.isoformat() if isinstance(v, pd.Timestamp) and not pd.isna(v) else None
+
+    def _f(v):
+        try:
+            f = float(v)
+            return None if (pd.isna(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "signal_id": signal.signal_id,
+        "signal_type": signal.signal_type,
+        "status": signal.status,
+        "line_name": signal.line_name,
+        "rejection_time": _ts(signal.rejection_time),
+        "entry_time": _ts(signal.entry_time),
+        "entry_price": _f(signal.entry_price),
+        "stop_price": _f(signal.stop_price),
+        "target_line_name": signal.target_line_name,
+        "target_price": _f(signal.target_price),
+        "rr_ratio": _f(signal.rr_ratio),
+        "explanation": signal.explanation,
+    }
+
+
+def _quality_to_dict(q) -> dict:
+    return {
+        "grade": q.grade,
+        "score": q.score,
+        "action_label": q.action_label,
+        "explanation": q.explanation,
+        "warnings": list(q.warnings or []),
+        "strengths": list(q.strengths or []),
+    }
+
+
+def _decision_to_dict(d) -> dict:
+    g = d.guardrail_state
+    return {
+        "final_decision": d.final_decision,
+        "explanation": d.final_explanation,
+        "guardrails": {
+            "chase_status": g.chase_status,
+            "chase_warning": g.chase_warning,
+            "retest_status": g.retest_status,
+            "retest_line_name": g.retest_line_name,
+            "structure_status": g.structure_status,
+            "structure_warning": g.structure_warning,
+            "daily_action": g.daily_action,
+            "explanation": g.explanation,
+        },
+    }
