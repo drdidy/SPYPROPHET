@@ -4,8 +4,8 @@ import { motion, type Variants, useReducedMotion } from "framer-motion";
 import * as React from "react";
 
 const variants: Variants = {
-  hidden: { opacity: 0, y: 24 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.2, 0.8, 0.2, 1] } },
+  hidden: { opacity: 0, y: 8 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.2, 0.8, 0.2, 1] } },
 };
 
 export function Reveal({
@@ -41,7 +41,7 @@ export function Reveal({
 export function StaggerGroup({
   children,
   delayChildren = 0,
-  staggerChildren = 0.08,
+  staggerChildren = 0.03,
   className,
 }: {
   children: React.ReactNode;
@@ -58,7 +58,7 @@ export function StaggerGroup({
       className={className}
       initial="hidden"
       whileInView="show"
-      viewport={{ once: true, amount: 0.15 }}
+      viewport={{ once: true, amount: 0.05 }}
       variants={{
         hidden: {},
         show: { transition: { delayChildren, staggerChildren } },
