@@ -19,6 +19,38 @@ from datetime import date, datetime, timedelta
 logger = logging.getLogger("spyprophet.api.structure")
 
 
+def fetch_spy_hourly_bars(period: str = "10d") -> list[dict]:
+    """Public hourly OHLCV for the /chart page. Returns a list of dicts
+    in chronological order, each ``{t (ISO Central Time), o, h, l, c, v}``.
+    Backed by the same curl_cffi-impersonated chart endpoint."""
+    df = fetch_spy_hourly_dataframe(period=period)
+    if df.empty:
+        return []
+    out: list[dict] = []
+    for ts, row in df.iterrows():
+        out.append(
+            {
+                "t": ts.isoformat(),
+                "o": _coerce_float(row.get("Open")),
+                "h": _coerce_float(row.get("High")),
+                "l": _coerce_float(row.get("Low")),
+                "c": _coerce_float(row.get("Close")),
+                "v": _coerce_float(row.get("Volume")),
+            }
+        )
+    return out
+
+
+def _coerce_float(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return f
+
+
 def fetch_spy_hourly_dataframe(period: str = "10d"):
     """Hit query2.finance.yahoo.com directly, return a DataFrame matching
     what ``app.fetch_spy_hourly`` produces: DatetimeIndex localised to

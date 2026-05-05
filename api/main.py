@@ -6,11 +6,14 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.routes import brief as brief_routes
+from api.routes import chart as chart_routes
 from api.routes import health as health_routes
 from api.routes import journal as journal_routes
 from api.routes import live as live_routes
 from api.routes import options as options_routes
 from api.routes import quotes as quotes_routes
+from api.routes import replay as replay_routes
 from api.routes import structure as structure_routes
 
 logging.basicConfig(
@@ -57,6 +60,9 @@ def create_app() -> FastAPI:
     app.include_router(options_routes.router, prefix="/api")
     app.include_router(journal_routes.router, prefix="/api")
     app.include_router(structure_routes.router, prefix="/api")
+    app.include_router(brief_routes.router, prefix="/api")
+    app.include_router(chart_routes.router, prefix="/api")
+    app.include_router(replay_routes.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root():
