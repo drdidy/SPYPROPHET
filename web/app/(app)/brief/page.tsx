@@ -1,7 +1,11 @@
+import { AiBriefGenerator } from "@/components/ai-brief-generator";
 import { Reveal, StaggerGroup, StaggerItem } from "@/components/reveal";
 import { Card, CardBody, CardHeader, CardKicker, CardTitle } from "@/components/ui/card";
 import { Pill } from "@/components/ui/pill";
 import { getDailyBrief, type DailyBrief, type EconomicEvent, type NewsItem } from "@/lib/api";
+
+const PUBLIC_API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 import {
   AlertTriangle,
   BookOpenText,
@@ -45,6 +49,10 @@ export default async function BriefPage() {
         <>
           <Reveal delay={0.1}>
             <BriefSnapshot brief={brief} />
+          </Reveal>
+
+          <Reveal delay={0.12}>
+            <AiBriefGenerator apiBaseUrl={PUBLIC_API_BASE_URL} />
           </Reveal>
 
           {brief.sentiment && (
