@@ -99,10 +99,28 @@ function CandleSvg({ data }: { data: ChartResponse }) {
   const lines = data.structure?.lines ?? [];
   const spot = data.spot_price;
 
-  // Y range: include candles + projected line values + spot
+  // Map line name → kind for color/dash decisions.
+  const lineKind: Record<string, string> = {};
+  for (const l of lines) lineKind[l.name] = l.kind;
+
+  // Collect every distinct line name we see across bars (since the
+  // chart endpoint now returns per-bar line values).
+  const allLineNames = new Set<string>();
+  for (const b of bars) {
+    if (b.lines) {
+      for (const name of Object.keys(b.lines)) allLineNames.add(name);
+    }
+  }
+
+  // Y range: include candles + per-bar line values + spot
   const allPrices: number[] = [];
   for (const b of bars) {
     allPrices.push(b.h as number, b.l as number);
+    if (b.lines) {
+      for (const v of Object.values(b.lines)) {
+        if (typeof v === "number") allPrices.push(v);
+      }
+    }
   }
   for (const l of lines) {
     if (typeof l.projected_value === "number") allPrices.push(l.projected_value);
@@ -131,20 +149,19 @@ function CandleSvg({ data }: { data: ChartResponse }) {
   // Candle width
   const cw = Math.max(2, (innerW / bars.length) * 0.6);
 
-  // Project lines through the bar timeline using the line's slope.
-  // We approximate by using the projected_value as the value at the
-  // last bar and extrapolating backwards using the line's slope. Since
-  // the API doesn't return slope directly, we draw a horizontal line
-  // at the projected_value as a flat overlay — close enough for a
-  // visual reference. (Real per-bar projection comes when the API
-  // exposes per-bar values for each line.)
-  const horizontalLineFor = (val: number) => {
-    const y = yFor(val);
-    return { y, d: `M ${padL} ${y} L ${W - padR} ${y}` };
-  };
-
   const lineColor = (kind: string) => (kind === "descending" ? "#f5c451" : "#67c2ff");
   const lineDash = (kind: string) => (kind === "descending" ? "" : "4 6");
+
+  // Build polyline points per line name from per-bar values.
+  const polylineFor = (name: string): string => {
+    const points: string[] = [];
+    for (let i = 0; i < bars.length; i += 1) {
+      const v = bars[i].lines?.[name];
+      if (v === null || v === undefined) continue;
+      points.push(`${xFor(i)},${yFor(v)}`);
+    }
+    return points.join(" ");
+  };
 
   const lastTimes = bars.map((b) => formatBarLabel(b.t));
   const xTicks = pickTickIndices(bars.length, 6);
@@ -214,30 +231,35 @@ function CandleSvg({ data }: { data: ChartResponse }) {
           );
         })}
 
-        {/* Structure lines (drawn flat at projected_value — see note above) */}
-        {lines.map((line: StructureLine) => {
-          const { d } = horizontalLineFor(line.projected_value);
+        {/* Structure lines: per-bar polylines so they slope across time */}
+        {Array.from(allLineNames).map((name) => {
+          const kind = lineKind[name] ?? "ascending";
+          const points = polylineFor(name);
+          const lastBar = bars[bars.length - 1];
+          const lastVal = lastBar?.lines?.[name];
+          if (!points) return null;
           return (
-            <g key={line.name}>
-              <path
-                d={d}
-                stroke={lineColor(line.kind)}
+            <g key={name}>
+              <polyline
+                points={points}
+                stroke={lineColor(kind)}
                 strokeWidth={1.5}
-                strokeDasharray={lineDash(line.kind)}
+                strokeDasharray={lineDash(kind)}
                 fill="none"
                 opacity={0.9}
               />
-              <text
-                x={W - padR - 4}
-                y={yFor(line.projected_value) - 4}
-                fontSize={10}
-                fontWeight={700}
-                textAnchor="end"
-                fill={lineColor(line.kind)}
-                fontFamily="JetBrains Mono, monospace"
-              >
-                {line.name} {line.projected_value.toFixed(2)}
-              </text>
+              {typeof lastVal === "number" && (
+                <text
+                  x={W - padR + 6}
+                  y={yFor(lastVal) - 4}
+                  fontSize={10}
+                  fontWeight={700}
+                  fill={lineColor(kind)}
+                  fontFamily="JetBrains Mono, monospace"
+                >
+                  {name} {lastVal.toFixed(2)}
+                </text>
+              )}
             </g>
           );
         })}
