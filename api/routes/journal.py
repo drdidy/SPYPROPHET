@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from api.deps import get_cache
 
@@ -129,3 +131,84 @@ def refresh_journal():
     cache = get_cache()
     cache.clear()
     return {"status": "ok"}
+
+
+class ImportRequest(BaseModel):
+    entries: list[dict]
+    replace: bool = False
+
+
+@router.post("/import")
+def import_journal(payload: ImportRequest):
+    """Import journal entries onto the persistent disk.
+
+    By default, merges (upserts) the imported entries into whatever's
+    already on disk — same id wins, no duplicates. Pass ``replace=true``
+    to wipe the file and write the imported list as-is (useful when
+    migrating off the Streamlit terminal for the first time).
+
+    The journal file lives at ``$JOURNAL_PATH`` (default
+    ``data/signal_journal.json``) which on the Render deploy is mounted
+    at ``/app/data`` from the persistent SSD added to the service.
+    """
+    if not isinstance(payload.entries, list):
+        raise HTTPException(status_code=400, detail="entries must be a list")
+
+    target = _journal_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from app import (
+            journal_entry_from_dict,
+            save_signal_journal,
+            upsert_journal_entry,
+        )
+    except Exception as exc:
+        logger.error("journal import imports failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Journal engine unavailable.") from exc
+
+    # Convert incoming dicts → JournalEntry, skipping malformed rows
+    incoming_entries = []
+    skipped = 0
+    for raw in payload.entries:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        try:
+            incoming_entries.append(journal_entry_from_dict(raw))
+        except Exception as exc:
+            logger.warning("journal import row skip: %s", type(exc).__name__)
+            skipped += 1
+
+    if payload.replace:
+        merged = incoming_entries
+    else:
+        existing = []
+        if target.exists():
+            try:
+                existing_dicts = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(existing_dicts, list):
+                    for r in existing_dicts:
+                        try:
+                            existing.append(journal_entry_from_dict(r))
+                        except Exception as exc:
+                            logger.debug("journal import: skip existing row: %s", type(exc).__name__)
+            except Exception:
+                # Corrupt/missing — start fresh from the incoming set
+                existing = []
+        merged = list(existing)
+        for new_entry in incoming_entries:
+            merged = upsert_journal_entry(merged, new_entry)
+
+    save_signal_journal(merged, str(target))
+
+    cache = get_cache()
+    cache.clear()
+
+    return {
+        "status": "ok",
+        "imported": len(incoming_entries),
+        "skipped": skipped,
+        "total_after": len(merged),
+        "path": str(target),
+    }

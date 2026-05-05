@@ -1,3 +1,4 @@
+import { JournalImport } from "@/components/journal-import";
 import { Reveal } from "@/components/reveal";
 import { Card, CardBody, CardHeader, CardKicker, CardTitle } from "@/components/ui/card";
 import { Pill } from "@/components/ui/pill";
@@ -6,6 +7,9 @@ import {
   getJournalSummary,
   type JournalEntry,
 } from "@/lib/api";
+
+const PUBLIC_API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 import {
   AlertCircle,
   BarChart3,
@@ -44,12 +48,11 @@ export default async function JournalPage() {
               disk in the next iteration.
             </p>
           </div>
-          {list && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Pill tone="blue">{list.total} entries</Pill>
-              {!empty && <Pill tone="violet">Newest first</Pill>}
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {list && <Pill tone="blue">{list.total} entries</Pill>}
+            {list && !empty && <Pill tone="violet">Newest first</Pill>}
+            <JournalImport apiBaseUrl={PUBLIC_API_BASE_URL} />
+          </div>
         </div>
       </Reveal>
 
