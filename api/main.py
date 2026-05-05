@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import health as health_routes
 from api.routes import live as live_routes
+from api.routes import options as options_routes
 from api.routes import quotes as quotes_routes
 
 logging.basicConfig(
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router, prefix="/api")
     app.include_router(quotes_routes.router, prefix="/api")
     app.include_router(live_routes.router, prefix="/api")
+    app.include_router(options_routes.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root():
