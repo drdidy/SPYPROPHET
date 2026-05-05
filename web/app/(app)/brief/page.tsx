@@ -47,6 +47,46 @@ export default async function BriefPage() {
             <BriefSnapshot brief={brief} />
           </Reveal>
 
+          {brief.sentiment && (
+            <Reveal delay={0.15}>
+              <Card>
+                <CardBody>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-muted">
+                        Headline sentiment
+                      </div>
+                      <div className="mt-1 text-sm text-text">
+                        <span
+                          className={
+                            "font-bold " +
+                            (brief.sentiment.tone === "bullish"
+                              ? "text-green-bright"
+                              : brief.sentiment.tone === "bearish"
+                                ? "text-red-bright"
+                                : "text-blue-bright")
+                          }
+                        >
+                          {brief.sentiment.tone === "bullish"
+                            ? "Bullish lean"
+                            : brief.sentiment.tone === "bearish"
+                              ? "Bearish lean"
+                              : "Balanced"}
+                        </span>
+                        <span className="text-muted"> · {brief.sentiment.explanation}</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <SentimentMini label="+" value={brief.sentiment.positive_count ?? 0} tone="green" />
+                      <SentimentMini label="−" value={brief.sentiment.negative_count ?? 0} tone="red" />
+                      <SentimentMini label="Total" value={brief.sentiment.headline_count} tone="blue" />
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
+            </Reveal>
+          )}
+
           <Reveal delay={0.2}>
             <Card hoverable className="overflow-hidden">
               <CardHeader>
@@ -112,6 +152,29 @@ export default async function BriefPage() {
           </Reveal>
         </>
       )}
+    </div>
+  );
+}
+
+function SentimentMini({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "green" | "red" | "blue";
+}) {
+  const tint =
+    tone === "green"
+      ? "text-green-bright"
+      : tone === "red"
+        ? "text-red-bright"
+        : "text-blue-bright";
+  return (
+    <div className="rounded-lg border border-border/60 bg-surface-2/50 px-3 py-2">
+      <div className="text-[0.6rem] font-bold uppercase tracking-[0.12em] text-muted">{label}</div>
+      <div className={"mt-0.5 font-mono tabular " + tint}>{value}</div>
     </div>
   );
 }
