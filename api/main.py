@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes import brief as brief_routes
 from api.routes import chart as chart_routes
 from api.routes import health as health_routes
+from api.routes import intel as intel_routes
 from api.routes import journal as journal_routes
 from api.routes import live as live_routes
 from api.routes import options as options_routes
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(brief_routes.router, prefix="/api")
     app.include_router(chart_routes.router, prefix="/api")
     app.include_router(replay_routes.router, prefix="/api")
+    app.include_router(intel_routes.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root():

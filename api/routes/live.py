@@ -44,6 +44,15 @@ def live_snapshot() -> LiveSnapshot:
         ttl=45.0,
     )
 
+    # Pull UnusualWhales intel into the same response so the page's
+    # Intel grid renders without a second client-side fetch.
+    intel_payload = cache.get_or_compute(
+        "intel:default",
+        lambda: _fetch_intel_for_live(spot.get("price")),
+        ttl=90.0,
+    )
+    intel_cards = _build_intel_cards(intel_payload)
+
     trigger = None
     target = None
     stop = None
@@ -189,7 +198,110 @@ def live_snapshot() -> LiveSnapshot:
         decision=decision_payload,
         grade=grade,
         action=action,
+        intel=intel_cards,
     )
+
+
+def _fetch_intel_for_live(spot_price: float | None) -> dict | None:
+    """Inline UW intel fetch so /api/live can include intel cards in
+    its response. Same source as /api/intel/spy but with a tiny shim
+    so the live route doesn't import the route module."""
+    from datetime import date
+
+    from api.routes.intel import _gather_intel  # noqa: WPS437 — internal helper
+
+    return _gather_intel(spot_price, date.today().isoformat())
+
+
+def _build_intel_cards(intel_payload: dict | None) -> list[dict] | None:
+    """Translate the UW intel dict into the page's
+    [{label, value, body, tone}] intel-grid shape. Picks the four
+    most decision-relevant facts: GEX dealer-side, Dark-pool dollar
+    flow near spot, Recent flow tone, Market tide tone."""
+    if not intel_payload or not intel_payload.get("available"):
+        return None
+    data = intel_payload.get("data") or {}
+    cards: list[dict] = []
+
+    gex = data.get("gex") or {}
+    if isinstance(gex, dict) and gex.get("levels"):
+        cards.append(
+            {
+                "label": "Dealer GEX",
+                "value": gex.get("label") or "Mixed",
+                "body": gex.get("summary") or "Strike-by-strike gamma exposure.",
+                "tone": _gex_tone(gex),
+            }
+        )
+
+    darkpool = data.get("darkpool")
+    if isinstance(darkpool, dict):
+        size_str = darkpool.get("dollar_size_label") or darkpool.get("dollar_size_str")
+        nearest = darkpool.get("nearest_to_spot") or darkpool.get("nearest")
+        cards.append(
+            {
+                "label": "Dark Pool",
+                "value": size_str or "Active",
+                "body": darkpool.get("summary")
+                or (
+                    f"Nearest print near {nearest}"
+                    if nearest
+                    else "Recent dark-pool prints in tape."
+                ),
+                "tone": "blue",
+            }
+        )
+
+    recent = data.get("recent_flow")
+    if isinstance(recent, dict):
+        cards.append(
+            {
+                "label": "Recent flow",
+                "value": recent.get("tone_label") or recent.get("dominant_side") or "Mixed",
+                "body": recent.get("summary") or "Recent OTM SPY trade tape.",
+                "tone": _flow_tone(recent),
+            }
+        )
+
+    tide = data.get("market_tide")
+    if isinstance(tide, dict):
+        cards.append(
+            {
+                "label": "Market tide",
+                "value": tide.get("tone") or tide.get("label") or "Neutral",
+                "body": tide.get("summary") or "OTM-only market-wide tide.",
+                "tone": _tide_tone(tide),
+            }
+        )
+
+    return cards or None
+
+
+def _gex_tone(gex: dict) -> str:
+    label = (gex.get("label") or "").lower()
+    if "negative" in label or "short gamma" in label:
+        return "amber"
+    if "positive" in label or "long gamma" in label:
+        return "green"
+    return "blue"
+
+
+def _flow_tone(flow: dict) -> str:
+    label = (flow.get("tone_label") or flow.get("dominant_side") or "").lower()
+    if "bullish" in label or "call" in label:
+        return "green"
+    if "bearish" in label or "put" in label:
+        return "amber"
+    return "blue"
+
+
+def _tide_tone(tide: dict) -> str:
+    tone = (tide.get("tone") or "").lower()
+    if "bullish" in tone or "supportive" in tone:
+        return "green"
+    if "bearish" in tone or "warning" in tone or "negative" in tone:
+        return "amber"
+    return "blue"
 
 
 def _select_active_setup(
