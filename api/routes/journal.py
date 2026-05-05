@@ -107,7 +107,7 @@ def journal_summary():
     stop_first = sum(1 for e in confirmed if e.get("outcome") == "STOP_FIRST")
     decided = target_first + stop_first
     win_rate = (target_first / decided) if decided else None
-    rrs = [e.get("rr_ratio") for e in confirmed if isinstance(e.get("rr_ratio"), (int, float))]
+    rrs = [e.get("rr_ratio") for e in confirmed if isinstance(e.get("rr_ratio"), int | float)]
     avg_rr = (sum(rrs) / len(rrs)) if rrs else None
     return {
         "total": len(entries),
