@@ -10,8 +10,43 @@ from __future__ import annotations
 
 import logging
 import math
+from threading import Lock
 
 logger = logging.getLogger("spyprophet.api.market_data")
+
+# Yahoo Finance rejects requests from cloud-IP ranges (Render, AWS, GCP,
+# etc.) when they look like default Python requests; the response is HTML
+# error page, yfinance then logs "possibly delisted; no price data found".
+# Fix: hand yfinance a session with browser-realistic headers.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+}
+_session_lock = Lock()
+_yf_session = None
+
+
+def _yfinance_session():
+    """Build (and memoize) a requests.Session with browser headers."""
+    global _yf_session
+    if _yf_session is not None:
+        return _yf_session
+    with _session_lock:
+        if _yf_session is not None:
+            return _yf_session
+        import requests
+
+        s = requests.Session()
+        s.headers.update(_BROWSER_HEADERS)
+        _yf_session = s
+    return _yf_session
 
 
 def _normalize_history_columns(df):
@@ -40,7 +75,9 @@ def fetch_spy_spot_snapshot() -> dict:
         return {"price": None, "change": None, "change_pct": None}
 
     try:
-        df = yf.Ticker("SPY").history(period="5d", interval="1d", auto_adjust=False)
+        df = yf.Ticker("SPY", session=_yfinance_session()).history(
+            period="5d", interval="1d", auto_adjust=False
+        )
     except Exception as exc:
         logger.warning("yfinance SPY fetch failed: %s", type(exc).__name__)
         return {"price": None, "change": None, "change_pct": None}
@@ -77,7 +114,9 @@ def fetch_vix_snapshot() -> dict:
         return {"value": None, "regime": None, "regime_tone": None}
 
     try:
-        df = yf.Ticker("^VIX").history(period="5d", interval="15m", auto_adjust=False)
+        df = yf.Ticker("^VIX", session=_yfinance_session()).history(
+            period="5d", interval="15m", auto_adjust=False
+        )
     except Exception as exc:
         logger.warning("yfinance VIX fetch failed: %s", type(exc).__name__)
         return {"value": None, "regime": None, "regime_tone": None}
