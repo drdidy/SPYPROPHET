@@ -73,3 +73,6 @@ class LiveSnapshot(BaseModel):
     stop: float | None = None
     guardrails: list[dict] | None = None
     intel: list[dict] | None = None
+    decision: dict | None = None
+    grade: str | None = None
+    action: str | None = None

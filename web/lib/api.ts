@@ -35,13 +35,61 @@ export interface LiveSnapshot {
   watch: WatchStrikes;
   decision_label: string;
   last_update: string;
-  bias: { label: string; direction: "call" | "put" | "neutral"; score?: number } | null;
-  signal: { label: string; direction: "call" | "put"; line: string } | null;
-  trigger: { name: string; value: number; distance: number } | null;
-  target: { name: string; value: number; rr: number } | null;
+  bias: {
+    label: string;
+    direction: "call" | "put" | "neutral";
+    code?: string;
+    explanation?: string;
+    score?: number;
+    primary_line?: string | null;
+    take_profit_line?: string | null;
+  } | null;
+  signal: {
+    label: string;
+    direction: "call" | "put";
+    line: string;
+    status?: string;
+    signal_id?: string;
+    explanation?: string;
+    rejection_time?: string;
+    rr_ratio?: number | null;
+  } | null;
+  trigger: {
+    name: string;
+    value: number;
+    distance: number;
+    line_code?: string;
+    setup?: "CALL" | "PUT";
+    kind?: string;
+  } | null;
+  target: {
+    name: string;
+    value: number;
+    rr: number | null;
+    line_code?: string;
+    distance?: number;
+    kind?: string;
+  } | null;
   stop: number | null;
-  guardrails: Array<{ label: string; state: string; tone: "green" | "amber" | "red" }> | null;
-  intel: Array<{ label: string; value: string; body: string; tone: "green" | "amber" | "blue" }> | null;
+  guardrails: Array<{
+    label: string;
+    state: string;
+    tone: "green" | "amber" | "red";
+  }> | null;
+  intel: Array<{
+    label: string;
+    value: string;
+    body: string;
+    tone: "green" | "amber" | "blue";
+  }> | null;
+  decision: {
+    final_decision: string | null;
+    explanation: string | null;
+    grade: string | null;
+    action_label: string | null;
+  } | null;
+  grade: string | null;
+  action: string | null;
 }
 
 export async function getLiveSnapshot(): Promise<LiveSnapshot | null> {

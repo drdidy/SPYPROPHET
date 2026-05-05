@@ -35,14 +35,14 @@ export function DirectionGlyph({
       role="img"
       aria-label={label || defaultLabel}
       className={cn(
-        "inline-flex items-center rounded-full border font-bold tracking-tight",
+        "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border font-bold tracking-tight",
         sizeMap[size].wrap,
         tint,
         className,
       )}
     >
-      <Icon className={cn(sizeMap[size].icon)} strokeWidth={3} aria-hidden />
-      <span>{label || defaultLabel}</span>
+      <Icon className={cn(sizeMap[size].icon, "shrink-0")} strokeWidth={3} aria-hidden />
+      <span className="leading-none">{label || defaultLabel}</span>
     </span>
   );
 }
