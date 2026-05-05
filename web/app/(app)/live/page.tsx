@@ -155,14 +155,14 @@ export default async function LivePage() {
                     glyph: <DirectionGlyph direction={view.bias.direction} size="sm" label={view.bias.label} />,
                   },
                   { label: "Grade", value: view.grade ?? "—" },
-                  { label: "Action", value: view.action ?? (view.connected ? "Watch" : "Wait") },
+                  { label: "Action", value: humanizeAction(view.action) ?? (view.connected ? "Watch" : "Wait") },
                   { label: "Signal", value: view.signal.label },
                 ].map((cell) => (
-                  <div key={cell.label} className="rounded-xl border border-border/70 bg-surface-2/50 p-3.5">
+                  <div key={cell.label} className="overflow-hidden rounded-xl border border-border/70 bg-surface-2/50 p-3.5">
                     <div className="text-[0.62rem] font-bold uppercase tracking-[0.14em] text-muted">{cell.label}</div>
                     <div className="mt-1.5 flex items-center gap-2">
                       {cell.glyph ?? (
-                        <span className="font-[family-name:var(--font-display)] text-base font-bold leading-tight text-text tabular">
+                        <span className="line-clamp-2 break-words font-[family-name:var(--font-display)] text-sm font-bold leading-snug text-text tabular md:text-base">
                           {cell.value}
                         </span>
                       )}
@@ -343,6 +343,20 @@ interface ComposedView {
   watchPut: number | null;
 }
 
+function humanizeAction(action: string | null): string | null {
+  if (!action) return null;
+  // Map app.py decision-state final_decision codes to short, readable labels.
+  const map: Record<string, string> = {
+    TRADE_ALLOWED: "Trade",
+    SELECTIVE_TRADE: "Selective",
+    WAIT_FOR_CONFIRMATION: "Wait",
+    WAIT_FOR_RETEST: "Retest",
+    NO_TRADE: "No trade",
+    STOP_TRADING: "Stop",
+  };
+  return map[action] ?? action.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
+}
+
 function composeView(snapshot: LiveSnapshot | null): ComposedView {
   if (!snapshot) {
     return {
@@ -400,9 +414,13 @@ function composeView(snapshot: LiveSnapshot | null): ComposedView {
     snapshot.stop ??
     (spotPrice !== null ? spotPrice + DEFAULT_VIEW.stopOffsetFromSpot : null);
 
+  // Headline matches the setup direction: PUT setup needs price to
+  // close *below* the trigger line (rejection from above); CALL setup
+  // needs a close *above* (rejection from below).
+  const setup = snapshot.trigger?.setup;
   const headline =
     trigger.value !== null
-      ? `Hold for trigger close above ${trigger.value.toFixed(2)}`
+      ? `Hold for trigger close ${setup === "PUT" ? "below" : "above"} ${trigger.value.toFixed(2)}`
       : "Live read · awaiting structure projection";
 
   return {
