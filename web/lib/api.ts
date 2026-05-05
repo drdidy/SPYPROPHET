@@ -55,3 +55,88 @@ export async function getLiveSnapshot(): Promise<LiveSnapshot | null> {
     return null;
   }
 }
+
+export interface ChainStrike {
+  strike: number;
+  call_symbol: string | null;
+  put_symbol: string | null;
+  call_streamer_symbol: string | null;
+  put_streamer_symbol: string | null;
+}
+
+export interface OptionsChain {
+  underlying: string;
+  expiration: string;
+  spot_price: number | null;
+  strikes: ChainStrike[];
+}
+
+export async function getOptionsChain(
+  expiration?: string,
+  width = 10
+): Promise<OptionsChain | { error: string; status: number } | null> {
+  try {
+    const params = new URLSearchParams();
+    if (expiration) params.set("expiration", expiration);
+    params.set("width", String(width));
+    const res = await fetch(`${API_BASE_URL}/api/options/spy?${params.toString()}`, {
+      next: { revalidate: 60, tags: ["options"] },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { error: body || res.statusText, status: res.status };
+    }
+    return (await res.json()) as OptionsChain;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e), status: 0 };
+  }
+}
+
+export interface OptionQuote {
+  symbol: string;
+  underlying: string;
+  expiration: string | null;
+  strike: number;
+  option_type: "CALL" | "PUT";
+  bid: number | null;
+  ask: number | null;
+  mark: number | null;
+  spread: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  iv: number | null;
+  provider: string;
+  warning?: string | null;
+}
+
+export interface QuotePairResponse {
+  underlying: string;
+  underlying_price: number | null;
+  expiration: string;
+  call: OptionQuote | null;
+  put: OptionQuote | null;
+  provider_status: Record<string, unknown>;
+  warning: string | null;
+}
+
+export async function getStrikeQuotes(
+  callStrike: number,
+  putStrike: number,
+  expiration?: string
+): Promise<QuotePairResponse | null> {
+  try {
+    const params = new URLSearchParams();
+    if (expiration) params.set("expiration", expiration);
+    params.set("call_strike", String(callStrike));
+    params.set("put_strike", String(putStrike));
+    const res = await fetch(`${API_BASE_URL}/api/quotes/spy?${params.toString()}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as QuotePairResponse;
+  } catch {
+    return null;
+  }
+}
