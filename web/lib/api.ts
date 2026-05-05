@@ -322,6 +322,15 @@ export interface EconomicEvent {
   source: string | null;
 }
 
+export interface SentimentSummary {
+  score: number;
+  tone: "bullish" | "bearish" | "neutral";
+  headline_count: number;
+  positive_count?: number;
+  negative_count?: number;
+  explanation: string;
+}
+
 export interface DailyBrief {
   as_of: string;
   spot: SpotSnapshot;
@@ -330,6 +339,7 @@ export interface DailyBrief {
   structure: StructureProjection | null;
   news: NewsItem[];
   events: EconomicEvent[];
+  sentiment?: SentimentSummary;
 }
 
 export async function getDailyBrief(): Promise<DailyBrief | null> {

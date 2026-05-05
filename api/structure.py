@@ -122,16 +122,17 @@ def _prior_trading_day(now_dt) -> date:
 
 
 def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict | None:
-    """Project the four primary structure lines to ``now_dt``.
+    """Project the four primary structure lines to **today's 9am CT**.
 
-    Returns ``{lines, closest_above, closest_below, pivot_session}``
-    or ``None`` if data fetch fails. ``lines`` is a list of dicts:
-    ``{name, kind: ascending|descending, projected_value, distance,
-    role: trigger_above|target_below|...}``.
+    The trigger price is the line's value at 09:00 Central of the
+    current trading day — that's drdidy's reference point, *static for
+    the day* once the session opens. We do not project to the rolling
+    "now" because the trigger needs to be a fixed level price can
+    touch, not a constantly-shifting target.
 
-    The decision page can pick:
-    - ``trigger`` = first line above spot in the upper-zone direction
-    - ``target`` = first line below spot in the lower-zone direction
+    Returns ``{lines, closest_above, closest_below, closest_descending_*,
+    pivot_session, projection_time, as_of}`` or ``None`` if data fetch
+    fails.
     """
     import pandas as pd
 
@@ -146,6 +147,7 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
             find_high_pivot,
             find_low_pivot,
             get_central_tz,
+            get_structure_projection_time,
             project_lines,
         )
     except Exception as exc:
@@ -158,6 +160,10 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
         now = now.tz_localize(ct)
     else:
         now = now.tz_convert(ct)
+
+    # The projection target is *today's* 9am CT — not now. Trigger
+    # prices stay locked once the session is open.
+    projection_time = get_structure_projection_time(now, hour=9, minute=0)
 
     # Walk back day by day until we find an RTH session with data.
     pivot_day = _prior_trading_day(now)
@@ -175,7 +181,8 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
     high_pivot = find_high_pivot(rth)
     low_pivot = find_low_pivot(rth)
     lines = build_primary_lines(high_pivot, low_pivot)
-    projected = project_lines(lines, now, spot_price)
+    # Project to today's 9am CT — that's the trigger reference time.
+    projected = project_lines(lines, projection_time, spot_price)
 
     if projected.empty:
         return None
@@ -222,6 +229,7 @@ def compute_structure_projection(spot_price: float | None, now_dt=None) -> dict 
     return {
         "pivot_session": pivot_day.isoformat(),
         "as_of": now.isoformat(),
+        "projection_time": projection_time.isoformat(),
         "lines": rows,
         "closest_above": above[0] if above else None,
         "closest_below": below[0] if below else None,
@@ -265,6 +273,7 @@ def compute_live_state(spot_price: float | None, now_dt=None) -> dict | None:
             find_high_pivot,
             find_low_pivot,
             get_central_tz,
+            get_structure_projection_time,
             score_signal_quality,
         )
     except Exception as exc:
@@ -277,6 +286,9 @@ def compute_live_state(spot_price: float | None, now_dt=None) -> dict | None:
         now = now.tz_localize(ct)
     else:
         now = now.tz_convert(ct)
+
+    # All projection / bias / trigger evaluation happens at today's 9am CT.
+    projection_time = get_structure_projection_time(now, hour=9, minute=0)
 
     pivot_day = _prior_trading_day(now)
     rth = pd.DataFrame()
@@ -306,7 +318,10 @@ def compute_live_state(spot_price: float | None, now_dt=None) -> dict | None:
     signals = detect_rejection_signals(signal_frame, descending_lines, [])
     latest_signal = signals[-1] if signals else None
 
-    bias = determine_preopen_bias(primary_lines, spot_price or 0.0, now)
+    # Bias is evaluated against today's 9am-projected line values so it
+    # tracks where current price sits relative to the locked trigger
+    # structure rather than a moving target.
+    bias = determine_preopen_bias(primary_lines, spot_price or 0.0, projection_time)
 
     quality = score_signal_quality(latest_signal) if latest_signal is not None else None
     latest_candle_row = signal_frame.iloc[-1] if not signal_frame.empty else None

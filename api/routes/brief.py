@@ -46,6 +46,7 @@ def daily_brief():
 
     news = cache.get_or_compute("brief:news", _fetch_news, ttl=900.0)
     events = cache.get_or_compute("brief:events", _fetch_events, ttl=900.0)
+    sentiment = _score_sentiment(news)
 
     return {
         "as_of": datetime.now(ZoneInfo("America/Chicago")).isoformat(),
@@ -59,7 +60,65 @@ def daily_brief():
         "structure": structure,
         "news": news,
         "events": events,
+        "sentiment": sentiment,
     }
+
+
+def _score_sentiment(news: list[dict]) -> dict:
+    """Score the top headlines into a sentiment summary using app.py's
+    rule-based scorer. No yfinance needed.
+    """
+    if not news:
+        return {
+            "score": 0,
+            "tone": "neutral",
+            "headline_count": 0,
+            "explanation": "No fresh headlines to score.",
+        }
+    try:
+        from app import market_moving_news_score
+
+        positive = 0
+        negative = 0
+        for item in news:
+            score = market_moving_news_score(
+                item.get("title") or "",
+                item.get("summary") or "",
+            )
+            if score > 0:
+                positive += 1
+            elif score < 0:
+                negative += 1
+        net = positive - negative
+        tone = "neutral"
+        if net >= 2:
+            tone = "bullish"
+        elif net <= -2:
+            tone = "bearish"
+        return {
+            "score": net,
+            "tone": tone,
+            "headline_count": len(news),
+            "positive_count": positive,
+            "negative_count": negative,
+            "explanation": _sentiment_explanation(tone, positive, negative),
+        }
+    except Exception as exc:
+        logger.warning("sentiment scoring failed: %s", type(exc).__name__)
+        return {
+            "score": 0,
+            "tone": "neutral",
+            "headline_count": len(news),
+            "explanation": "Sentiment scorer unavailable.",
+        }
+
+
+def _sentiment_explanation(tone: str, positive: int, negative: int) -> str:
+    if tone == "bullish":
+        return f"{positive} bullish vs {negative} bearish headline(s) — net positive."
+    if tone == "bearish":
+        return f"{negative} bearish vs {positive} bullish headline(s) — net negative."
+    return f"{positive} bullish, {negative} bearish — balanced."
 
 
 def _fetch_news() -> list[dict]:
