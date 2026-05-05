@@ -18,6 +18,34 @@ router = APIRouter(prefix="/brief", tags=["brief"])
 logger = logging.getLogger("spyprophet.api.brief")
 
 
+@router.post("/spy/generate")
+def generate_ai_daily_brief():
+    """Generate the AI-synthesized Daily Brief — same engine the
+    Streamlit Daily Brief tab's 'Generate Daily Brief' button hits.
+
+    Returns the structured OpenAI decision JSON plus external-context
+    cards (dark pool, dealer GEX, global tape) sourced from Unusual
+    Whales + Yahoo Finance, normalized for the Next.js page.
+    """
+    from fastapi import HTTPException
+
+    from api.brief_engine import generate_ai_brief as _gen
+
+    cache = get_cache()
+    spot = cache.get_or_compute("spy_spot", fetch_spy_spot_snapshot, ttl=15.0)
+    result = cache.get_or_compute(
+        "brief:ai",
+        lambda: _gen(spot.get("price")),
+        ttl=900.0,  # 15 min — OpenAI calls cost real money
+    )
+    if not result:
+        raise HTTPException(
+            status_code=502,
+            detail="AI brief unavailable — check OPENAI_API_KEY env var and recent logs.",
+        )
+    return result
+
+
 @router.get("/spy")
 def daily_brief():
     """Slim morning-brief composite for the /brief page.
