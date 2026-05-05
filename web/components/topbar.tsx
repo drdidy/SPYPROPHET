@@ -1,5 +1,6 @@
 "use client";
 
+import { MobileNav } from "@/components/mobile-nav";
 import { Pill } from "@/components/ui/pill";
 import { Bell, RefreshCw, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -24,6 +25,7 @@ export function Topbar() {
   return (
     <header className="sticky top-0 z-40 flex h-16 flex-shrink-0 items-center justify-between gap-4 border-b border-border/70 bg-surface/60 px-4 lg:px-8 backdrop-blur-xl">
       <div className="flex items-center gap-3">
+        <MobileNav />
         <Pill tone={sessionTone as "live" | "amber" | "neutral"} pulse={isLive} size="sm">
           {sessionLabel}
         </Pill>
