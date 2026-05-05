@@ -14,7 +14,10 @@ export const revalidate = 60;
 
 export default async function OptionsPage() {
   const today = new Date().toISOString().slice(0, 10);
-  const chainResult = await getOptionsChain(today, 12);
+  // 0DTE SPY rarely moves more than ~$5 — show 5 strikes each side (10
+  // total) by default. Wider views can come from a width selector once
+  // we add one.
+  const chainResult = await getOptionsChain(today, 5);
   const chain: OptionsChain | null =
     chainResult && "strikes" in chainResult ? chainResult : null;
   const errorStatus =
