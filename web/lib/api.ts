@@ -268,3 +268,133 @@ export async function getJournalSummary(): Promise<JournalSummary | null> {
     return null;
   }
 }
+
+export interface StructureLine {
+  name: string;
+  label: string | null;
+  role: string | null;
+  kind: "ascending" | "descending" | string;
+  zone_type: string | null;
+  projected_value: number;
+  distance: number | null;
+}
+
+export interface StructureProjection {
+  pivot_session: string;
+  as_of: string;
+  lines: StructureLine[];
+  closest_above: StructureLine | null;
+  closest_below: StructureLine | null;
+  closest_descending_above: StructureLine | null;
+  closest_descending_below: StructureLine | null;
+}
+
+export async function getStructure(): Promise<StructureProjection | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/structure/spy`, {
+      next: { revalidate: 60, tags: ["structure"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as StructureProjection;
+  } catch {
+    return null;
+  }
+}
+
+export interface NewsItem {
+  title: string | null;
+  summary: string | null;
+  source: string | null;
+  url: string | null;
+  published: string | null;
+  score: number | null;
+  relevance: string | null;
+}
+
+export interface EconomicEvent {
+  title: string | null;
+  country: string | null;
+  impact: string | null;
+  scheduled_at: string | null;
+  actual: string | null;
+  forecast: string | null;
+  previous: string | null;
+  source: string | null;
+}
+
+export interface DailyBrief {
+  as_of: string;
+  spot: SpotSnapshot;
+  vix: VixSnapshot;
+  watch: WatchStrikes;
+  structure: StructureProjection | null;
+  news: NewsItem[];
+  events: EconomicEvent[];
+}
+
+export async function getDailyBrief(): Promise<DailyBrief | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/brief/spy`, {
+      next: { revalidate: 120, tags: ["brief"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as DailyBrief;
+  } catch {
+    return null;
+  }
+}
+
+export interface CandleBar {
+  t: string;
+  o: number | null;
+  h: number | null;
+  l: number | null;
+  c: number | null;
+  v: number | null;
+}
+
+export interface ChartResponse {
+  period: string;
+  spot_price: number | null;
+  bars: CandleBar[];
+  structure: StructureProjection | null;
+}
+
+export async function getChart(period = "5d"): Promise<ChartResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/chart/spy?period=${period}`, {
+      next: { revalidate: 60, tags: ["chart"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ChartResponse;
+  } catch {
+    return null;
+  }
+}
+
+export interface ReplayBar extends CandleBar {
+  lines: Record<string, number | null>;
+}
+
+export interface ReplaySession {
+  session: string;
+  pivot_session: string;
+  bar_count: number;
+  lines: Array<{ name: string; label: string | null; kind: string }>;
+  bars: ReplayBar[];
+}
+
+export async function getReplay(date?: string): Promise<ReplaySession | null> {
+  try {
+    const url = date
+      ? `${API_BASE_URL}/api/replay/spy?date=${date}`
+      : `${API_BASE_URL}/api/replay/spy`;
+    const res = await fetch(url, {
+      next: { revalidate: 300, tags: ["replay"] },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ReplaySession;
+  } catch {
+    return null;
+  }
+}
